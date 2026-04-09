@@ -1,9 +1,9 @@
 # claw-skills
 
-Personal nullclaw skills. Install by symlinking into `~/.nullclaw/skills/`.
+Personal nullclaw skills. Install by copying into `~/.nullclaw/skills/`.
 
 ```bash
-ln -s ~/a/claw-skills/<skill> ~/.nullclaw/skills/<skill>
+cp -r ~/a/claw-skills/<skill> ~/.nullclaw/skills/<skill>
 ```
 
 ## Skills
@@ -11,6 +11,8 @@ ln -s ~/a/claw-skills/<skill> ~/.nullclaw/skills/<skill>
 | Skill | Description |
 |-------|-------------|
 | agent-reach | Check if nullclaw agent is reachable |
+| cct | Fetch CCT 4-moment trading intelligence and deliver to Telegram |
+| cct2 | Dual-LLM market sentiment analysis for configured tickers |
 | commute | Fetch route travel time via traffic sub-skill |
 | doughcon | Fetch PizzINT DOUGHCON level and deliver or record |
 | lib | Shared Python helpers (telegram delivery) |
