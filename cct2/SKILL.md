@@ -6,7 +6,9 @@ always: true
 
 # cct2
 
-Fetches prices and headlines from Yahoo Finance, runs sentiment analysis in parallel with two LLMs (default + backup), and delivers a report to Telegram. Flags tickers where the two models disagree.
+Fetches prices and headlines from Yahoo Finance, runs sentiment analysis in parallel with two LLMs (primary + backup), and delivers a report to Telegram. Flags tickers where the two models disagree.
+
+When running under cron, the `NULLCLAW_JOB_ID` is appended to the Telegram message and prefixed on every log line — matching the news skill's traceability format.
 
 ## Script
 
@@ -44,10 +46,12 @@ Update via agent:
 {
   "primary_provider": "anthropic-custom:minimax",
   "primary_model": "MiniMax-M2.7",
-  "backup_provider": "glm-cn",
-  "backup_model": "glm-4-flash"
+  "backup_provider": "glm-direct",
+  "backup_model": "GLM-5.1"
 }
 ```
+
+If `backup_model` returns 429 (overload), the script automatically retries with `glm-4-flash` before giving up.
 
 ## Cron jobs
 
