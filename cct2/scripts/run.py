@@ -122,7 +122,7 @@ def fetch_yahoo_quote(ticker: str) -> dict | None:
             "pct_change": round(pct, 2),
         }
     except Exception as e:
-        print(f"[WARN] {ticker} quote fetch failed: {e}", file=sys.stderr)
+        log(f"WARN {ticker} quote fetch failed: {e}")
         return None
 
 
@@ -143,7 +143,7 @@ def fetch_yahoo_news(ticker: str, max_items: int = 3) -> list[str]:
                 headlines.append(title)
         return headlines
     except Exception as e:
-        print(f"[WARN] {ticker} news fetch failed: {e}", file=sys.stderr)
+        log(f"WARN {ticker} news fetch failed: {e}")
         return []
 
 
@@ -218,7 +218,7 @@ def call_bigmodel_direct(model: str, prompt: str) -> dict | None:
         except Exception:
             pass
     if not api_key:
-        print("[WARN] glm-direct: no API key found", file=sys.stderr)
+        log("WARN glm-direct: no API key found")
         return None
 
     payload = json.dumps({
@@ -244,10 +244,10 @@ def call_bigmodel_direct(model: str, prompt: str) -> dict | None:
         return extract_json(text)
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")[:200]
-        print(f"[WARN] glm-direct HTTP {e.code}: {body}", file=sys.stderr)
+        log(f"WARN glm-direct HTTP {e.code}: {body}")
         return None
     except Exception as e:
-        print(f"[WARN] glm-direct failed: {e}", file=sys.stderr)
+        log(f"WARN glm-direct failed: {e}")
         return None
 
 
@@ -300,11 +300,13 @@ def call_llm(provider: str, model: str, prompt: str) -> dict | None:
         output = result.stdout.strip()
         err_output = result.stderr.strip()
         if not output or result.returncode != 0:
-            # Scan stdout first, then stderr for the provider error line
+            # Prefer "Last provider error:" from either stream; fall back to
+            # first stderr line (stdout is mostly nullclaw info/debug noise).
             all_lines = output.splitlines() + err_output.splitlines()
             error_line = next(
                 (l for l in all_lines if l.startswith("Last provider error:")),
-                all_lines[0] if all_lines else "no output"
+                next((l for l in err_output.splitlines() if l.strip()), None)
+                or (output.splitlines()[0] if output else "no output"),
             )
             log(f"WARN {provider}/{model} failed (rc={result.returncode}): {error_line[:120]}")
             return None
@@ -452,7 +454,7 @@ def format_report(rows: list[dict], mode: str, tickers: list[str]) -> str:
             lines.append(line)
 
     lines.append("")
-    lines.append(f"分析標的：{len(tickers)} 支｜雙模型對照")
+    lines.append(f"分析標的：{len(tickers)} 支｜雙模型對照｜trace: {TRACE_ID}")
     return "\n".join(lines)
 
 
