@@ -11,6 +11,14 @@ import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
+# Trace ID: use cron job ID if available, otherwise timestamp
+_JOB_ID = os.environ.get("NULLCLAW_JOB_ID", "")
+TRACE_ID = _JOB_ID[:12] if _JOB_ID else datetime.now(timezone.utc).strftime("%H%M%S")
+
+
+def log(msg: str) -> None:
+    print(f"[cct2/{TRACE_ID}] {msg}", file=sys.stderr)
+
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
 import telegram
@@ -290,23 +298,25 @@ def call_llm(provider: str, model: str, prompt: str) -> dict | None:
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         output = result.stdout.strip()
+        err_output = result.stderr.strip()
         if not output or result.returncode != 0:
-            # Extract just the provider error line, drop the Hint suggestion
+            # Scan stdout first, then stderr for the provider error line
+            all_lines = output.splitlines() + err_output.splitlines()
             error_line = next(
-                (l for l in output.splitlines() if l.startswith("Last provider error:")),
-                output.splitlines()[0] if output else "no output"
+                (l for l in all_lines if l.startswith("Last provider error:")),
+                all_lines[0] if all_lines else "no output"
             )
-            print(f"[WARN] {provider}/{model} failed: {error_line[:120]}", file=sys.stderr)
+            log(f"WARN {provider}/{model} failed (rc={result.returncode}): {error_line[:120]}")
             return None
         parsed = extract_json(output)
         if parsed is None:
-            print(f"[WARN] {provider}/{model} no JSON found in: {output[:200]}", file=sys.stderr)
+            log(f"WARN {provider}/{model} no JSON found in: {output[:200]}")
         return parsed
     except subprocess.TimeoutExpired:
-        print(f"[WARN] {provider}/{model} timed out", file=sys.stderr)
+        log(f"WARN {provider}/{model} timed out")
         return None
     except Exception as e:
-        print(f"[WARN] {provider}/{model} call failed: {e}", file=sys.stderr)
+        log(f"WARN {provider}/{model} call failed: {e}")
         return None
 
 
@@ -403,6 +413,7 @@ def format_report(rows: list[dict], mode: str, tickers: list[str]) -> str:
 
     if not rows:
         lines.append("⚠️ 無法取得任何分析結果")
+        lines.append(f"trace: {TRACE_ID}")
         return "\n".join(lines)
 
     consensus_rows = [r for r in rows if r.get("consensus") and not r.get("diverged")]
@@ -457,7 +468,7 @@ def main() -> None:
     cfg = load_skill_config()
     tickers = load_tickers()
 
-    print(f"[cct2] fetching data for {tickers}...", file=sys.stderr)
+    log(f"fetching data for {tickers}...")
     market_data = fetch_all(tickers)
 
     ticker_summary = build_ticker_summary(market_data, args.mode)
@@ -472,7 +483,7 @@ def main() -> None:
         ticker_data=ticker_summary,
     )
 
-    print(f"[cct2] querying dual LLM...", file=sys.stderr)
+    log("querying dual LLM...")
     primary, backup = run_dual_llm(prompt, cfg)
 
     rows = merge_results(tickers, primary, backup)
