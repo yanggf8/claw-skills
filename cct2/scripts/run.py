@@ -11,13 +11,12 @@ import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-# Trace ID: use cron job ID if available, otherwise timestamp
-_JOB_ID = os.environ.get("NULLCLAW_JOB_ID", "")
-TRACE_ID = _JOB_ID[:12] if _JOB_ID else datetime.now(timezone.utc).strftime("%H%M%S")
+JOB_ID = os.environ.get("NULLCLAW_JOB_ID", "")
 
 
 def log(msg: str) -> None:
-    print(f"[cct2/{TRACE_ID}] {msg}", file=sys.stderr)
+    prefix = f"[cct2/{JOB_ID}]" if JOB_ID else "[cct2]"
+    print(f"{prefix} {msg}", file=sys.stderr)
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
@@ -425,7 +424,6 @@ def format_report(rows: list[dict], mode: str, tickers: list[str]) -> str:
 
     if not rows:
         lines.append("⚠️ 無法取得任何分析結果")
-        lines.append(f"trace: {TRACE_ID}")
         return "\n".join(lines)
 
     consensus_rows = [r for r in rows if r.get("consensus") and not r.get("diverged")]
@@ -464,7 +462,7 @@ def format_report(rows: list[dict], mode: str, tickers: list[str]) -> str:
             lines.append(line)
 
     lines.append("")
-    lines.append(f"分析標的：{len(tickers)} 支｜雙模型對照｜trace: {TRACE_ID}")
+    lines.append(f"分析標的：{len(tickers)} 支｜雙模型對照")
     return "\n".join(lines)
 
 
@@ -500,6 +498,8 @@ def main() -> None:
 
     rows = merge_results(tickers, primary, backup)
     msg = format_report(rows, args.mode, tickers)
+    if JOB_ID:
+        msg += f"\n\n`{JOB_ID}`"
 
     if args.deliver_to:
         ok = telegram.send(args.deliver_to, msg, account=args.account)
