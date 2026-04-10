@@ -206,7 +206,8 @@ def build_ticker_summary(market_data: dict[str, dict], mode: str) -> str:
 
 
 def call_bigmodel_direct(model: str, prompt: str) -> dict | None:
-    """Call BigModel Anthropic-compatible endpoint directly (no subprocess)."""
+    """Call BigModel Anthropic-compatible endpoint directly (no subprocess).
+    On 429 (overload), retries once with glm-4-flash as a free-tier fallback."""
     secrets = load_secrets()
     api_key = secrets.get("BIGMODEL_API_KEY") or os.environ.get("BIGMODEL_API_KEY")
     if not api_key:
@@ -221,29 +222,38 @@ def call_bigmodel_direct(model: str, prompt: str) -> dict | None:
         log("WARN glm-direct: no API key found")
         return None
 
-    payload = json.dumps({
-        "model": model,
-        "max_tokens": 512,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-
-    req = urllib.request.Request(
-        BIGMODEL_ANTHROPIC_URL,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "anthropic-version": "2023-06-01",
-        },
-        method="POST",
-    )
-    try:
+    def _call(m: str) -> dict | None:
+        payload = json.dumps({
+            "model": m,
+            "max_tokens": 512,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode()
+        req = urllib.request.Request(
+            BIGMODEL_ANTHROPIC_URL,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read().decode())
         text = data["content"][0]["text"].strip()
         return extract_json(text)
+
+    try:
+        return _call(model)
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")[:200]
+        if e.code == 429 and model != "glm-4-flash":
+            log(f"WARN glm-direct {model} 429 (overload), retrying with glm-4-flash")
+            try:
+                return _call("glm-4-flash")
+            except Exception as e2:
+                log(f"WARN glm-direct glm-4-flash fallback failed: {e2}")
+                return None
         log(f"WARN glm-direct HTTP {e.code}: {body}")
         return None
     except Exception as e:
