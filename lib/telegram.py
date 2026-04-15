@@ -1,4 +1,4 @@
-"""Shared Telegram delivery helper for nullclaw skills.
+"""Shared Telegram delivery helper for nullclaw / openclaw skills.
 
 Single-attempt POST was upgraded to bounded retry (2026-04-13) to survive
 transient 5xx / network hiccups without breaking long-tail skill timeouts.
@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 
-CONFIG_PATH = os.path.expanduser("~/.nullclaw/config.json")
+DEFAULT_CONFIG_PATH = os.path.expanduser("~/.nullclaw/config.json")
 
 # Per-attempt urlopen timeout (seconds). The whole call is additionally
 # bounded by `deadline_s` (caller) or DEFAULT_DEADLINE_S (fallback).
@@ -27,20 +27,26 @@ DEFAULT_DEADLINE_S = 30.0
 BACKOFFS = (2.0, 5.0)
 
 
-def get_bot_token(account: str = "main") -> str | None:
-    """Read Telegram bot token from nullclaw config."""
+def _resolve_config_path(config_path: str | None) -> str:
+    return config_path or os.environ.get("CLAW_CONFIG") or DEFAULT_CONFIG_PATH
+
+
+def get_bot_token(account: str = "main", config_path: str | None = None) -> str | None:
+    """Read Telegram bot token from config. Resolution order:
+       explicit config_path arg → $CLAW_CONFIG → ~/.nullclaw/config.json.
+       Supports both nullclaw multi-account schema and openclaw single-token schema."""
     try:
-        with open(CONFIG_PATH) as f:
+        with open(_resolve_config_path(config_path)) as f:
             cfg = json.load(f)
-        return (
-            cfg.get("channels", {})
-               .get("telegram", {})
-               .get("accounts", {})
-               .get(account, {})
-               .get("bot_token")
-        )
     except Exception:
         return None
+    telegram_cfg = cfg.get("channels", {}).get("telegram", {})
+    nullclaw_token = (
+        telegram_cfg.get("accounts", {}).get(account, {}).get("bot_token")
+    )
+    if nullclaw_token:
+        return nullclaw_token
+    return telegram_cfg.get("botToken")
 
 
 def _is_retryable_http(code: int) -> bool:
@@ -55,6 +61,7 @@ def send(
     chat_id: str,
     text: str,
     account: str = "main",
+    config_path: str | None = None,
     *,
     deadline_s: float | None = None,
 ) -> bool:
@@ -67,8 +74,11 @@ def send(
     The retry loop is bounded by `deadline_s` (a wall-clock budget). When
     omitted the cap is DEFAULT_DEADLINE_S so legacy callers stay bounded.
     Per-attempt timeout is clamped to min(PER_ATTEMPT_TIMEOUT, remaining).
+
+    `config_path` overrides the default resolution order for dual-agent
+    (nullclaw / openclaw) deployments.
     """
-    token = get_bot_token(account)
+    token = get_bot_token(account, config_path)
     if not token:
         return False
 

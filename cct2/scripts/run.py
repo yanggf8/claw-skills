@@ -26,7 +26,7 @@ from trace_marker import emit_skill_status, emit_trace
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILL_CONFIG_PATH = os.path.join(SKILL_DIR, "config.json")
-NULLCLAW_CONFIG_PATH = os.path.expanduser("~/.nullclaw/config.json")
+NULLCLAW_CONFIG_PATH = os.environ.get("CLAW_CONFIG") or os.path.expanduser("~/.nullclaw/config.json")
 
 DEFAULT_TICKERS = ["AAPL", "MSFT", "GOOGL", "TSLA", "NVDA"]
 DEFAULT_PRIMARY_PROVIDER = "anthropic-custom:minimax"

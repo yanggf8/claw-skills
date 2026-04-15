@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.abspath(SKILLS_LIB))
 import telegram
 
 CCT_BASE = "https://tft-trading-system.yanggf.workers.dev"
-CONFIG_PATH = os.path.expanduser("~/.nullclaw/config.json")
+CONFIG_PATH = os.environ.get("CLAW_CONFIG") or os.path.expanduser("~/.nullclaw/config.json")
 
 SENTIMENT_EMOJI = {"bullish": "看漲 🟢", "bearish": "看跌 🔴", "neutral": "中性 ⚪"}
 
