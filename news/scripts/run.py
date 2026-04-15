@@ -14,7 +14,8 @@ import tempfile
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
-import telegram
+from delivery import deliver_or_fail
+from trace_marker import emit_skill_status, emit_trace
 
 TOPICS_FILE = os.path.expanduser("~/.nullclaw/news-topics.json")
 
@@ -465,10 +466,9 @@ def main():
         else:
             parser.print_help()
             sys.exit(1)
-        if getattr(args, "deliver_to", None):
-            telegram.send(args.deliver_to, output, account=args.account)
-        else:
-            print(output)
+        deliver_or_fail(getattr(args, "deliver_to", None), output, account=args.account)
+        emit_skill_status("ok")
+        emit_trace()
         return
 
     # Deliver news (default command or explicit "deliver")
@@ -493,21 +493,16 @@ def main():
 
         summary = summarize_llm(all_items)
 
+    has_items = any(items for items in all_items.values())
+
     # Append job instance ID if running under cron
     job_id = os.environ.get("NULLCLAW_JOB_ID")
     if job_id:
         summary += f"\n\n`{job_id}`"
 
-    if args.deliver_to:
-        ok = telegram.send(args.deliver_to, summary, account=args.account)
-        if ok:
-            print(f"Delivered to Telegram chat {args.deliver_to}")
-        else:
-            print(summary)
-            print(f"\n[ERROR] Telegram delivery to {args.deliver_to} failed", file=sys.stderr)
-            sys.exit(1)
-    else:
-        print(summary)
+    deliver_or_fail(args.deliver_to, summary, account=args.account)
+    emit_skill_status("ok" if has_items else "failed")
+    emit_trace()
 
 
 if __name__ == "__main__":

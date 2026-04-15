@@ -77,3 +77,5 @@ Summarize in Traditional Chinese with this exact format:
 - Delivery: Telegram `7972814626`
 - `## Script` runs as `job_type=skill` in cron (no LLM needed for RSS headlines)
 - `## Prompt` is used when invoked interactively in Claude Code (LLM summarization)
+- Cron verification: use scheduler-owned `skill_contract` with `retry_once`
+- After delivery confirmation, cron runs emit `[skill-status:ok|failed]` and `[trace:<NULLCLAW_JOB_ID>]` on separate stdout lines

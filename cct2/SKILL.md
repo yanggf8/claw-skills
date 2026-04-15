@@ -8,7 +8,7 @@ always: true
 
 Fetches prices and headlines from Yahoo Finance, runs sentiment analysis in parallel with two LLMs (primary + backup), and delivers a report to Telegram. Flags tickers where the two models disagree.
 
-When running under cron, the `NULLCLAW_JOB_ID` is appended to the Telegram message and prefixed on every log line — matching the news skill's traceability format.
+When running under cron, the `NULLCLAW_JOB_ID` is appended to the Telegram message and prefixed on every log line. After a successful delivery the script also emits scheduler verification markers on stdout: `[skill-status:ok]` plus `[trace:<job_id>]` on separate lines. If the script finishes but produces no analyzable results, it emits `[skill-status:failed]` plus the trace marker so cron can retry and alert correctly.
 
 ## Script
 
@@ -56,6 +56,6 @@ If `backup_model` returns 429 (overload), the script automatically retries with 
 ## Cron jobs
 
 ```
-nullclaw cron add-skill "35 13 * * 1-5" cct2 --skill-args "--mode pre-market" --deliver-to 7972814626
-nullclaw cron add-skill "10 21 * * 1-5" cct2 --skill-args "--mode eod" --deliver-to 7972814626
+nullclaw cron add-skill "35 13 * * 1-5" cct2 --verify skill_contract --repair retry_once --skill-args "--mode pre-market" --deliver-to 7972814626
+nullclaw cron add-skill "10 21 * * 1-5" cct2 --verify skill_contract --repair retry_once --skill-args "--mode eod" --deliver-to 7972814626
 ```

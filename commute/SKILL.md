@@ -46,3 +46,5 @@ python3 ~/.nullclaw/skills/commute/scripts/run.py \
 - Telegram bot token loaded from `~/.nullclaw/config.json`
 - Always exits 0 (best-effort delivery)
 - If traffic fails: outputs `[traffic unavailable]`
+- Cron verification: use scheduler-owned `skill_contract` with `retry_once`
+- Emits `[skill-status:ok]` for real route output and `[skill-status:degraded]` for warning/fallback output, then `[trace:<NULLCLAW_JOB_ID>]` on a separate stdout line

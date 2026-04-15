@@ -18,9 +18,11 @@ def log(msg: str) -> None:
     prefix = f"[cct2/{JOB_ID}]" if JOB_ID else "[cct2]"
     print(f"{prefix} {msg}", file=sys.stderr)
 
+
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
-import telegram
+from delivery import deliver_or_fail
+from trace_marker import emit_skill_status, emit_trace
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILL_CONFIG_PATH = os.path.join(SKILL_DIR, "config.json")
@@ -501,12 +503,10 @@ def main() -> None:
     if JOB_ID:
         msg += f"\n\n`{JOB_ID}`"
 
-    if args.deliver_to:
-        ok = telegram.send(args.deliver_to, msg, account=args.account)
-        if not ok:
-            print(msg)
-    else:
-        print(msg)
+    deliver_or_fail(args.deliver_to, msg, account=args.account)
+
+    emit_skill_status("ok" if rows else "failed")
+    emit_trace()
 
 
 if __name__ == "__main__":

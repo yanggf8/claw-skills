@@ -11,7 +11,8 @@ import sys
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
-import telegram
+from delivery import deliver_or_fail
+from trace_marker import emit_skill_status, emit_trace
 
 SKILLS_DIR = os.path.expanduser("~/.nullclaw/skills")
 ERRORS_LOG = os.path.expanduser("~/.nullclaw/skill-errors.log")
@@ -60,13 +61,13 @@ def main():
         traffic_out = "[traffic unavailable]"
 
     output = traffic_out
+    status = "ok" if traffic_out.startswith("🚗 ") else "degraded"
     job_id = os.environ.get("NULLCLAW_JOB_ID")
     if job_id:
         output += f"\n\n`{job_id}`"
-    if args.deliver_to:
-        telegram.send(args.deliver_to, output, account=args.account)
-    else:
-        print(output)
+    deliver_or_fail(args.deliver_to, output, account=args.account)
+    emit_skill_status(status)
+    emit_trace()
 
 
 if __name__ == "__main__":

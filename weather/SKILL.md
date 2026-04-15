@@ -43,3 +43,5 @@ python3 ~/.nullclaw/skills/weather/scripts/run.py --location 香港 --location �
 - Telegram bot token loaded from `~/.nullclaw/config.json`
 - On API error: prints/sends `[WARN: weather unavailable - <reason>]`, exits 0
 - Selects the forecast period closest to current CST/HKT time
+- Cron verification: use scheduler-owned `skill_contract` with `retry_once`
+- After delivery confirmation, cron runs emit `[skill-status:ok|failed]` and `[trace:<NULLCLAW_JOB_ID>]` on separate stdout lines

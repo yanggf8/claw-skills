@@ -9,7 +9,8 @@ from datetime import datetime, timezone, timedelta
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
-import telegram
+from delivery import deliver_or_fail
+from trace_marker import emit_skill_status, emit_trace
 
 
 HISTORY_LOG = os.path.expanduser("~/.nullclaw/doughcon-history.log")
@@ -48,10 +49,15 @@ def main():
     except Exception as e:
         if args.mode == "deliver":
             msg = f"[WARN: doughcon unavailable - {e}]"
-            if args.deliver_to:
-                telegram.send(args.deliver_to, msg, account=args.account)
-            else:
-                print(msg)
+            # Upstream-fetch failure is a degraded but expected state for a
+            # status skill — opt out of exit(1) so cron records a soft warning
+            # rather than a hard failure.
+            deliver_or_fail(
+                args.deliver_to, msg,
+                account=args.account, fail_on_delivery_error=False,
+            )
+            emit_skill_status("degraded")
+            emit_trace()
             sys.exit(0)
         else:
             print(f"[ERROR: doughcon unavailable - {e}]", file=sys.stderr)
@@ -73,10 +79,9 @@ def main():
         job_id = os.environ.get("NULLCLAW_JOB_ID")
         if job_id:
             output += f"\n\n`{job_id}`"
-        if args.deliver_to:
-            telegram.send(args.deliver_to, output, account=args.account)
-        else:
-            print(output)
+        deliver_or_fail(args.deliver_to, output, account=args.account)
+        emit_skill_status("ok" if index != -1 else "degraded")
+        emit_trace()
     else:
         # record mode: append a single line to history log
         try:
@@ -85,6 +90,8 @@ def main():
         except Exception as e:
             print(f"[ERROR: could not write history log - {e}]", file=sys.stderr)
             sys.exit(1)
+        emit_skill_status("ok")
+        emit_trace()
 
 
 if __name__ == "__main__":

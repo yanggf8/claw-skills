@@ -8,7 +8,7 @@ import urllib.request
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
-import telegram
+from delivery import deliver_or_fail
 
 
 def load_env():
@@ -144,10 +144,7 @@ def main():
     if job_id:
         output += f"\n\n`{job_id}`"
 
-    if args.deliver_to:
-        telegram.send(args.deliver_to, output, account=args.account)
-    else:
-        print(output)
+    deliver_or_fail(args.deliver_to, output, account=args.account)
 
 
 if __name__ == "__main__":

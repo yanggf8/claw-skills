@@ -10,7 +10,8 @@ from datetime import datetime, timezone, timedelta
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
-import telegram
+from delivery import deliver_or_fail
+from trace_marker import emit_skill_status, emit_trace
 
 HK_LOCATIONS = {"香港", "hong kong", "hk", "九龍", "新界", "港島"}
 
@@ -204,10 +205,9 @@ def main():
     job_id = os.environ.get("NULLCLAW_JOB_ID")
     if job_id:
         output += f"\n\n`{job_id}`"
-    if args.deliver_to:
-        telegram.send(args.deliver_to, output, account=args.account)
-    else:
-        print(output)
+    deliver_or_fail(args.deliver_to, output, account=args.account)
+    emit_skill_status("ok" if weather_data else "failed")
+    emit_trace()
 
 
 if __name__ == "__main__":
