@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
-import telegram
+from delivery import deliver_or_fail
+from trace_marker import emit_skill_status, emit_trace
 
 CCT_BASE = "https://tft-trading-system.yanggf.workers.dev"
 CONFIG_PATH = os.environ.get("CLAW_CONFIG") or os.path.expanduser("~/.nullclaw/config.json")
@@ -286,12 +287,9 @@ def main() -> None:
     else:
         msg = formatter(data)
 
-    if args.deliver_to:
-        ok = telegram.send(args.deliver_to, msg, account=args.account)
-        if not ok:
-            print(msg, flush=True)
-    else:
-        print(msg, flush=True)
+    deliver_or_fail(args.deliver_to, msg, account=args.account)
+    emit_skill_status("ok" if data is not None else "degraded")
+    emit_trace()
 
 
 if __name__ == "__main__":

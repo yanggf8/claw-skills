@@ -15,9 +15,15 @@ VALID_SKILL_STATUSES = {"ok", "degraded", "failed"}
 
 
 def emit_skill_status(status, stream=sys.stdout):
-    """Print [skill-status:<status>] for skill_contract verification."""
+    """Print [skill-status:<status>] for skill_contract verification.
+
+    No-op when NULLCLAW_JOB_ID is unset, so manual invocations of migrated
+    skills don't pollute stdout with marker lines.
+    """
     if status not in VALID_SKILL_STATUSES:
         raise ValueError(f"invalid skill status: {status}")
+    if not os.environ.get("NULLCLAW_JOB_ID"):
+        return
     print(f"[skill-status:{status}]", file=stream, flush=True)
 
 
