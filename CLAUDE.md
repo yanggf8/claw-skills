@@ -91,4 +91,5 @@ Cron expressions use UTC. Taiwan (CST) = UTC+8, EST = UTC-5.
 | `traffic` | `--from`, `--to`, `--via` | TomTom Routing API |
 | `commute` | wraps traffic | TomTom |
 | `doughcon` | `--mode deliver\|record` | PizzINT API |
+| `oilcon` | `--mode deliver\|record` | Yahoo Finance, Turso |
 | `agent-reach` | agent-only, see SKILL.md | 13+ platforms |
