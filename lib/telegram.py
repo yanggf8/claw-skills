@@ -1,31 +1,37 @@
-"""Shared Telegram delivery helper for nullclaw skills."""
+"""Shared Telegram delivery helper for nullclaw / openclaw skills."""
 import json
 import os
 import urllib.request
 import urllib.error
 
-CONFIG_PATH = os.path.expanduser("~/.nullclaw/config.json")
+DEFAULT_CONFIG_PATH = os.path.expanduser("~/.nullclaw/config.json")
 
 
-def get_bot_token(account: str = "main") -> str | None:
-    """Read Telegram bot token from nullclaw config."""
+def _resolve_config_path(config_path: str | None) -> str:
+    return config_path or os.environ.get("CLAW_CONFIG") or DEFAULT_CONFIG_PATH
+
+
+def get_bot_token(account: str = "main", config_path: str | None = None) -> str | None:
+    """Read Telegram bot token from config. Resolution order:
+       explicit config_path arg → $CLAW_CONFIG → ~/.nullclaw/config.json.
+       Supports both nullclaw multi-account schema and openclaw single-token schema."""
     try:
-        with open(CONFIG_PATH) as f:
+        with open(_resolve_config_path(config_path)) as f:
             cfg = json.load(f)
-        return (
-            cfg.get("channels", {})
-               .get("telegram", {})
-               .get("accounts", {})
-               .get(account, {})
-               .get("bot_token")
-        )
     except Exception:
         return None
+    telegram_cfg = cfg.get("channels", {}).get("telegram", {})
+    nullclaw_token = (
+        telegram_cfg.get("accounts", {}).get(account, {}).get("bot_token")
+    )
+    if nullclaw_token:
+        return nullclaw_token
+    return telegram_cfg.get("botToken")
 
 
-def send(chat_id: str, text: str, account: str = "main") -> bool:
+def send(chat_id: str, text: str, account: str = "main", config_path: str | None = None) -> bool:
     """Send a message to a Telegram chat. Returns True on success."""
-    token = get_bot_token(account)
+    token = get_bot_token(account, config_path)
     if not token:
         return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"

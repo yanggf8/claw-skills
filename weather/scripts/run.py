@@ -16,7 +16,7 @@ HK_LOCATIONS = {"香港", "hong kong", "hk", "九龍", "新界", "港島"}
 
 
 def load_env():
-    env_path = os.path.expanduser("~/.nullclaw/.env")
+    env_path = os.environ.get("CLAW_ENV") or os.path.expanduser("~/.nullclaw/.env")
     if os.path.exists(env_path):
         with open(env_path, encoding="utf-8") as f:
             for line in f:
