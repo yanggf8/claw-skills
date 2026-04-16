@@ -24,6 +24,8 @@ STATUS_DIR = Path.home() / ".nullclaw" / "skills" / "mindfulness-spirit"
 STATUS_PATH = STATUS_DIR / "status.json"
 AGENT_TIMEOUT_SECS = 300
 HEARTBEAT_INTERVAL_SECS = 5
+STDOUT_HEARTBEAT_INTERVAL_SECS = 30
+RUNS_DIR = os.path.join(SKILL_DIR, "runs")
 
 QUERIES = [
     # English Mindfulness + Tech
@@ -55,6 +57,97 @@ def load_config():
     return {}
 
 
+DEFAULT_PERSONA_ROLE = "世界宗教博物館基金會執行室的駐站作家"
+
+PERSONA_SKILL_CANDIDATES = [
+    Path.home() / ".nullclaw" / "skills" / "persona-skill" / "scripts" / "persona_skill.py",
+    Path.home() / ".claude" / "skills" / "persona-skill" / "scripts" / "persona_skill.py",
+]
+PERSONA_SKILL_TIMEOUT = 5
+
+
+def _find_persona_skill_cli():
+    override = os.environ.get("PERSONA_SKILL_PATH")
+    if override:
+        p = Path(override)
+        return p if p.is_file() else None
+    for candidate in PERSONA_SKILL_CANDIDATES:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _fetch_from_persona_skill(slug):
+    cli = _find_persona_skill_cli()
+    if cli is None:
+        print(f"persona-skill not found; falling through (slug={slug})", file=sys.stderr)
+        return None
+    try:
+        result = subprocess.run(
+            [sys.executable, str(cli), "get", slug],
+            capture_output=True,
+            text=True,
+            timeout=PERSONA_SKILL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"persona-skill timeout after {PERSONA_SKILL_TIMEOUT}s (slug={slug})", file=sys.stderr)
+        return None
+    if result.returncode == 2:
+        print(f"persona-skill: unknown slug '{slug}'; falling through", file=sys.stderr)
+        return None
+    if result.returncode != 0:
+        print(
+            f"persona-skill exit {result.returncode} (slug={slug}): {result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        print(f"persona-skill: malformed JSON (slug={slug}): {e}", file=sys.stderr)
+        return None
+
+
+def resolve_persona(mindfulness_config):
+    """Resolve the writer persona for the article.
+
+    Priority order (first match wins):
+      1. env MINDFULNESS_SPIRIT_PERSONA_ROLE (emergency role-only override)
+      2. config `skills.mindfulness_spirit.persona_slug` -> persona-skill get <slug>
+      3. config `skills.mindfulness_spirit.persona` (literal dict, legacy)
+      4. DEFAULT_PERSONA_ROLE fallback
+
+    Always returns {role, name, voice_notes}. The `voice_notes` field is
+    populated from persona-skill's `expression` when that source is used.
+    """
+    env_role = os.environ.get("MINDFULNESS_SPIRIT_PERSONA_ROLE")
+    if env_role:
+        return {"role": env_role, "name": None, "voice_notes": None}
+
+    if not isinstance(mindfulness_config, dict):
+        mindfulness_config = {}
+
+    slug = mindfulness_config.get("persona_slug")
+    if isinstance(slug, str) and slug:
+        fetched = _fetch_from_persona_skill(slug)
+        if fetched:
+            return {
+                "role": fetched.get("role") or DEFAULT_PERSONA_ROLE,
+                "name": fetched.get("name"),
+                "voice_notes": fetched.get("expression"),
+            }
+
+    raw = mindfulness_config.get("persona")
+    if isinstance(raw, dict):
+        return {
+            "role": raw.get("role") or DEFAULT_PERSONA_ROLE,
+            "name": raw.get("name"),
+            "voice_notes": raw.get("voice_notes"),
+        }
+
+    return {"role": DEFAULT_PERSONA_ROLE, "name": None, "voice_notes": None}
+
+
 def load_skill_settings(config):
     skills_config = config.get("skills", {})
     mindfulness_config = skills_config.get("mindfulness_spirit", {})
@@ -68,6 +161,7 @@ def load_skill_settings(config):
     return {
         "publish": mindfulness_config.get("publish", True),
         "main_image_url": main_image_url,
+        "persona": resolve_persona(mindfulness_config),
     }
 
 
@@ -124,6 +218,7 @@ def call_nullclaw_agent(prompt, phase, run_id, provider=None, model=None):
         hard_timeout_secs=AGENT_TIMEOUT_SECS,
         heartbeat_interval_secs=HEARTBEAT_INTERVAL_SECS,
         extra={"prompt_chars": len(prompt)},
+        stdout_interval_secs=STDOUT_HEARTBEAT_INTERVAL_SECS,
     )
 
     if result.timed_out:
@@ -320,7 +415,6 @@ def main():
     parser.add_argument("--deliver-to", help="Telegram chat ID")
     parser.add_argument("--account", help="Telegram account name in config")
     parser.add_argument("--dry-run", action="store_true", help="Don't post to dev.to or Telegram")
-    parser.add_argument("--skip-editor", action="store_true", help="Skip the editor LLM phase")
     args = parser.parse_args()
 
     config = load_config()
@@ -354,7 +448,7 @@ def main():
     prompt_items = "\n".join([f"#{x['id']} [{x['source']}] {x['title']}" for x in items])
 
     # 2. 作家 LLM
-    writer_prompt = f"""你是世界宗教博物館基金會執行室的駐站作家，主題是「身心靈 × AI」。
+    writer_prompt = f"""你是{skill_settings["persona"]["role"]}，主題是「身心靈 × AI」。
 你的讀者是對科技與靈性都感興趣的中文知識工作者。
 
 寫作原則：
@@ -378,12 +472,20 @@ def main():
         notify_failure(tg_token, tg_chat_id, "writer", writer_reason or "unknown failure", args.dry_run)
         return 1
 
-    # 3. 編輯 LLM
+    try:
+        os.makedirs(RUNS_DIR, exist_ok=True)
+        writer_draft_path = os.path.join(RUNS_DIR, f"{run_id}-writer.md")
+        with open(writer_draft_path, "w", encoding="utf-8") as f:
+            f.write(writer_output)
+        print(f"Writer draft saved: {writer_draft_path}")
+    except OSError as e:
+        print(f"Warning: could not save writer draft: {e}", file=sys.stderr)
+
+    # 3. 檢查清單 LLM
     final_output = writer_output
-    editor_degraded = False
-    if not args.skip_editor:
-        editor_prompt = f"""你是一位資深編輯，剛收到作家的初稿。你的工作不是改錯字，
-而是當第二雙眼睛審視這篇文章。請問自己：
+    checklist_degraded = False
+    checklist_prompt = f"""你剛寫完一篇初稿。現在用下面的檢查清單自己審視一次，
+不是改錯字，而是確認每一條是否過關：
 
 1. 標題能不能讓人想點開？太平淡就改。
 2. 開頭三句能不能勾住讀者？不能就重寫。
@@ -398,13 +500,13 @@ def main():
 <<<
 {writer_output}
 >>>"""
-        print("Phase: Editor LLM...")
-        editor_output, editor_reason = call_nullclaw_agent(editor_prompt, phase="editor", run_id=run_id)
-        if editor_output:
-            final_output = editor_output
-        else:
-            print(f"Editor phase failed ({editor_reason}), falling back to writer output.", file=sys.stderr)
-            editor_degraded = True
+    print("Phase: Checklist review...")
+    checklist_output, checklist_reason = call_nullclaw_agent(checklist_prompt, phase="checklist", run_id=run_id)
+    if checklist_output:
+        final_output = checklist_output
+    else:
+        print(f"Checklist phase failed ({checklist_reason}), falling back to writer output.", file=sys.stderr)
+        checklist_degraded = True
 
     # 4. 連結還原
     final_markdown = restore_source_links(final_output, items)
@@ -447,8 +549,8 @@ def main():
     if tg_token and tg_chat_id and not args.dry_run and not devto_error:
         summary = extract_intro_summary(final_markdown)
         header = "📝 今日身心靈專欄已發布" if skill_settings["publish"] else "📝 今日身心靈專欄草稿已生成"
-        if editor_degraded:
-            header += "（⚠️ 編輯階段降級）"
+        if checklist_degraded:
+            header += "（⚠️ 檢查階段降級）"
         tg_text = f"{header}\n\n《{title}》\n{summary}\n\n🔗 {draft_url or '（發布失敗，請見日誌）'}"
         send_telegram(tg_token, tg_chat_id, tg_text)
     elif args.dry_run:

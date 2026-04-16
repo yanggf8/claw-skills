@@ -59,13 +59,16 @@ class HeartbeatWriter:
         phase: str,
         interval_secs: float = 5.0,
         extra: Optional[dict] = None,
+        stdout_interval_secs: Optional[float] = None,
     ):
         self.status_path = Path(status_path)
         self.run_id = run_id
         self.phase = phase
         self.interval_secs = interval_secs
         self.extra = extra or {}
+        self.stdout_interval_secs = stdout_interval_secs
         self._started_at = 0.0
+        self._last_stdout_at = 0.0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -91,11 +94,33 @@ class HeartbeatWriter:
     def _run(self) -> None:
         while not self._stop.is_set():
             self._write()
+            self._maybe_stdout()
             self._stop.wait(self.interval_secs)
+
+    def _maybe_stdout(self) -> None:
+        if not self.stdout_interval_secs:
+            return
+        now = time.time()
+        if now - self._last_stdout_at < self.stdout_interval_secs:
+            return
+        self._last_stdout_at = now
+        elapsed = int(now - self._started_at)
+        print(
+            f"[{self.phase}] still running ({elapsed}s elapsed)",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def start(self) -> None:
         self._started_at = time.time()
+        self._last_stdout_at = self._started_at
         self._write(phase_state="started")
+        if self.stdout_interval_secs:
+            print(
+                f"[{self.phase}] started",
+                file=sys.stderr,
+                flush=True,
+            )
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -104,6 +129,13 @@ class HeartbeatWriter:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self._write(phase_state=final_phase_state, **final_fields)
+        if self.stdout_interval_secs:
+            elapsed = int(time.time() - self._started_at)
+            print(
+                f"[{self.phase}] {final_phase_state} ({elapsed}s)",
+                file=sys.stderr,
+                flush=True,
+            )
 
     def read_status(self) -> dict:
         try:
@@ -120,6 +152,7 @@ def run_with_heartbeat(
     hard_timeout_secs: int,
     heartbeat_interval_secs: float = 5.0,
     extra: Optional[dict] = None,
+    stdout_interval_secs: Optional[float] = None,
 ) -> RunResult:
     """Run a subprocess with a wall-clock heartbeat thread and hard timeout.
 
@@ -135,6 +168,7 @@ def run_with_heartbeat(
         phase=phase,
         interval_secs=heartbeat_interval_secs,
         extra=extra,
+        stdout_interval_secs=stdout_interval_secs,
     )
     hb.start()
     started = time.time()
