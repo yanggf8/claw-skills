@@ -3,4 +3,5 @@ __pycache__/
 *.pyo
 .DS_Store
 mindfulness-spirit/failed/
+mindfulness-spirit/runs/
 mindfulness-spirit/status.json

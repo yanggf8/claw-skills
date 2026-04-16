@@ -6,7 +6,6 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
-import subprocess
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +13,12 @@ from pathlib import Path
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
 from heartbeat import run_with_heartbeat  # noqa: E402
+import persona_history  # noqa: E402
+import persona_registry  # noqa: E402
+
+SKILL_NAME = "mindfulness-spirit"
+STREAM_NAME = "mindfulness"
+HISTORY_LIMIT = 8
 
 # --- Configuration ---
 CONFIG_PATH = os.path.expanduser("~/.nullclaw/config.json")
@@ -59,96 +64,102 @@ def load_config():
 
 DEFAULT_PERSONA_ROLE = "世界宗教博物館基金會執行室的駐站作家"
 
-PERSONA_SKILL_CANDIDATES = [
-    Path.home() / ".nullclaw" / "skills" / "persona-skill" / "scripts" / "persona_skill.py",
-    Path.home() / ".claude" / "skills" / "persona-skill" / "scripts" / "persona_skill.py",
-]
-PERSONA_SKILL_TIMEOUT = 5
-
-
-def _find_persona_skill_cli():
-    override = os.environ.get("PERSONA_SKILL_PATH")
-    if override:
-        p = Path(override)
-        return p if p.is_file() else None
-    for candidate in PERSONA_SKILL_CANDIDATES:
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _fetch_from_persona_skill(slug):
-    cli = _find_persona_skill_cli()
-    if cli is None:
-        print(f"persona-skill not found; falling through (slug={slug})", file=sys.stderr)
-        return None
+def _open_registry_connection():
+    """Return (conn, err). Lenient — returns None on failure."""
     try:
-        result = subprocess.run(
-            [sys.executable, str(cli), "get", slug],
-            capture_output=True,
-            text=True,
-            timeout=PERSONA_SKILL_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        print(f"persona-skill timeout after {PERSONA_SKILL_TIMEOUT}s (slug={slug})", file=sys.stderr)
-        return None
-    if result.returncode == 2:
-        print(f"persona-skill: unknown slug '{slug}'; falling through", file=sys.stderr)
-        return None
-    if result.returncode != 0:
-        print(
-            f"persona-skill exit {result.returncode} (slug={slug}): {result.stderr.strip()}",
-            file=sys.stderr,
-        )
-        return None
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        print(f"persona-skill: malformed JSON (slug={slug}): {e}", file=sys.stderr)
-        return None
+        conn = persona_registry.connect_from_env()
+        persona_registry.ensure_schema(conn)
+        return conn, None
+    except persona_registry.MissingCredentialsError as e:
+        return None, f"credentials: {e}"
+    except Exception as e:  # noqa: BLE001
+        return None, f"connect/schema: {e}"
 
 
-def resolve_persona(mindfulness_config):
+def resolve_persona(mindfulness_config, registry_conn=None):
     """Resolve the writer persona for the article.
 
     Priority order (first match wins):
       1. env MINDFULNESS_SPIRIT_PERSONA_ROLE (emergency role-only override)
-      2. config `skills.mindfulness_spirit.persona_slug` -> persona-skill get <slug>
+      2. config `skills.mindfulness_spirit.persona_slug` → Turso persona_registry
       3. config `skills.mindfulness_spirit.persona` (literal dict, legacy)
       4. DEFAULT_PERSONA_ROLE fallback
-
-    Always returns {role, name, voice_notes}. The `voice_notes` field is
-    populated from persona-skill's `expression` when that source is used.
     """
     env_role = os.environ.get("MINDFULNESS_SPIRIT_PERSONA_ROLE")
     if env_role:
-        return {"role": env_role, "name": None, "voice_notes": None}
+        p = persona_registry.Persona(slug="env-override", role=env_role)
+        return {
+            "slug": p.slug,
+            "role": p.role,
+            "name": None,
+            "voice_notes": None,
+            "persona": p,
+        }
 
     if not isinstance(mindfulness_config, dict):
         mindfulness_config = {}
 
     slug = mindfulness_config.get("persona_slug")
-    if isinstance(slug, str) and slug:
-        fetched = _fetch_from_persona_skill(slug)
-        if fetched:
+    if isinstance(slug, str) and slug and registry_conn is not None:
+        try:
+            p = persona_registry.get(registry_conn, slug)
             return {
-                "role": fetched.get("role") or DEFAULT_PERSONA_ROLE,
-                "name": fetched.get("name"),
-                "voice_notes": fetched.get("expression"),
+                "slug": p.slug,
+                "role": p.role,
+                "name": p.name,
+                "voice_notes": p.expression,
+                "persona": p,
             }
+        except persona_registry.PersonaNotFound:
+            print(f"persona_registry: unknown slug '{slug}'; falling through", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 — lenient: degrade on any registry error
+            print(f"persona_registry query failed ({exc}); falling through", file=sys.stderr)
 
     raw = mindfulness_config.get("persona")
     if isinstance(raw, dict):
         return {
+            "slug": raw.get("slug") or "config-literal",
             "role": raw.get("role") or DEFAULT_PERSONA_ROLE,
             "name": raw.get("name"),
             "voice_notes": raw.get("voice_notes"),
+            "persona": persona_registry.Persona(
+                slug=raw.get("slug") or "config-literal",
+                role=raw.get("role") or DEFAULT_PERSONA_ROLE,
+            ),
         }
 
-    return {"role": DEFAULT_PERSONA_ROLE, "name": None, "voice_notes": None}
+    p = persona_registry.Persona(slug="default", role=DEFAULT_PERSONA_ROLE)
+    return {
+        "slug": p.slug,
+        "role": p.role,
+        "name": None,
+        "voice_notes": None,
+        "persona": p,
+    }
 
 
-def load_skill_settings(config):
+def resolve_devto_key(slug, registry_conn, config):
+    """Try persona_registry secret, then DEV_TO_API_KEY env, then config."""
+    if registry_conn is not None:
+        try:
+            key = persona_registry.get_secret(registry_conn, slug, "devto_api_key")
+        except Exception as exc:  # noqa: BLE001 — lenient: degrade on any registry error
+            print(f"persona_registry secret lookup failed ({exc}); falling through", file=sys.stderr)
+            key = None
+        if key:
+            return key
+    env_key = os.environ.get("DEV_TO_API_KEY")
+    if env_key:
+        if registry_conn is not None:
+            print(
+                "[back-compat] using DEV_TO_API_KEY env; migrate to persona-skill set-secret",
+                file=sys.stderr,
+            )
+        return env_key
+    return config.get("skills", {}).get("dev_to_api_key")
+
+
+def load_skill_settings(config, registry_conn=None):
     skills_config = config.get("skills", {})
     mindfulness_config = skills_config.get("mindfulness_spirit", {})
     if not isinstance(mindfulness_config, dict):
@@ -161,7 +172,7 @@ def load_skill_settings(config):
     return {
         "publish": mindfulness_config.get("publish", True),
         "main_image_url": main_image_url,
-        "persona": resolve_persona(mindfulness_config),
+        "persona": resolve_persona(mindfulness_config, registry_conn),
     }
 
 
@@ -267,10 +278,12 @@ def send_telegram(bot_token, chat_id, text):
 
 
 def post_to_devto(api_key, title, body, dry_run=False, published=True, main_image_url=None):
+    """Return (article_url, devto_id, error). devto_id is None when the API
+    response didn't include an integer id or on failure."""
     if dry_run:
         action = "publish to" if published else "create draft on"
         print(f"[Dry-run] Would {action} dev.to: {title}")
-        return "https://dev.to/draft/example", None
+        return "https://dev.to/draft/example", None, None
 
     url = "https://dev.to/api/articles"
     headers = {
@@ -295,10 +308,12 @@ def post_to_devto(api_key, title, body, dry_run=False, published=True, main_imag
         with urllib.request.urlopen(req, timeout=20) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
             article_url = res_data.get("url")
+            raw_id = res_data.get("id")
+            devto_id = int(raw_id) if isinstance(raw_id, int) else None
             if article_url:
                 status_label = "published" if published else "draft created"
                 print(f"dev.to article {status_label}: {article_url}")
-            return article_url, None
+            return article_url, devto_id, None
     except urllib.error.HTTPError as e:
         body_text = ""
         try:
@@ -309,10 +324,10 @@ def post_to_devto(api_key, title, body, dry_run=False, published=True, main_imag
         if body_text:
             detail = f"{detail}: {body_text[:300]}"
         print(f"Error posting to dev.to: {detail}", file=sys.stderr)
-        return None, detail
+        return None, None, detail
     except Exception as e:
         print(f"Error posting to dev.to: {e}", file=sys.stderr)
-        return None, str(e)
+        return None, None, str(e)
 
 
 def is_placeholder_secret(value):
@@ -410,6 +425,62 @@ def notify_failure(bot_token, chat_id, stage, reason, dry_run=False):
         send_telegram(bot_token, chat_id, message)
 
 
+def open_history_connection():
+    """Return (conn, err) — lenient wrapper for persona_history.
+
+    err is None on success, a string reason otherwise. Caller proceeds with
+    history disabled when err is set.
+    """
+    try:
+        conn = persona_history.connect_from_env()
+        persona_history.ensure_schema(conn)
+        return conn, None
+    except persona_history.MissingCredentialsError as e:
+        return None, f"credentials: {e}"
+    except Exception as e:  # noqa: BLE001
+        return None, f"connect/schema: {e}"
+
+
+def format_history_for_prompt(rows):
+    if not rows:
+        return ""
+    lines = ["=== 最近寫過的文章（避免重複論點與連結） ==="]
+    for r in rows:
+        stance = (r.stance or "").strip()
+        if len(stance) > 120:
+            stance = stance[:117] + "…"
+        lines.append(f"- {r.date} · 《{r.title}》 · {stance}")
+    return "\n".join(lines) + "\n"
+
+
+def extract_urls_from_markdown(md, limit=5):
+    """Collect up to `limit` unique URLs from resolved markdown links."""
+    urls = []
+    seen = set()
+    for m in re.finditer(r'\]\((https?://[^)\s]+)\)', md):
+        url = m.group(1)
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def derive_stance_from_markdown(md, fallback_title):
+    """First blockquote line or first body paragraph line, trimmed.
+
+    mindfulness-spirit doesn't (yet) emit an ainews-meta block. Derive a
+    short stance mechanically so history rows stay useful; upgrade to a
+    prompted stance later (DESIGN §8 option a).
+    """
+    summary = extract_intro_summary(md)
+    if summary and summary != "（無法取得摘要）":
+        return summary
+    return fallback_title
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--deliver-to", help="Telegram chat ID")
@@ -418,8 +489,34 @@ def main():
     args = parser.parse_args()
 
     config = load_config()
-    skill_settings = load_skill_settings(config)
+
+    registry_conn, registry_err = _open_registry_connection()
+    if registry_err:
+        print(
+            f"persona_registry disabled ({registry_err}); using fallback persona",
+            file=sys.stderr,
+        )
+
+    skill_settings = load_skill_settings(config, registry_conn)
     tg_token, tg_chat_id = resolve_telegram_config(config, args)
+
+    persona = skill_settings["persona"]
+    history_conn, history_err = open_history_connection()
+    if history_err:
+        print(
+            f"persona_history disabled ({history_err}); proceeding without memory",
+            file=sys.stderr,
+        )
+    history_rows = []
+    if history_conn is not None:
+        try:
+            history_rows = persona_history.recent(
+                history_conn,
+                persona_slug=persona["slug"],
+                limit=HISTORY_LIMIT,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"persona_history.recent failed: {e}", file=sys.stderr)
 
     run_id = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
@@ -448,7 +545,8 @@ def main():
     prompt_items = "\n".join([f"#{x['id']} [{x['source']}] {x['title']}" for x in items])
 
     # 2. 作家 LLM
-    writer_prompt = f"""你是{skill_settings["persona"]["role"]}，主題是「身心靈 × AI」。
+    history_block = format_history_for_prompt(history_rows)
+    writer_prompt = f"""你是{persona["role"]}，主題是「身心靈 × AI」。
 你的讀者是對科技與靈性都感興趣的中文知識工作者。
 
 寫作原則：
@@ -459,7 +557,7 @@ def main():
 - 2000-3500 字
 - 結構：標題 (H1) → 引言 → ## 今日靈感 → ## 深度觀察 → ## 實踐角落 → ## 延伸閱讀
 
-下面是今天的素材（編號清單）：
+{history_block}下面是今天的素材（編號清單）：
 {prompt_items}
 
 **重要：在文章中引用素材時，必須嚴格使用 [來源 #N] 格式（例如 [來源 #1]），不可直接寫 [1] 或 #1。**
@@ -512,9 +610,7 @@ def main():
     final_markdown = restore_source_links(final_output, items)
 
     # 5. dev.to 發布
-    dev_to_key = os.environ.get("DEV_TO_API_KEY")
-    if not dev_to_key:
-        dev_to_key = config.get("skills", {}).get("dev_to_api_key")
+    dev_to_key = resolve_devto_key(persona["slug"], registry_conn, config)
 
     title = "未命名身心靈文章"
     match = re.search(r'^#\s+(.+)$', final_markdown, re.MULTILINE)
@@ -522,11 +618,12 @@ def main():
         title = match.group(1).strip()
 
     draft_url = None
+    devto_id = None
     devto_error = None
     if is_placeholder_secret(dev_to_key):
         devto_error = "DEV_TO_API_KEY 缺失或仍是 placeholder。"
     else:
-        draft_url, devto_error = post_to_devto(
+        draft_url, devto_id, devto_error = post_to_devto(
             dev_to_key,
             title,
             final_markdown,
@@ -544,6 +641,23 @@ def main():
             f"{devto_error} 已保存 markdown：{fail_path}",
             args.dry_run,
         )
+    elif history_conn is not None and not args.dry_run:
+        try:
+            persona_history.record(
+                history_conn,
+                skill=SKILL_NAME,
+                stream=STREAM_NAME,
+                persona_slug=persona["slug"],
+                date=datetime.now().strftime("%Y-%m-%d"),
+                title=title,
+                stance=derive_stance_from_markdown(final_markdown, title),
+                key_links=extract_urls_from_markdown(final_markdown),
+                writer_hash=persona_registry.persona_hash(persona["persona"]),
+                devto_id=devto_id,
+                devto_url=draft_url,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"persona_history.record failed: {e}", file=sys.stderr)
 
     # 6. Telegram 通知
     if tg_token and tg_chat_id and not args.dry_run and not devto_error:
@@ -555,6 +669,11 @@ def main():
         send_telegram(tg_token, tg_chat_id, tg_text)
     elif args.dry_run:
         print("[Dry-run] Skip Telegram notification.")
+
+    if history_conn is not None:
+        history_conn.close()
+    if registry_conn is not None:
+        registry_conn.close()
 
     return 0
 
