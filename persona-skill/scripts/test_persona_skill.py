@@ -144,7 +144,6 @@ class CLIIntegrationTests(unittest.TestCase):
         env = {**os.environ}
         env.pop("PERSONA_REGISTRY_DB_URL", None)
         env.pop("PERSONA_REGISTRY_DB_TOKEN", None)
-        env.pop("PERSONA_HISTORY_DB_URL", None)
         r = _run("list", env=env)
         self.assertEqual(r.returncode, 1)
 

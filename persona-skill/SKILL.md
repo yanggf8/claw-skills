@@ -78,7 +78,6 @@ python3 scripts/persona_skill.py history --persona ping-w --limit 5 --json
 |----------|----------|---------|
 | `PERSONA_REGISTRY_DB_URL` | yes | libsql URL. Use `:memory:` for tests. |
 | `PERSONA_REGISTRY_DB_TOKEN` | yes (remote) | Turso auth token. Not required when URL is `:memory:`. |
-| `PERSONA_HISTORY_DB_URL` | deprecated | Aliased to `PERSONA_REGISTRY_DB_URL` with a stderr warning. Removed after 2026-04-23. |
 
 ## Data Contract
 

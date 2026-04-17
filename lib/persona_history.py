@@ -15,14 +15,13 @@ library raises `MissingCredentialsError` / `sqlite3.OperationalError` etc.
 and lets the caller decide whether to degrade or fail.
 
 Pivot 2026-04-16: env vars renamed from PERSONA_HISTORY_DB_* to
-PERSONA_REGISTRY_DB_*. Old names still work with a deprecation warning.
+PERSONA_REGISTRY_DB_*. Deprecated aliases removed 2026-04-17.
 file:// fallback removed — Turso-only at runtime, :memory: for tests.
 """
 import hashlib
 import json
 import os
 import sqlite3
-import sys
 from dataclasses import dataclass
 from typing import Optional
 
@@ -36,12 +35,8 @@ SCHEMA_VERSION = 2
 
 DB_URL_ENV = "PERSONA_REGISTRY_DB_URL"
 DB_TOKEN_ENV = "PERSONA_REGISTRY_DB_TOKEN"
-_DEPRECATED_URL_ENV = "PERSONA_HISTORY_DB_URL"
-_DEPRECATED_TOKEN_ENV = "PERSONA_HISTORY_DB_TOKEN"
 
 SQLITE_BUSY_TIMEOUT_SECONDS = 20
-
-_deprecation_warned = False
 
 
 class MissingCredentialsError(RuntimeError):
@@ -113,29 +108,9 @@ def connect(database_url: str, auth_token: Optional[str] = None):
     return libsql.connect(database_url, auth_token=auth_token)
 
 
-def _resolve_env_with_deprecation():
-    """Return (database_url, auth_token) from env, handling deprecated names."""
-    global _deprecation_warned
+def connect_from_env():
     database_url = os.environ.get(DB_URL_ENV)
     auth_token = os.environ.get(DB_TOKEN_ENV)
-
-    if not database_url:
-        old_url = os.environ.get(_DEPRECATED_URL_ENV)
-        if old_url:
-            database_url = old_url
-            auth_token = auth_token or os.environ.get(_DEPRECATED_TOKEN_ENV)
-            if not _deprecation_warned:
-                _deprecation_warned = True
-                print(
-                    f"[deprecation] {_DEPRECATED_URL_ENV} is deprecated, "
-                    f"use {DB_URL_ENV} instead",
-                    file=sys.stderr,
-                )
-    return database_url, auth_token
-
-
-def connect_from_env():
-    database_url, auth_token = _resolve_env_with_deprecation()
 
     if not database_url:
         raise MissingCredentialsError(f"{DB_URL_ENV} must be set")
