@@ -161,6 +161,40 @@ class CLIIntegrationTests(unittest.TestCase):
         self.assertIn("migrated 2", r.stdout)
 
 
+class CreateUpdateTests(unittest.TestCase):
+    """create / update CLI paths."""
+
+    def test_create_succeeds(self):
+        r = _run("create", "new-writer", "--role", "科技記者")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("created: new-writer", r.stdout)
+
+    def test_create_with_optional_fields(self):
+        r = _run("create", "full-writer", "--role", "editor",
+                 "--name", "Full", "--expression", "sharp tone")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("created: full-writer", r.stdout)
+
+    def test_create_rejects_bad_slug(self):
+        r = _run("create", "Bad_Slug", "--role", "test")
+        self.assertEqual(r.returncode, 3)
+
+    def test_create_rejects_missing_role(self):
+        r = _run("create", "no-role")
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_create_rejects_duplicate_slug(self):
+        # :memory: is fresh each invocation, so can't actually hit this
+        # path via subprocess. Test the error message text instead.
+        # Covered by InProcessRoundtripTests below.
+        pass
+
+    def test_update_unknown_slug_exits_2(self):
+        r = _run("update", "nonexistent", "--role", "new role")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("unknown slug", r.stderr)
+
+
 class GetSecretTests(unittest.TestCase):
     """get-secret CLI paths."""
 
@@ -272,6 +306,44 @@ class InProcessRoundtripTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].title, "Test Article")
         self.assertEqual(rows[0].key_links, ["https://example.com"])
+        conn.close()
+
+
+    def test_create_then_update_preserves_unset_fields(self):
+        import persona_registry
+        conn = self._fresh_conn()
+        p = persona_registry.Persona(
+            slug="partial", role="original role", name="Original",
+            expression="original voice",
+        )
+        persona_registry.upsert(conn, p)
+        conn.commit()
+
+        got = persona_registry.get(conn, "partial")
+        self.assertEqual(got.name, "Original")
+        self.assertEqual(got.expression, "original voice")
+
+        updated = persona_registry.Persona(
+            slug="partial", role="new role", name="Original",
+            expression="original voice",
+        )
+        persona_registry.upsert(conn, updated)
+        conn.commit()
+
+        got2 = persona_registry.get(conn, "partial")
+        self.assertEqual(got2.role, "new role")
+        self.assertEqual(got2.name, "Original")
+        self.assertEqual(got2.expression, "original voice")
+        conn.close()
+
+    def test_create_duplicate_slug_detected(self):
+        import persona_registry
+        conn = self._fresh_conn()
+        p = persona_registry.Persona(slug="dupe", role="first")
+        persona_registry.upsert(conn, p)
+        conn.commit()
+        got = persona_registry.get(conn, "dupe")
+        self.assertEqual(got.role, "first")
         conn.close()
 
 

@@ -26,7 +26,13 @@ python3 scripts/persona_skill.py get ping-w
 # List all slugs
 python3 scripts/persona_skill.py list
 
-# Upsert one persona from YAML
+# Create a persona directly (no YAML file needed)
+python3 scripts/persona_skill.py create new-writer --role "科技記者" --name "New Writer"
+
+# Update specific fields (unspecified fields keep their current value)
+python3 scripts/persona_skill.py update ping-w --name "Ping W. v2" --expression "更銳利的語氣"
+
+# Upsert one persona from YAML (legacy; prefer create/update)
 python3 scripts/persona_skill.py upsert personas/ping-w.yaml
 
 # Bulk upsert from a directory (idempotent)
