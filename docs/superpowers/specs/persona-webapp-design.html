@@ -16,46 +16,48 @@
   code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
   pre { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 8px; overflow-x: auto; }
   pre code { background: none; color: inherit; padding: 0; }
-  .status-ok { color: #16a34a; font-weight: bold; }
-  .status-wip { color: #d97706; font-weight: bold; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; }
   .badge-done { background: #dcfce7; color: #16a34a; }
-  .badge-wip { background: #fef3c7; color: #d97706; }
   .badge-todo { background: #f3f4f6; color: #6b7280; }
+  .fix { background: #fef3c7; border-left: 3px solid #f59e0b; padding: 8px 12px; margin: 8px 0; border-radius: 4px; font-size: 0.9em; }
 </style>
 </head>
 <body>
 <h1>Persona 管理平台 — 設計文件</h1>
-<p><strong>日期：</strong> 2026-04-17 &nbsp;|&nbsp; <strong>狀態：</strong> <span class="status-ok">設計完成，待實作</span></p>
+<p><strong>日期：</strong> 2026-04-17 &nbsp;|&nbsp; <strong>狀態：</strong> <strong style="color:#16a34a">設計完成，待實作</strong> &nbsp;|&nbsp; <strong>Reviewed by:</strong> Gemini</p>
 
 <hr>
 
 <h2>已確認需求</h2>
 <table>
   <tr><th>項目</th><th>決定</th></tr>
-  <tr><td>主要使用者</td><td>你 + 作者們（Ping W.、Liko，未來可擴充）</td></tr>
+  <tr><td>主要使用者</td><td>你（admin）+ Ping W.、Liko（author），未來可擴充</td></tr>
   <tr><td>認證方式</td><td>OAuth (Google / GitHub)，Invite-only</td></tr>
-  <tr><td>功能範圍</td><td>Persona 欄位編輯、寫作風格預覽（skill 生成）、Editorial plan 管理、發佈歷史查看</td></tr>
-  <tr><td>後端架構</td><td>SPA + Workers API</td></tr>
+  <tr><td>功能範圍</td><td>Persona 欄位編輯、Writing Preview（skill 生成）、Editorial Plan、Publish History</td></tr>
+  <tr><td>後端架構</td><td>Single Worker（SPA + API 同 origin）</td></tr>
   <tr><td>前端框架</td><td>React + Tailwind</td></tr>
-  <tr><td>部署方式</td><td>Cloudflare Pages + Workers</td></tr>
-  <tr><td>架構方案</td><td><strong>方案 A — Cloudflare Full-Stack</strong>（全在 CF 生態內，Turso 複用）</td></tr>
+  <tr><td>部署方式</td><td>Cloudflare Workers（Assets binding 同時 serve SPA + API）</td></tr>
+  <tr><td>DB</td><td>Turso (libsql)，複用既有</td></tr>
+  <tr><td>LLM</td><td>CF Workers 不呼叫任何 LLM；preview 由 claw / cc skill 生成後寫回</td></tr>
+  <tr><td>遷移策略</td><td>Persona 數量少，drop + recreate schema + seed script</td></tr>
 </table>
 
 <hr>
 
 <h2>Section 1：系統架構 <span class="badge badge-done">✅ 確認</span></h2>
 
+<div class="fix">⚠️ <strong>Gemini fix</strong>：原設計 SPA (pages.dev) + API (workers.dev) 為不同 origin，SameSite=Lax cookie 不會被 fetch() 送出。改為 <strong>Single Worker + Assets binding</strong>，SPA 和 API 同 origin，消除 CORS 與 cookie 問題。</div>
+
 <div class="mermaid">
 graph TB
     subgraph Browser["Browser"]
-        SPA["React SPA\n(Cloudflare Pages)"]
+        SPA["React SPA\n(served by Worker /*)"]
     end
 
-    subgraph CFW["Cloudflare Workers (Hono API)"]
-        AUTH["Auth Middleware\nJWT verify"]
-        ROUTES["Routes\n/personas /plans /history /audit"]
-        CB["OAuth Callback\n/auth/callback"]
+    subgraph CFW["Cloudflare Worker (Hono)"]
+        ASSETS["Assets Binding\nserve SPA static files"]
+        AUTH_MW["Auth Middleware\nJWT verify / Service Token"]
+        ROUTES["API Routes\n/api/* /auth/*"]
     end
 
     subgraph OAuth["OAuth Providers"]
@@ -69,132 +71,47 @@ graph TB
         T_HISTORY["persona_history"]
         T_PLAN["editorial_plan"]
         T_AUDIT["audit_log"]
+        T_INVITE["invite"]
     end
 
     subgraph SKILL["Skill Host (claw / cc)"]
-        SK["Skill run.py\n(preview-pending, publish)"]
+        SK["Skill run.py\npreview-pending / publish"]
         LLM["LLM\n(claw config model)"]
     end
 
-    SPA -- "HTTPS + JWT Bearer" --> AUTH
-    AUTH --> ROUTES
-    ROUTES --> T_USER & T_PERSONA & T_HISTORY & T_PLAN & T_AUDIT
+    SPA -- "same-origin fetch + HttpOnly cookie" --> AUTH_MW
+    AUTH_MW --> ROUTES
+    ROUTES --> T_USER & T_PERSONA & T_HISTORY & T_PLAN & T_AUDIT & T_INVITE
     SPA -- "OAuth redirect" --> GOOGLE & GITHUB
-    GOOGLE & GITHUB -- "code → callback" --> CB
-    CB -- "issue JWT" --> SPA
-    CB --> T_USER
+    GOOGLE & GITHUB -- "code → /auth/callback" --> ROUTES
     SK -- "Service Token\nPUT /api/personas/:slug/preview\nPOST /api/personas/:slug/history" --> ROUTES
     SK --> LLM
+    ASSETS -.-> SPA
 </div>
 
 <h3>權限矩陣</h3>
-<p>橫軸：Data Scope（能看到哪些資料）&nbsp;|&nbsp;縱軸：Operations（能做什麼）</p>
-
 <table>
-  <tr>
-    <th>Entity</th>
-    <th>Operation</th>
-    <th>admin — Data Scope</th>
-    <th>author — Data Scope</th>
-  </tr>
-
-  <tr>
-    <td rowspan="4"><strong>persona</strong></td>
-    <td>Read (list / detail)</td>
-    <td>ALL personas (any user)</td>
-    <td>OWN — personas WHERE user_id = me</td>
-  </tr>
-  <tr>
-    <td>Create</td>
-    <td>Can assign to any user</td>
-    <td>OWN — created under me only</td>
-  </tr>
-  <tr>
-    <td>Update</td>
-    <td>ANY persona</td>
-    <td>OWN — personas WHERE user_id = me</td>
-  </tr>
-  <tr>
-    <td>Delete</td>
-    <td>ANY persona</td>
-    <td>NONE</td>
-  </tr>
-
-  <tr>
-    <td rowspan="4"><strong>editorial_plan</strong></td>
-    <td>Read</td>
-    <td>ALL plans (any persona)</td>
-    <td>OWN — plans WHERE persona.user_id = me</td>
-  </tr>
-  <tr>
-    <td>Create</td>
-    <td>ANY persona</td>
-    <td>OWN — my personas only</td>
-  </tr>
-  <tr>
-    <td>Update</td>
-    <td>ANY plan</td>
-    <td>OWN — plans WHERE persona.user_id = me</td>
-  </tr>
-  <tr>
-    <td>Delete</td>
-    <td>ANY plan</td>
-    <td>NONE</td>
-  </tr>
-
-  <tr>
-    <td rowspan="2"><strong>persona_history</strong></td>
-    <td>Read</td>
-    <td>ALL history (any persona)</td>
-    <td>OWN — history WHERE persona.user_id = me</td>
-  </tr>
-  <tr>
-    <td>Create / Update / Delete</td>
-    <td>ANY</td>
-    <td>NONE</td>
-  </tr>
-
-  <tr>
-    <td rowspan="2"><strong>audit_log</strong></td>
-    <td>Read</td>
-    <td>ALL entries</td>
-    <td>NONE (page hidden)</td>
-  </tr>
-  <tr>
-    <td>Write</td>
-    <td colspan="2">System-only (auto-written by API on every mutating request)</td>
-  </tr>
-
-  <tr>
-    <td rowspan="3"><strong>user</strong></td>
-    <td>Read (list)</td>
-    <td>ALL users</td>
-    <td>NONE (page hidden)</td>
-  </tr>
-  <tr>
-    <td>Read (self)</td>
-    <td>✅</td>
-    <td>✅ (profile only)</td>
-  </tr>
-  <tr>
-    <td>Invite / Deactivate</td>
-    <td>ANY</td>
-    <td>NONE</td>
-  </tr>
-
-  <tr>
-    <td><strong>writing_preview</strong></td>
-    <td>Generate (LLM call)</td>
-    <td>ANY persona</td>
-    <td>OWN — my personas only</td>
-  </tr>
+  <tr><th>Entity</th><th>Operation</th><th>admin — Scope</th><th>author — Scope</th><th>service — Scope</th></tr>
+  <tr><td rowspan="4"><strong>persona</strong></td><td>Read</td><td>ALL</td><td>OWN (user_id=me)</td><td>—</td></tr>
+  <tr><td>Create</td><td>任意 user</td><td>自己名下</td><td>—</td></tr>
+  <tr><td>Update</td><td>ANY</td><td>OWN only</td><td>preview 欄位 only</td></tr>
+  <tr><td>Delete</td><td>ANY</td><td>NONE</td><td>—</td></tr>
+  <tr><td rowspan="4"><strong>editorial_plan</strong></td><td>Read</td><td>ALL</td><td>OWN persona 的</td><td>—</td></tr>
+  <tr><td>Create</td><td>ANY persona</td><td>OWN persona 的</td><td>—</td></tr>
+  <tr><td>Update</td><td>ANY</td><td>OWN only</td><td>—</td></tr>
+  <tr><td>Delete</td><td>ANY</td><td>NONE</td><td>—</td></tr>
+  <tr><td rowspan="2"><strong>persona_history</strong></td><td>Read</td><td>ALL</td><td>OWN persona 的</td><td>—</td></tr>
+  <tr><td>Create</td><td>ANY</td><td>NONE</td><td>OWN persona</td></tr>
+  <tr><td rowspan="2"><strong>audit_log</strong></td><td>Read</td><td>ALL</td><td>NONE</td><td>—</td></tr>
+  <tr><td>Write</td><td colspan="3">System-only（API middleware 自動寫入）</td></tr>
+  <tr><td rowspan="3"><strong>user</strong></td><td>List</td><td>ALL</td><td>NONE</td><td>—</td></tr>
+  <tr><td>Self</td><td>✅</td><td>✅ (profile)</td><td>—</td></tr>
+  <tr><td>Invite / Deactivate</td><td>ANY</td><td>NONE</td><td>—</td></tr>
 </table>
-
-<p><strong>Scope 定義：</strong></p>
 <ul>
-  <li><strong>ALL</strong> — 無過濾，看全部資料</li>
-  <li><strong>OWN</strong> — API 強制加 <code>WHERE persona.user_id = :current_user_id</code>（或 <code>user_id = :me</code>），前端看不到其他人</li>
-  <li><strong>NONE</strong> — API 回 403，頁面入口也不顯示</li>
+  <li><strong>ALL</strong> — 無過濾</li>
+  <li><strong>OWN</strong> — API 強制 <code>WHERE persona.user_id = :me</code>（middleware 層，非 route handler）</li>
+  <li><strong>NONE</strong> — 403，頁面入口也不顯示</li>
 </ul>
 
 <hr>
@@ -209,6 +126,16 @@ erDiagram
         TEXT oauth_provider
         TEXT oauth_sub
         TEXT role
+        INTEGER active
+        TEXT created_at
+    }
+
+    invite {
+        INTEGER id PK
+        TEXT email
+        TEXT role
+        INTEGER invited_by FK
+        TEXT used_at
         TEXT created_at
     }
 
@@ -222,6 +149,9 @@ erDiagram
         TEXT heuristics
         TEXT antipatterns
         TEXT limits
+        TEXT preview_text
+        TEXT preview_updated_at
+        TEXT persona_updated_at
     }
 
     persona_history {
@@ -241,6 +171,8 @@ erDiagram
         TEXT direction
         TEXT key_question
         TEXT status
+        TEXT created_at
+        TEXT updated_at
     }
 
     audit_log {
@@ -255,316 +187,462 @@ erDiagram
 
     user ||--o{ audit_log : "performs"
     user ||--o{ persona : "owns"
+    user ||--o{ invite : "creates"
     persona ||--o{ persona_history : "has"
     persona ||--o{ editorial_plan : "has"
 </div>
 
-<h3>新增表 SQL</h3>
-<pre><code>CREATE TABLE user (
+<h3>完整 Schema SQL</h3>
+<pre><code>PRAGMA foreign_keys = ON;  -- 每次連線都需執行
+
+CREATE TABLE user (
   id             INTEGER PRIMARY KEY,
-  email          TEXT UNIQUE NOT NULL,
-  oauth_provider TEXT,        -- 'google' | 'github'
-  oauth_sub      TEXT,
-  role           TEXT,        -- 'admin' | 'author'
-  persona_slug   TEXT,        -- NULL for admin
-  created_at     TEXT
+  email          TEXT UNIQUE NOT NULL,          -- 存入前 toLowerCase()
+  oauth_provider TEXT NOT NULL,                 -- 'google' | 'github'
+  oauth_sub      TEXT NOT NULL,
+  role           TEXT NOT NULL DEFAULT 'author',-- 'admin' | 'author'
+  active         INTEGER NOT NULL DEFAULT 1,    -- 0 = deactivated
+  created_at     TEXT NOT NULL,
+  UNIQUE (oauth_provider, oauth_sub)
+);
+
+CREATE TABLE invite (
+  id          INTEGER PRIMARY KEY,
+  email       TEXT UNIQUE NOT NULL,             -- 存入前 toLowerCase()
+  role        TEXT NOT NULL DEFAULT 'author',
+  invited_by  INTEGER NOT NULL REFERENCES user(id),
+  used_at     TEXT,                             -- NULL = 未使用
+  created_at  TEXT NOT NULL
+);
+
+CREATE TABLE persona (
+  slug               TEXT PRIMARY KEY,
+  user_id            INTEGER NOT NULL REFERENCES user(id),
+  name               TEXT NOT NULL,
+  role               TEXT,
+  expression         TEXT,
+  mental_models      TEXT,
+  heuristics         TEXT,
+  antipatterns       TEXT,
+  limits             TEXT,
+  preview_text       TEXT,                      -- NULL = 尚未生成
+  preview_updated_at TEXT,
+  persona_updated_at TEXT                       -- 每次 UPDATE persona 時更新
+);
+
+CREATE TABLE persona_history (
+  id           INTEGER PRIMARY KEY,
+  persona_slug TEXT NOT NULL REFERENCES persona(slug),
+  devto_id     TEXT,
+  title        TEXT,
+  published_at TEXT,
+  status       TEXT NOT NULL DEFAULT 'published' -- 'published' | 'draft' | 'scheduled'
+);
+
+CREATE TABLE editorial_plan (
+  id           INTEGER PRIMARY KEY,
+  persona_slug TEXT NOT NULL REFERENCES persona(slug),
+  angle        TEXT,
+  lens         TEXT,
+  direction    TEXT,
+  key_question TEXT,
+  status       TEXT NOT NULL DEFAULT 'draft',   -- 'draft' | 'active' | 'done'
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
 );
 
 CREATE TABLE audit_log (
   id         INTEGER PRIMARY KEY,
-  user_id    INTEGER NOT NULL,
-  action     TEXT NOT NULL,   -- 'create' | 'update' | 'delete'
-  entity     TEXT NOT NULL,   -- 'persona' | 'editorial_plan'
+  user_id    INTEGER,                           -- NULL for service token calls
+  action     TEXT NOT NULL,                     -- 'create' | 'update' | 'delete'
+  entity     TEXT NOT NULL,
   entity_id  TEXT NOT NULL,
-  diff_json  TEXT,            -- JSON patch (before/after)
+  caller     TEXT,                              -- 'user' | 'service/skill-name' (unverified for service)
+  diff_json  TEXT,
   created_at TEXT NOT NULL
-);</code></pre>
+);
+
+-- Indexes
+CREATE INDEX idx_persona_user_id       ON persona(user_id);
+CREATE INDEX idx_history_persona_slug  ON persona_history(persona_slug);
+CREATE INDEX idx_plan_persona_slug     ON editorial_plan(persona_slug);
+CREATE INDEX idx_audit_user_id         ON audit_log(user_id);
+CREATE INDEX idx_invite_email          ON invite(email);</code></pre>
+
+<h3>遷移策略</h3>
+<p>Persona 數量少，採 <strong>drop + recreate + seed</strong>，不做 ALTER TABLE migration：</p>
+<pre><code># seed.py
+# 1. 備份現有 persona 資料到 JSON
+# 2. DROP 所有舊表
+# 3. 執行上面的 CREATE TABLE SQL
+# 4. INSERT admin user
+# 5. INSERT personas（全部歸 admin，user_id = 1）
+# 6. INSERT persona_history、editorial_plan</code></pre>
 
 <h3>關鍵修復（順帶實作）</h3>
-<p>檔案：<code>mindfulness-spirit/scripts/run.py:712</code></p>
-<p>問題：<code>expression</code>、<code>mental_models</code>、<code>heuristics</code> 被 resolve 但<strong>未注入</strong> writer_prompt，
-網站編輯了文章風格也不會反映在生成結果。實作 webapp 時一併修復。</p>
+<p>檔案：<code>mindfulness-spirit/scripts/run.py:712</code> — <code>expression</code>、<code>mental_models</code>、<code>heuristics</code> 未注入 writer_prompt，webapp 實作時一併修。</p>
 
 <hr>
 
 <h2>Section 3：API 端點設計 <span class="badge badge-done">✅ 確認</span></h2>
 
-<h3>Base URL</h3>
-<pre><code>https://api.persona.yourdomain.workers.dev</code></pre>
+<h3>部署 URL（Single Worker）</h3>
+<pre><code>https://persona.yourdomain.com        # SPA (Worker Assets)
+https://persona.yourdomain.com/api/*  # API (same origin)
+https://persona.yourdomain.com/auth/* # OAuth</code></pre>
 
 <h3>Auth Middleware</h3>
-<p>所有 <code>/api/*</code> 路由都經過 JWT verify middleware。JWT payload：</p>
-<pre><code>{
-  "sub": "user_id",
-  "email": "...",
-  "role": "admin" | "author",
-  "iat": ...,
-  "exp": ...   // 7 days
-}</code></pre>
+<pre><code>// 兩條 auth path，互斥
+app.use('/api/*', async (c, next) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+    ?? getCookie(c, 'session')
 
-<h3>端點總表</h3>
-<table>
-  <tr><th>Method</th><th>Path</th><th>描述</th><th>Admin scope</th><th>Author scope</th></tr>
-
-  <tr><td colspan="5" style="background:#f3f4f6;font-weight:bold">Auth</td></tr>
-  <tr><td>GET</td><td>/auth/login/google</td><td>Redirect to Google OAuth</td><td colspan="2">Public</td></tr>
-  <tr><td>GET</td><td>/auth/login/github</td><td>Redirect to GitHub OAuth</td><td colspan="2">Public</td></tr>
-  <tr><td>GET</td><td>/auth/callback</td><td>OAuth callback → issue JWT</td><td colspan="2">Public</td></tr>
-  <tr><td>POST</td><td>/auth/logout</td><td>Client-side JWT 清除</td><td colspan="2">Any authed</td></tr>
-
-  <tr><td colspan="5" style="background:#f3f4f6;font-weight:bold">Personas</td></tr>
-  <tr><td>GET</td><td>/api/personas</td><td>列出 persona</td><td>ALL</td><td>OWN (user_id=me)</td></tr>
-  <tr><td>POST</td><td>/api/personas</td><td>新增 persona</td><td>body 可指定 user_id</td><td>user_id 強制 = me</td></tr>
-  <tr><td>GET</td><td>/api/personas/:slug</td><td>取單筆</td><td>ANY</td><td>OWN only → else 403</td></tr>
-  <tr><td>PUT</td><td>/api/personas/:slug</td><td>更新欄位</td><td>ANY</td><td>OWN only → else 403</td></tr>
-  <tr><td>DELETE</td><td>/api/personas/:slug</td><td>刪除</td><td>ANY</td><td>403</td></tr>
-
-  <tr><td colspan="5" style="background:#f3f4f6;font-weight:bold">Editorial Plans</td></tr>
-  <tr><td>GET</td><td>/api/personas/:slug/plans</td><td>列出該 persona 的 plans</td><td>ANY slug</td><td>OWN slug only</td></tr>
-  <tr><td>POST</td><td>/api/personas/:slug/plans</td><td>新增 plan</td><td>ANY slug</td><td>OWN slug only</td></tr>
-  <tr><td>PUT</td><td>/api/personas/:slug/plans/:id</td><td>更新 plan</td><td>ANY</td><td>OWN only</td></tr>
-  <tr><td>DELETE</td><td>/api/personas/:slug/plans/:id</td><td>刪除 plan</td><td>ANY</td><td>403</td></tr>
-
-  <tr><td colspan="5" style="background:#f3f4f6;font-weight:bold">Publish History</td></tr>
-  <tr><td>GET</td><td>/api/personas/:slug/history</td><td>發佈記錄</td><td>ANY slug</td><td>OWN slug only</td></tr>
-
-  <tr><td colspan="5" style="background:#f3f4f6;font-weight:bold">Writing Preview</td></tr>
-  <tr><td>POST</td><td>/api/personas/:slug/preview</td><td>LLM 生成範例段落</td><td>ANY slug</td><td>OWN slug only</td></tr>
-
-  <tr><td colspan="5" style="background:#f3f4f6;font-weight:bold">Users（Admin only）</td></tr>
-  <tr><td>GET</td><td>/api/users</td><td>列出所有 user</td><td>✅</td><td>403</td></tr>
-  <tr><td>POST</td><td>/api/users/invite</td><td>邀請新 author</td><td>✅</td><td>403</td></tr>
-  <tr><td>PUT</td><td>/api/users/:id</td><td>修改 role / 停用</td><td>✅</td><td>403</td></tr>
-
-  <tr><td colspan="5" style="background:#f3f4f6;font-weight:bold">Audit Log（Admin only）</td></tr>
-  <tr><td>GET</td><td>/api/audit</td><td>查看操作記錄</td><td>ALL entries</td><td>403</td></tr>
-</table>
-
-<h3>Skill-facing 端點（Service Token）</h3>
-<p>Skill CLI 不直接寫 Turso，改呼叫 CF Workers API，audit_log 由 Workers middleware 自動記錄。</p>
-<table>
-  <tr><th>Method</th><th>Path</th><th>Caller</th><th>說明</th></tr>
-  <tr><td>PUT</td><td>/api/personas/:slug/preview</td><td>Skill</td><td>寫回 preview_text + preview_updated_at</td></tr>
-  <tr><td>POST</td><td>/api/personas/:slug/history</td><td>Skill</td><td>寫入新發佈記錄</td></tr>
-</table>
-
-<h3>Service Token Auth</h3>
-<pre><code># claw .env
-PERSONA_API_URL=https://api.persona.yourdomain.workers.dev
-PERSONA_SERVICE_TOKEN=&lt;secret&gt;
-
-# Skill HTTP header
-Authorization: Bearer &lt;PERSONA_SERVICE_TOKEN&gt;
-X-Service-Caller: skill/&lt;skill-name&gt;</code></pre>
-
-<pre><code>// Workers middleware
-const token = c.req.header('Authorization')?.replace('Bearer ', '')
-if (token === env.SERVICE_TOKEN) {
-  c.set('user', { role: 'service', sub: null, caller: c.req.header('X-Service-Caller') })
-  await next()
-  return
-}
-// 否則走 JWT verify path</code></pre>
-
-<p><code>role: 'service'</code> 只允許存取上面兩個 write-back 端點，其餘回 403。</p>
-
-<h3>Scope 執行位置</h3>
-<pre><code>// Hono middleware 範例
-app.use('/api/personas/:slug/*', async (c, next) => {
-  const user = c.get('user')          // JWT payload
-  const slug = c.req.param('slug')
-  if (user.role !== 'admin') {
-    const persona = await db.get('SELECT user_id FROM persona WHERE slug=?', slug)
-    if (!persona || persona.user_id !== user.sub) return c.json({ error: 'Forbidden' }, 403)
+  // Path 1: Service Token（限定 2 個 write-back 端點）
+  if (token && c.env.SERVICE_TOKEN) {
+    const encoder = new TextEncoder()
+    const a = encoder.encode(token)
+    const b = encoder.encode(c.env.SERVICE_TOKEN)
+    if (a.length === b.length &&
+        crypto.subtle.timingSafeEqual(a, b)) {         // timing-safe
+      const path = new URL(c.req.url).pathname
+      const allowed = [/^\/api\/personas\/[^/]+\/preview$/, /^\/api\/personas\/[^/]+\/history$/]
+      if (!allowed.some(r => r.test(path))) return c.json({ error: 'forbidden' }, 403)
+      c.set('user', { role: 'service', sub: null,
+                      caller: c.req.header('X-Service-Caller') ?? 'unknown' })
+      await next(); return
+    }
   }
+
+  // Path 2: JWT（human users）
+  const payload = await verifyJWT(token, c.env.JWT_SECRET)
+  if (!payload) return c.json({ error: 'unauthorized' }, 401)
+  if (!payload.active) return c.json({ error: 'account_deactivated' }, 403)
+  c.set('user', payload)
   await next()
 })</code></pre>
 
-<h3>audit_log 自動寫入</h3>
-<p>所有 POST / PUT / DELETE 成功後，middleware 自動插入一筆 audit_log，不需要 route handler 手動呼叫。</p>
+<h3>端點總表</h3>
+<table>
+  <tr><th>Method</th><th>Path</th><th>描述</th><th>Auth</th></tr>
+
+  <tr><td colspan="4" style="background:#f3f4f6;font-weight:bold">Auth</td></tr>
+  <tr><td>GET</td><td>/auth/login/google</td><td>Redirect to Google OAuth</td><td>Public</td></tr>
+  <tr><td>GET</td><td>/auth/login/github</td><td>Redirect to GitHub OAuth</td><td>Public</td></tr>
+  <tr><td>GET</td><td>/auth/callback</td><td>OAuth callback → issue JWT cookie</td><td>Public</td></tr>
+  <tr><td>POST</td><td>/auth/logout</td><td>Server clears HttpOnly cookie (Set-Cookie Max-Age=0)</td><td>Any authed</td></tr>
+
+  <tr><td colspan="4" style="background:#f3f4f6;font-weight:bold">Personas（Human）</td></tr>
+  <tr><td>GET</td><td>/api/personas</td><td>列出 personas</td><td>admin=ALL, author=OWN</td></tr>
+  <tr><td>POST</td><td>/api/personas</td><td>新增 persona</td><td>admin 可指定 user_id；author 強制自己</td></tr>
+  <tr><td>GET</td><td>/api/personas/:slug</td><td>取單筆（含 preview_text）</td><td>admin=ANY, author=OWN</td></tr>
+  <tr><td>PUT</td><td>/api/personas/:slug</td><td>更新欄位（同時更新 persona_updated_at）</td><td>admin=ANY, author=OWN</td></tr>
+  <tr><td>DELETE</td><td>/api/personas/:slug</td><td>刪除</td><td>admin only</td></tr>
+  <tr><td>POST</td><td>/api/personas/:slug/preview</td><td>重置 preview_text=NULL（觸發下次 skill 重新生成）</td><td>admin=ANY, author=OWN</td></tr>
+
+  <tr><td colspan="4" style="background:#f3f4f6;font-weight:bold">Personas（Skill write-back，Service Token）</td></tr>
+  <tr><td>PUT</td><td>/api/personas/:slug/preview</td><td>Skill 寫回 preview_text + preview_updated_at</td><td>Service Token only</td></tr>
+  <tr><td>POST</td><td>/api/personas/:slug/history</td><td>Skill 寫回發佈記錄</td><td>Service Token only</td></tr>
+
+  <tr><td colspan="4" style="background:#f3f4f6;font-weight:bold">Editorial Plans</td></tr>
+  <tr><td>GET</td><td>/api/personas/:slug/plans</td><td>列出 plans</td><td>admin=ANY, author=OWN</td></tr>
+  <tr><td>POST</td><td>/api/personas/:slug/plans</td><td>新增 plan</td><td>admin=ANY, author=OWN</td></tr>
+  <tr><td>PUT</td><td>/api/personas/:slug/plans/:id</td><td>更新 plan</td><td>admin=ANY, author=OWN</td></tr>
+  <tr><td>DELETE</td><td>/api/personas/:slug/plans/:id</td><td>刪除 plan</td><td>admin only</td></tr>
+
+  <tr><td colspan="4" style="background:#f3f4f6;font-weight:bold">Publish History</td></tr>
+  <tr><td>GET</td><td>/api/personas/:slug/history</td><td>發佈記錄（支援 ?limit=&offset=）</td><td>admin=ANY, author=OWN</td></tr>
+
+  <tr><td colspan="4" style="background:#f3f4f6;font-weight:bold">Users（Admin only）</td></tr>
+  <tr><td>GET</td><td>/api/users</td><td>列出所有 user</td><td>admin only</td></tr>
+  <tr><td>POST</td><td>/api/users/invite</td><td>邀請新 author（email toLowerCase 後存入）</td><td>admin only</td></tr>
+  <tr><td>PUT</td><td>/api/users/:id</td><td>修改 role / 設 active=0 停用</td><td>admin only</td></tr>
+
+  <tr><td colspan="4" style="background:#f3f4f6;font-weight:bold">Audit Log（Admin only）</td></tr>
+  <tr><td>GET</td><td>/api/audit</td><td>查看操作記錄（支援 ?limit=&offset=）</td><td>admin only</td></tr>
+</table>
+
+<h3>Scope Middleware（persona slug 層）</h3>
+<pre><code>app.use('/api/personas/:slug/*', async (c, next) => {
+  const user = c.get('user')
+  if (user.role === 'admin' || user.role === 'service') { await next(); return }
+  const slug = c.req.param('slug')
+  const persona = await db.get('SELECT user_id FROM persona WHERE slug=?', slug)
+  if (!persona || persona.user_id !== user.sub) return c.json({ error: 'forbidden' }, 403)
+  await next()
+})</code></pre>
+
+<h3>錯誤規範</h3>
+<table>
+  <tr><th>HTTP</th><th>情境</th></tr>
+  <tr><td>400</td><td>Request schema 不合</td></tr>
+  <tr><td>401</td><td>JWT 缺失或過期</td></tr>
+  <tr><td>403</td><td>Scope 不符 / 帳號停用 / service token 存取非允許端點</td></tr>
+  <tr><td>404</td><td>slug / id 不存在</td></tr>
+  <tr><td>409</td><td>slug 重複</td></tr>
+  <tr><td>500</td><td>DB 錯誤（不洩漏細節）</td></tr>
+</table>
+
+<hr>
 
 <h2>Section 4：OAuth 流程 <span class="badge badge-done">✅ 確認</span></h2>
 
 <div class="mermaid">
 sequenceDiagram
-    participant B as Browser (SPA)
-    participant W as CF Workers
+    participant B as Browser
+    participant W as CF Worker
     participant O as OAuth Provider
     participant DB as Turso
 
     B->>W: GET /auth/login/google
-    W-->>B: 302 Redirect → Google consent URL
+    W-->>B: 302 → Google consent URL
 
-    B->>O: User logs in + consents
-    O-->>B: 302 Redirect → /auth/callback?code=xxx
+    B->>O: User logs in
+    O-->>B: 302 → /auth/callback?code=xxx
 
     B->>W: GET /auth/callback?code=xxx
-    W->>O: POST /token (exchange code → access_token)
-    O-->>W: { access_token, id_token }
-    W->>O: GET /userinfo (email, sub)
+    W->>O: POST /token (exchange code)
+    O-->>W: access_token + id_token
+    W->>O: GET /userinfo
     O-->>W: { email, sub }
 
-    W->>DB: SELECT * FROM user WHERE oauth_sub=sub
-    alt User exists
+    W->>W: email = email.toLowerCase()
+
+    W->>DB: SELECT * FROM user WHERE oauth_provider=? AND oauth_sub=?
+    alt Existing user
         DB-->>W: user row
+        W->>W: check active=1
     else First login
-        W->>DB: INSERT INTO user (email, oauth_sub, oauth_provider, role='author')
-        DB-->>W: new user row
+        W->>DB: SELECT * FROM invite WHERE email=? AND used_at IS NULL
+        alt Not invited
+            W-->>B: 403 Not invited
+        else Invited
+            W->>DB: INSERT INTO user ...
+            W->>DB: UPDATE invite SET used_at=now()
+        end
     end
 
-    W-->>B: Set-Cookie: session=JWT (HttpOnly, Secure, SameSite=Lax)<br/>302 Redirect → /
-
-    B->>W: API requests with Cookie
-    W->>W: Verify JWT → inject user into context
+    W-->>B: Set-Cookie: session=JWT; HttpOnly; Secure; SameSite=Lax; Path=/
+    W-->>B: 302 → /
 </div>
 
-<h3>JWT 設計</h3>
-<pre><code>// Header
-{ "alg": "HS256", "typ": "JWT" }
-
-// Payload
-{
-  "sub": 42,                    // user.id
-  "email": "ping@example.com",
-  "role": "author",
-  "iat": 1713340800,
-  "exp": 1713945600             // 7 days
-}
-
-// Secret: CF Workers Secret (設定於 wrangler secret put JWT_SECRET)</code></pre>
+<h3>JWT Payload</h3>
+<pre><code>{
+  "sub": 42,              // user.id
+  "email": "...",
+  "role": "admin",
+  "active": 1,
+  "iat": ...,
+  "exp": ...              // 7 days
+}</code></pre>
 
 <h3>Session 策略</h3>
 <table>
-  <tr><th>項目</th><th>決定</th><th>原因</th></tr>
-  <tr><td>儲存方式</td><td>HttpOnly Cookie（非 localStorage）</td><td>防 XSS 竊取 token</td></tr>
-  <tr><td>到期</td><td>7 天</td><td>夠長不煩人，短到可控</td></tr>
-  <tr><td>Refresh</td><td>無 refresh token，到期重新登入</td><td>MVP 夠用，避免複雜度</td></tr>
-  <tr><td>Revocation</td><td>無 server-side blacklist</td><td>Workers 無狀態；停用 user 改 DB role，下次 JWT 到期自然失效</td></tr>
-  <tr><td>Role 變更</td><td>改 DB 後需重新登入才生效</td><td>JWT 內含 role，到期前不會更新</td></tr>
+  <tr><th>項目</th><th>決定</th></tr>
+  <tr><td>儲存</td><td>HttpOnly Cookie（SameSite=Lax 在 same-origin Single Worker 架構下正常運作）</td></tr>
+  <tr><td>到期</td><td>7 天，無 refresh token</td></tr>
+  <tr><td>停用生效</td><td>JWT payload 含 active 欄位；停用後現有 token 最多 7 天才失效（acceptable for small team）</td></tr>
+  <tr><td>Logout</td><td>POST /auth/logout → 伺服器端 Set-Cookie: session=; Max-Age=0（HttpOnly cookie 無法由 JS 清除）</td></tr>
+  <tr><td>JWT signing</td><td>HS256 + JWT_SECRET（CF Workers Secret）；可升級 RS256，MVP 暫不需要</td></tr>
 </table>
 
-<h3>First-login 邀請控制</h3>
-<p>第一次登入自動建 user 有風險（任何人 OAuth 都能進來）。做法：</p>
-<pre><code>// /auth/callback 內
-if (!existingUser) {
-  const invited = await db.get(
-    'SELECT 1 FROM invite WHERE email=? AND used_at IS NULL', email
-  )
-  if (!invited) return c.text('Not invited', 403)
-  // 建 user + mark invite used
-}</code></pre>
-<p>Admin 先在 <code>/api/users/invite</code> 登記 email，對方 OAuth 才能進來。</p>
-
-<h3>新增表</h3>
-<pre><code>CREATE TABLE invite (
-  id         INTEGER PRIMARY KEY,
-  email      TEXT UNIQUE NOT NULL,
-  role       TEXT NOT NULL DEFAULT 'author',
-  invited_by INTEGER NOT NULL,   -- admin user_id
-  used_at    TEXT,               -- NULL = 未使用
-  created_at TEXT NOT NULL
-);</code></pre>
+<hr>
 
 <h2>Section 5：寫作風格預覽機制 <span class="badge badge-done">✅ 確認</span></h2>
 
 <h3>核心原則</h3>
 <ul>
-  <li>CF Workers <strong>不呼叫任何 LLM</strong>，純讀 Turso</li>
-  <li>Preview 由 <strong>skill（claw / Claude Code）生成</strong>，model 與正式發佈一致</li>
-  <li>Webapp 只是讀取並顯示 skill 寫回的結果</li>
+  <li>CF Workers <strong>不呼叫任何 LLM</strong></li>
+  <li>Preview 由 skill（claw / cc）生成，model 與正式發佈一致</li>
+  <li>Webapp 只讀取 skill 寫回的結果</li>
+  <li>Persona 欄位更新後顯示「預覽可能已過時」提示（staleness check）</li>
 </ul>
 
 <h3>流程</h3>
 <div class="mermaid">
 sequenceDiagram
     participant A as Author (Browser)
-    participant W as CF Workers
+    participant W as CF Worker
     participant DB as Turso
     participant SK as Skill (claw / cc)
-    participant LLM as LLM (claw config model)
+    participant LLM as LLM (claw model)
 
-    A->>W: POST /api/personas (create/update persona)
-    W->>DB: INSERT / UPDATE persona<br/>preview_text = NULL
+    A->>W: PUT /api/personas/:slug (edit fields)
+    W->>DB: UPDATE persona SET ..., persona_updated_at = now()
 
-    A->>W: GET /api/personas/:slug/preview
-    W->>DB: SELECT preview_text
-    DB-->>W: NULL
-    W-->>A: { preview_text: null,<br/>  hint: "尚無預覽，請在 skill 跑過後再查看" }
+    A->>W: GET /api/personas/:slug
+    W->>DB: SELECT slug, preview_text, preview_updated_at, persona_updated_at
+    DB-->>W: row
 
-    Note over SK,LLM: 另一側：agent / cron 跑 skill
-    SK->>DB: SELECT personas WHERE preview_text IS NULL
-    SK->>LLM: generate preview (claw model)
-    LLM-->>SK: preview text
-    SK->>DB: UPDATE persona SET preview_text = ...
+    alt preview_text IS NULL
+        W-->>A: { preview_text: null, hint: "尚無預覽，請執行 skill --mode preview-pending" }
+    else persona_updated_at > preview_updated_at
+        W-->>A: { preview_text: "...", stale: true, hint: "Persona 已更新，預覽可能過時" }
+    else
+        W-->>A: { preview_text: "...", stale: false }
+    end
 
-    A->>W: GET /api/personas/:slug/preview (再次查看)
-    W->>DB: SELECT preview_text
-    DB-->>W: "..."
-    W-->>A: { preview_text: "生成的段落..." }
+    Note over A,W: 使用者點「重新整理預覽」
+    A->>W: POST /api/personas/:slug/preview
+    W->>DB: UPDATE persona SET preview_text = NULL
+    W-->>A: { queued: true }
+
+    Note over SK,LLM: Skill 跑 --mode preview-pending
+    SK->>DB: SELECT * FROM persona WHERE preview_text IS NULL
+    SK->>LLM: generate(build_prompt(persona))
+    LLM-->>SK: text
+    SK->>W: PUT /api/personas/:slug/preview + Service Token
+    W->>DB: UPDATE persona SET preview_text=?, preview_updated_at=now()
 </div>
 
-<h3>Schema 異動</h3>
-<pre><code>ALTER TABLE persona ADD COLUMN preview_text TEXT;       -- NULL = 尚未生成
-ALTER TABLE persona ADD COLUMN preview_updated_at TEXT; -- 最後生成時間</code></pre>
+<h3>Prompt 組法（Skill 端）</h3>
+<pre><code>def build_prompt(persona):
+    return f"""你是 {persona['name']}。
 
-<h3>Skill 端新增邏輯（persona-skill 或獨立 skill）</h3>
-<pre><code># scripts/run.py --mode preview-pending
-# 掃 preview_text IS NULL 的 persona，逐一生成後寫回
+## 表達風格
+{persona['expression']}
 
-personas = db.execute("SELECT * FROM persona WHERE preview_text IS NULL")
-for p in personas:
-    text = llm_generate(build_prompt(p))   # 用 claw 的 model
-    db.execute(
-        "UPDATE persona SET preview_text=?, preview_updated_at=? WHERE slug=?",
-        text, now(), p.slug
-    )</code></pre>
+## 心智模型
+{persona['mental_models']}
 
-<h3>Webapp 顯示狀態</h3>
+## 啟發法
+{persona['heuristics']}
+
+## 反模式（避免）
+{persona['antipatterns']}
+
+## 限制
+{persona['limits']}
+
+---
+請用你的風格，寫一段文章開頭範例，約 150 字。"""</code></pre>
+
+<h3>Webapp Preview 狀態</h3>
 <table>
-  <tr><th>preview_text</th><th>UI 顯示</th></tr>
-  <tr><td>NULL</td><td>灰色提示框：「尚無預覽內容，請在 skill 執行 <code>--mode preview-pending</code> 後刷新」</td></tr>
-  <tr><td>有值</td><td>顯示生成段落 + <code>preview_updated_at</code> 時間戳</td></tr>
+  <tr><th>狀態</th><th>UI 顯示</th></tr>
+  <tr><td>preview_text = NULL</td><td>灰色提示：「尚無預覽，執行 skill --mode preview-pending 後刷新」</td></tr>
+  <tr><td>stale = true</td><td>顯示文字 + 黃色標籤「Persona 已更新，預覽可能過時」</td></tr>
+  <tr><td>stale = false</td><td>顯示文字 + preview_updated_at 時間戳</td></tr>
 </table>
 
-<p>修復 <code>mindfulness-spirit/scripts/run.py:712</code> 的欄位注入問題也在 skill 端一併修，與 webapp 無關。</p>
+<h3>Skill 端（preview-pending mode）</h3>
+<pre><code># scripts/run.py --mode preview-pending
+personas = db.execute("SELECT * FROM persona WHERE preview_text IS NULL")
+for p in personas:
+    try:
+        text = llm_generate(build_prompt(p))
+        resp = requests.put(
+            f"{PERSONA_API_URL}/api/personas/{p['slug']}/preview",
+            headers={"Authorization": f"Bearer {PERSONA_SERVICE_TOKEN}",
+                     "X-Service-Caller": "skill/persona-skill"},
+            json={"preview_text": text}
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"[WARN] preview failed for {p['slug']}: {e}")</code></pre>
+
+<hr>
 
 <h2>Section 6：錯誤處理與測試策略 <span class="badge badge-done">✅ 確認</span></h2>
 
-<h3>API 錯誤規範</h3>
-<table>
-  <tr><th>HTTP</th><th>情境</th><th>Response body</th></tr>
-  <tr><td>400</td><td>Request schema 不合（缺欄位、型別錯）</td><td><code>{ "error": "validation", "fields": ["slug"] }</code></td></tr>
-  <tr><td>401</td><td>JWT 缺失或過期</td><td><code>{ "error": "unauthorized" }</code></td></tr>
-  <tr><td>403</td><td>Scope 不符（author 存取他人資料）</td><td><code>{ "error": "forbidden" }</code></td></tr>
-  <tr><td>404</td><td>slug / id 不存在</td><td><code>{ "error": "not_found" }</code></td></tr>
-  <tr><td>409</td><td>slug 重複（create persona）</td><td><code>{ "error": "conflict", "field": "slug" }</code></td></tr>
-  <tr><td>500</td><td>DB 連線失敗或未預期錯誤</td><td><code>{ "error": "internal" }</code>（不洩漏細節）</td></tr>
-</table>
-
 <h3>Skill 端錯誤策略</h3>
 <ul>
-  <li>延續現有慣例：<strong>exit 0</strong>，失敗印 <code>[WARN: ...]</code> 不 raise</li>
-  <li>LLM 生成失敗 → <code>preview_text</code> 維持 NULL，下次 cron 重試</li>
-  <li>DB 寫入失敗 → log + skip，不中斷整批</li>
+  <li>exit 0，失敗印 <code>[WARN: ...]</code>，不 raise</li>
+  <li>LLM 失敗 → preview_text 維持 NULL，下次 cron 重試</li>
+  <li>API write-back 失敗 → log HTTP status + response body，skip</li>
 </ul>
 
-<h3>測試策略</h3>
+<h3>測試優先項目</h3>
 <table>
-  <tr><th>層次</th><th>工具</th><th>覆蓋範圍</th></tr>
-  <tr><td>Workers unit test</td><td>Vitest + <code>@cloudflare/vitest-pool-workers</code></td><td>Scope middleware（admin / author / 403 路徑）、JWT verify、audit_log 寫入</td></tr>
-  <tr><td>DB integration</td><td>pytest + Turso local dev URL</td><td>invite flow、user_persona scope query 正確性</td></tr>
-  <tr><td>Skill unit test</td><td>pytest</td><td><code>preview-pending</code> 模式、prompt 組法、欄位注入修復</td></tr>
-  <tr><td>E2E（手動）</td><td>Browser</td><td>OAuth login → create persona → preview null → skill 跑 → preview 出現</td></tr>
+  <tr><th>優先</th><th>測試案例</th><th>工具</th></tr>
+  <tr><td>🔴</td><td>Author 存取他人 slug → 403</td><td>Vitest + Workers pool</td></tr>
+  <tr><td>🔴</td><td>未邀請 email OAuth → 403</td><td>Vitest</td></tr>
+  <tr><td>🔴</td><td>Service Token 存取非允許端點 → 403</td><td>Vitest</td></tr>
+  <tr><td>🟠</td><td>audit_log 每次 PUT/POST/DELETE 自動寫入</td><td>Vitest</td></tr>
+  <tr><td>🟠</td><td>preview_text NULL → webapp 顯示提示</td><td>Vitest</td></tr>
+  <tr><td>🟠</td><td>persona_updated_at &gt; preview_updated_at → stale=true</td><td>Vitest</td></tr>
+  <tr><td>🟡</td><td>preview-pending skill 只處理 NULL，不覆蓋有值的</td><td>pytest</td></tr>
+  <tr><td>🟡</td><td>Invite email 大小寫不敏感</td><td>Vitest</td></tr>
+  <tr><td>🟡</td><td>Logout 後 cookie 清除（Max-Age=0）</td><td>Vitest</td></tr>
 </table>
 
-<h3>優先測試的案例</h3>
+<h3>Service Token 注意事項</h3>
+<ul>
+  <li>Token 存於 CF Workers Secret（<code>wrangler secret put SERVICE_TOKEN</code>）及 claw <code>.env</code></li>
+  <li>Rotation：更新 CF Secret → redeploy Worker → 更新 skill host <code>.env</code></li>
+  <li><code>X-Service-Caller</code> header 為 unverified（audit log 標記為 "claimed"）</li>
+</ul>
+
+<hr>
+
+<h2>Section 7：營運工具 <span class="badge badge-done">✅ 確認</span></h2>
+
+<h3>DB 備份</h3>
+<p>Turso 原生支援 point-in-time restore，但仍需主動備份以防邏輯刪除（誤操作）。</p>
+<pre><code># backup.py — 可排入 claw cron，每日執行
+import subprocess, datetime, os
+
+TURSO_URL = os.environ["TURSO_URL"]
+TURSO_TOKEN = os.environ["TURSO_AUTH_TOKEN"]
+BACKUP_DIR = os.path.expanduser("~/.persona-backups")
+
+def backup():
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    ts = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    out = f"{BACKUP_DIR}/persona-{ts}.sql"
+    # 用 turso db shell 匯出 SQL dump
+    subprocess.run(
+        ["turso", "db", "shell", TURSO_URL, ".dump"],
+        stdout=open(out, "w"), check=True,
+        env={**os.environ, "TURSO_AUTH_TOKEN": TURSO_TOKEN}
+    )
+    print(f"[OK] backup → {out}")
+    # 保留最近 30 份，刪除舊的
+    files = sorted(os.listdir(BACKUP_DIR))
+    for f in files[:-30]:
+        os.remove(f"{BACKUP_DIR}/{f}")</code></pre>
+
+<h3>DB 復原</h3>
+<pre><code># 從 SQL dump 復原
+turso db shell $TURSO_URL &lt; ~/.persona-backups/persona-YYYYMMDD-HHMMSS.sql
+
+# 或用 Turso console point-in-time restore（適合誤操作 &lt; 24h）
+turso db restore &lt;db-name&gt; --timestamp "2026-04-17T10:00:00Z"</code></pre>
+
+<h3>Schema Migration（未來版本）</h3>
+<pre><code># migrate.py — 每次 schema 變更執行，冪等
+migrations = [
+    "001_add_active_to_user.sql",
+    "002_add_persona_updated_at.sql",
+    # ...
+]
+# 建立 schema_migrations 表追蹤已執行版本</code></pre>
+
+<h3>Service Token Rotation</h3>
 <ol>
-  <li>Author 存取他人 persona slug → 確認 403（不能靠 UI 隱藏代替）</li>
-  <li>Invite-only：未邀請 email OAuth 登入 → 確認 403</li>
-  <li>audit_log 每次 PUT /personas/:slug 都寫入一筆</li>
-  <li>preview_text NULL → webapp 顯示提示而非空白</li>
-  <li>Skill preview-pending：只處理 NULL 的，不重複覆蓋有值的</li>
+  <li>生成新 token：<code>openssl rand -hex 32</code></li>
+  <li>更新 CF Workers Secret：<code>wrangler secret put SERVICE_TOKEN</code></li>
+  <li>Worker 自動重新部署（或手動 <code>wrangler deploy</code>）</li>
+  <li>更新 skill host：<code>~/.openclaw/.env</code> / <code>~/.nullclaw/.env</code> 的 <code>PERSONA_SERVICE_TOKEN</code></li>
+  <li>驗證：跑一次 <code>skill --mode preview-pending --dry-run</code></li>
 </ol>
+
+<h3>監控</h3>
+<table>
+  <tr><th>項目</th><th>做法</th></tr>
+  <tr><td>Worker 錯誤率</td><td>CF Dashboard → Workers Analytics → Error rate</td></tr>
+  <tr><td>Skill 執行結果</td><td>claw cron log；[WARN] 行數 &gt; 0 表示有失敗</td></tr>
+  <tr><td>Preview 積壓</td><td><code>SELECT COUNT(*) FROM persona WHERE preview_text IS NULL</code>；定期查或排 cron alert</td></tr>
+  <tr><td>audit_log 異常</td><td>Admin 在 webapp Audit 頁面定期瀏覽</td></tr>
+</table>
+
+<hr>
+
+<h2>未來擴展（已規劃）</h2>
+<ul>
+  <li><strong>Liko</strong> — 財經週開收盤報，新增 <code>finance-weekly</code> skill</li>
+  <li>多 persona per user 已在 schema 支援（user → persona one-to-many）</li>
+  <li>Author 完全隔離，admin context switcher 查看任意 user 視角</li>
+</ul>
 
 <script>mermaid.initialize({ startOnLoad: true, theme: 'default' });</script>
 </body>
