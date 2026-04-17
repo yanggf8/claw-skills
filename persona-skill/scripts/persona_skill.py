@@ -147,6 +147,87 @@ def cmd_upsert(args: argparse.Namespace) -> None:
     print(f"upserted: {p.slug}")
 
 
+def _read_multiline(prompt: str) -> str | None:
+    """Read multi-line input from stdin. Empty input returns None."""
+    if sys.stdin.isatty():
+        print(f"{prompt} (blank line to finish, empty to skip):")
+        lines = []
+        while True:
+            line = input()
+            if line == "":
+                break
+            lines.append(line)
+        return "\n".join(lines) + "\n" if lines else None
+    else:
+        text = sys.stdin.read().strip()
+        return text if text else None
+
+
+def _build_persona_from_args(args: argparse.Namespace, existing: persona_registry.Persona | None = None) -> persona_registry.Persona:
+    """Build a Persona from CLI --field args, falling back to existing values for update."""
+    def resolve(field: str) -> str | None:
+        val = getattr(args, field, None)
+        if val is not None:
+            return val
+        if existing is not None:
+            return getattr(existing, field, None)
+        return None
+
+    slug = args.slug if hasattr(args, "slug") else existing.slug
+    role = resolve("role")
+    if not role:
+        print("role is required", file=sys.stderr)
+        sys.exit(3)
+
+    return persona_registry.Persona(
+        slug=slug,
+        role=role,
+        name=resolve("name"),
+        expression=resolve("expression"),
+        mental_models=resolve("mental_models"),
+        heuristics=resolve("heuristics"),
+        antipatterns=resolve("antipatterns"),
+        limits=resolve("limits"),
+    )
+
+
+def cmd_create(args: argparse.Namespace) -> None:
+    if not _SLUG_RE.match(args.slug):
+        print(f"slug '{args.slug}' does not match ^[a-z][a-z0-9-]*$", file=sys.stderr)
+        sys.exit(3)
+
+    conn = _open_db()
+    try:
+        persona_registry.get(conn, args.slug)
+        print(f"slug '{args.slug}' already exists — use 'update' to modify", file=sys.stderr)
+        conn.close()
+        sys.exit(1)
+    except persona_registry.PersonaNotFound:
+        pass
+
+    p = _build_persona_from_args(args)
+    persona_registry.upsert(conn, p)
+    conn.commit()
+    conn.close()
+    print(f"created: {p.slug}")
+
+
+def cmd_update(args: argparse.Namespace) -> None:
+    conn = _open_db()
+    try:
+        existing = persona_registry.get(conn, args.slug)
+    except persona_registry.PersonaNotFound:
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        conn.close()
+        sys.exit(2)
+
+    p = _build_persona_from_args(args, existing=existing)
+    persona_registry.upsert(conn, p)
+    conn.commit()
+    conn.close()
+    print(f"updated: {p.slug}")
+
+
 def cmd_set_secret(args: argparse.Namespace) -> None:
     if sys.stdin.isatty():
         value = getpass.getpass(f"Enter value for {args.slug}/{args.kind}: ")
@@ -331,8 +412,25 @@ def main() -> None:
 
     sub.add_parser("list", help="List all persona slugs (JSON array)")
 
-    p_upsert = sub.add_parser("upsert", help="Upsert a persona from YAML")
+    p_upsert = sub.add_parser("upsert", help="Upsert a persona from YAML (legacy)")
     p_upsert.add_argument("file", help="Path to YAML file")
+
+    def _add_persona_fields(p, role_required=True):
+        p.add_argument("--role", required=role_required, help="Role (required for create)")
+        p.add_argument("--name", default=None, help="Display name")
+        p.add_argument("--expression", default=None, help="Writing expression/voice")
+        p.add_argument("--mental-models", dest="mental_models", default=None, help="Mental models")
+        p.add_argument("--heuristics", default=None, help="Writing heuristics")
+        p.add_argument("--antipatterns", default=None, help="Antipatterns to avoid")
+        p.add_argument("--limits", default=None, help="Scope limits")
+
+    p_create = sub.add_parser("create", help="Create a persona directly in Turso")
+    p_create.add_argument("slug")
+    _add_persona_fields(p_create, role_required=True)
+
+    p_update = sub.add_parser("update", help="Update persona fields (unspecified fields keep current value)")
+    p_update.add_argument("slug")
+    _add_persona_fields(p_update, role_required=False)
 
     p_secret = sub.add_parser("set-secret", help="Set a per-persona secret (reads stdin)")
     p_secret.add_argument("slug")
@@ -371,6 +469,8 @@ def main() -> None:
     commands = {
         "get": cmd_get,
         "list": cmd_list,
+        "create": cmd_create,
+        "update": cmd_update,
         "upsert": cmd_upsert,
         "set-secret": cmd_set_secret,
         "get-secret": cmd_get_secret,
