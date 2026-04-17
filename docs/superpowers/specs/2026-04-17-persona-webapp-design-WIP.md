@@ -73,6 +73,7 @@ ALTER TABLE persona ADD COLUMN preview_updated_at TEXT;
 
 ## Section 3：API 端點設計 ✅
 
+**Human 端點（OAuth JWT）**：
 - Auth: `/auth/login/google`, `/auth/login/github`, `/auth/callback`, `/auth/logout`
 - Personas: `GET/POST /api/personas`, `GET/PUT/DELETE /api/personas/:slug`
 - Plans: `GET/POST /api/personas/:slug/plans`, `PUT/DELETE .../plans/:id`
@@ -81,7 +82,19 @@ ALTER TABLE persona ADD COLUMN preview_updated_at TEXT;
 - Users: `GET /api/users`, `POST /api/users/invite`, `PUT /api/users/:id`（admin only）
 - Audit: `GET /api/audit`（admin only）
 
-**Scope middleware**：author 存取時強制 `WHERE persona.user_id = me`，不符合回 403。Admin 跳過此檢查。
+**Skill-facing 端點（Service Token）**：
+- `PUT /api/personas/:slug/preview` — skill 寫回 preview_text
+- `POST /api/personas/:slug/history` — skill 寫回發佈記錄
+
+Skill 不直接寫 Turso，走 CF Workers API，audit_log 由 middleware 自動記錄。
+
+```
+# claw .env
+PERSONA_API_URL=https://api.persona.yourdomain.workers.dev
+PERSONA_SERVICE_TOKEN=<secret>
+```
+
+**Scope middleware**：author 存取時強制 `WHERE persona.user_id = me`，不符合回 403。Admin 跳過。Service token 只允許上述兩個 write-back 端點。
 
 ## Section 4：OAuth 流程 ✅
 

@@ -26,16 +26,16 @@
 </head>
 <body>
 <h1>Persona 管理平台 — 設計文件</h1>
-<p><strong>日期：</strong> 2026-04-17 &nbsp;|&nbsp; <strong>狀態：</strong> <span class="status-wip">設計進行中</span></p>
+<p><strong>日期：</strong> 2026-04-17 &nbsp;|&nbsp; <strong>狀態：</strong> <span class="status-ok">設計完成，待實作</span></p>
 
 <hr>
 
 <h2>已確認需求</h2>
 <table>
   <tr><th>項目</th><th>決定</th></tr>
-  <tr><td>主要使用者</td><td>你 + 作者們（如 Ping W.）都能登入</td></tr>
-  <tr><td>認證方式</td><td>OAuth (Google / GitHub)</td></tr>
-  <tr><td>功能範圍</td><td>Persona 欄位編輯、寫作風格預覽、Editorial plan 管理、發佈歷史查看</td></tr>
+  <tr><td>主要使用者</td><td>你 + 作者們（Ping W.、Liko，未來可擴充）</td></tr>
+  <tr><td>認證方式</td><td>OAuth (Google / GitHub)，Invite-only</td></tr>
+  <tr><td>功能範圍</td><td>Persona 欄位編輯、寫作風格預覽（skill 生成）、Editorial plan 管理、發佈歷史查看</td></tr>
   <tr><td>後端架構</td><td>SPA + Workers API</td></tr>
   <tr><td>前端框架</td><td>React + Tailwind</td></tr>
   <tr><td>部署方式</td><td>Cloudflare Pages + Workers</td></tr>
@@ -71,8 +71,9 @@ graph TB
         T_AUDIT["audit_log"]
     end
 
-    subgraph LLM["LLM"]
-        CLAUDE["Claude API\n(Writing Preview)"]
+    subgraph SKILL["Skill Host (claw / cc)"]
+        SK["Skill run.py\n(preview-pending, publish)"]
+        LLM["LLM\n(claw config model)"]
     end
 
     SPA -- "HTTPS + JWT Bearer" --> AUTH
@@ -82,7 +83,8 @@ graph TB
     GOOGLE & GITHUB -- "code → callback" --> CB
     CB -- "issue JWT" --> SPA
     CB --> T_USER
-    ROUTES -- "preview prompt" --> CLAUDE
+    SK -- "Service Token\nPUT /api/personas/:slug/preview\nPOST /api/personas/:slug/history" --> ROUTES
+    SK --> LLM
 </div>
 
 <h3>權限矩陣</h3>
@@ -337,6 +339,34 @@ CREATE TABLE audit_log (
   <tr><td colspan="5" style="background:#f3f4f6;font-weight:bold">Audit Log（Admin only）</td></tr>
   <tr><td>GET</td><td>/api/audit</td><td>查看操作記錄</td><td>ALL entries</td><td>403</td></tr>
 </table>
+
+<h3>Skill-facing 端點（Service Token）</h3>
+<p>Skill CLI 不直接寫 Turso，改呼叫 CF Workers API，audit_log 由 Workers middleware 自動記錄。</p>
+<table>
+  <tr><th>Method</th><th>Path</th><th>Caller</th><th>說明</th></tr>
+  <tr><td>PUT</td><td>/api/personas/:slug/preview</td><td>Skill</td><td>寫回 preview_text + preview_updated_at</td></tr>
+  <tr><td>POST</td><td>/api/personas/:slug/history</td><td>Skill</td><td>寫入新發佈記錄</td></tr>
+</table>
+
+<h3>Service Token Auth</h3>
+<pre><code># claw .env
+PERSONA_API_URL=https://api.persona.yourdomain.workers.dev
+PERSONA_SERVICE_TOKEN=&lt;secret&gt;
+
+# Skill HTTP header
+Authorization: Bearer &lt;PERSONA_SERVICE_TOKEN&gt;
+X-Service-Caller: skill/&lt;skill-name&gt;</code></pre>
+
+<pre><code>// Workers middleware
+const token = c.req.header('Authorization')?.replace('Bearer ', '')
+if (token === env.SERVICE_TOKEN) {
+  c.set('user', { role: 'service', sub: null, caller: c.req.header('X-Service-Caller') })
+  await next()
+  return
+}
+// 否則走 JWT verify path</code></pre>
+
+<p><code>role: 'service'</code> 只允許存取上面兩個 write-back 端點，其餘回 403。</p>
 
 <h3>Scope 執行位置</h3>
 <pre><code>// Hono middleware 範例
