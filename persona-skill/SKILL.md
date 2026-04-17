@@ -1,7 +1,7 @@
 ---
 name: persona-skill
 description: Writer-persona registry backed by Turso — stores personas and per-persona secrets, serves them via CLI
-version: 0.2.0
+version: 0.3.0
 author: yanggf
 always: false
 requires_bins:
@@ -39,11 +39,22 @@ python3 scripts/persona_skill.py validate personas/ping-w.yaml
 # Set a per-persona secret — value read from stdin only
 echo "$DEV_TO_API_KEY_PING_W" | python3 scripts/persona_skill.py set-secret ping-w devto_api_key
 
+# Verify a secret exists (masked by default; --reveal requires interactive TTY)
+python3 scripts/persona_skill.py get-secret ping-w devto_api_key
+python3 scripts/persona_skill.py get-secret ping-w devto_api_key --reveal
+
 # List secret kinds for a persona (never prints values)
 python3 scripts/persona_skill.py list-secrets ping-w
 
+# Delete a single secret kind
+python3 scripts/persona_skill.py delete-secret ping-w old_api_key
+
 # Delete a persona (cascades secrets; history rows are kept)
 python3 scripts/persona_skill.py delete ping-w
+
+# View recent publish history
+python3 scripts/persona_skill.py history --skill mindfulness-spirit
+python3 scripts/persona_skill.py history --persona ping-w --limit 5 --json
 ```
 
 ### Exit Codes
@@ -113,7 +124,7 @@ echo "<key>" | python3 scripts/persona_skill.py set-secret ping-w devto_api_key
 python3 scripts/persona_skill.py set-secret ping-w devto_api_key
 ```
 
-`get` never returns secrets. `list-secrets` returns kinds only, never values.
+`get` never returns secrets. `list-secrets` returns kinds only, never values. `get-secret` shows masked output (length + prefix) by default; `--reveal` prints the full value but is blocked when stdout is not an interactive TTY (prevents leakage into logs, agent transcripts, or CI).
 
 ## Library API
 

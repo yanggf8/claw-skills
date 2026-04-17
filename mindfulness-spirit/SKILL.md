@@ -33,7 +33,6 @@ python3 scripts/run.py [選項]
 ```json
 {
   "skills": {
-    "dev_to_api_key": "...",
     "mindfulness_spirit": {
       "publish": true,
       "main_image_url": "https://example.com/header.jpg",
@@ -63,7 +62,6 @@ dev.to API key resolution order (first non-empty wins):
 
 1. `persona_secret` row — `persona-skill set-secret <slug> devto_api_key` (preferred; per-persona)
 2. `DEV_TO_API_KEY` environment variable (legacy, logs a back-compat warning)
-3. `skills.dev_to_api_key` in `~/.nullclaw/config.json` (legacy)
 
 Required env vars: `PERSONA_REGISTRY_DB_URL` and `PERSONA_REGISTRY_DB_TOKEN`. If the registry is unreachable, persona resolution falls back to the inline `persona` object in config (lenient policy).
 

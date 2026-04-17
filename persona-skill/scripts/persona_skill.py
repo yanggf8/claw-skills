@@ -17,6 +17,7 @@ import yaml
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
 
+import persona_history  # noqa: E402
 import persona_registry  # noqa: E402
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -176,6 +177,50 @@ def cmd_list_secrets(args: argparse.Namespace) -> None:
     print(json.dumps(kinds, ensure_ascii=False))
 
 
+def cmd_get_secret(args: argparse.Namespace) -> None:
+    conn = _open_db()
+    try:
+        persona_registry.get(conn, args.slug)
+    except persona_registry.PersonaNotFound:
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        conn.close()
+        sys.exit(2)
+
+    value = persona_registry.get_secret(conn, args.slug, args.kind)
+    conn.close()
+    if value is None:
+        print(f"no secret: {args.slug}/{args.kind}", file=sys.stderr)
+        sys.exit(2)
+    if args.reveal:
+        if not sys.stdout.isatty():
+            print("--reveal requires an interactive terminal", file=sys.stderr)
+            sys.exit(1)
+        print(value)
+    else:
+        print(f"len={len(value)} prefix={value[:4]}...")
+
+
+def cmd_delete_secret(args: argparse.Namespace) -> None:
+    conn = _open_db()
+    try:
+        persona_registry.get(conn, args.slug)
+    except persona_registry.PersonaNotFound:
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        conn.close()
+        sys.exit(2)
+
+    existing = persona_registry.get_secret(conn, args.slug, args.kind)
+    if existing is None:
+        print(f"no secret: {args.slug}/{args.kind}", file=sys.stderr)
+        conn.close()
+        sys.exit(2)
+
+    persona_registry.delete_secret(conn, args.slug, args.kind)
+    conn.commit()
+    conn.close()
+    print(f"deleted secret: {args.slug}/{args.kind}")
+
+
 def cmd_delete(args: argparse.Namespace) -> None:
     conn = _open_db()
     persona_registry.delete(conn, args.slug)
@@ -234,6 +279,46 @@ def cmd_migrate_from_yaml(args: argparse.Namespace) -> None:
     print(f"migrated {count} persona(s)")
 
 
+def _open_history_db():
+    conn = _open_db()
+    persona_history.ensure_schema(conn)
+    return conn
+
+
+def cmd_history(args: argparse.Namespace) -> None:
+    conn = _open_history_db()
+
+    kwargs: dict = {"limit": args.limit}
+    if args.skill:
+        kwargs["skill"] = args.skill
+    if args.stream:
+        kwargs["stream"] = args.stream
+    if args.persona:
+        kwargs["persona_slug"] = args.persona
+
+    if "skill" not in kwargs and "persona_slug" not in kwargs:
+        print("at least one of --skill or --persona is required", file=sys.stderr)
+        conn.close()
+        sys.exit(1)
+
+    rows = persona_history.recent(conn, **kwargs)
+    conn.close()
+
+    if args.json:
+        from dataclasses import asdict as _asdict
+        print(json.dumps([_asdict(r) for r in rows], ensure_ascii=False, default=str))
+    else:
+        if not rows:
+            print("(no history)")
+            return
+        for r in rows:
+            devto = f" devto={r.devto_id}" if r.devto_id else ""
+            print(f"{r.date}  {r.skill}/{r.stream}  [{r.persona_slug}]{devto}")
+            print(f"  {r.title}")
+            stance = r.stance[:80] + ("…" if len(r.stance) > 80 else "")
+            print(f"  {stance}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="persona_skill.py",
@@ -253,8 +338,17 @@ def main() -> None:
     p_secret.add_argument("slug")
     p_secret.add_argument("kind")
 
+    p_gsec = sub.add_parser("get-secret", help="Show a secret (masked unless --reveal)")
+    p_gsec.add_argument("slug")
+    p_gsec.add_argument("kind")
+    p_gsec.add_argument("--reveal", action="store_true", help="Print full value")
+
     p_lsec = sub.add_parser("list-secrets", help="List secret kinds for a persona")
     p_lsec.add_argument("slug")
+
+    p_dsec = sub.add_parser("delete-secret", help="Delete a single secret")
+    p_dsec.add_argument("slug")
+    p_dsec.add_argument("kind")
 
     p_del = sub.add_parser("delete", help="Delete a persona (cascades secrets, keeps history)")
     p_del.add_argument("slug")
@@ -265,6 +359,13 @@ def main() -> None:
     p_mig = sub.add_parser("migrate-from-yaml", help="Bulk upsert from a YAML directory")
     p_mig.add_argument("dir", help="Directory containing persona YAML files")
 
+    p_hist = sub.add_parser("history", help="Show recent publish history")
+    p_hist.add_argument("--skill", help="Filter by skill name")
+    p_hist.add_argument("--stream", help="Filter by stream name")
+    p_hist.add_argument("--persona", help="Filter by persona slug")
+    p_hist.add_argument("--limit", type=int, default=10, help="Max rows (default 10)")
+    p_hist.add_argument("--json", action="store_true", help="Output as JSON array")
+
     args = parser.parse_args()
 
     commands = {
@@ -272,10 +373,13 @@ def main() -> None:
         "list": cmd_list,
         "upsert": cmd_upsert,
         "set-secret": cmd_set_secret,
+        "get-secret": cmd_get_secret,
         "list-secrets": cmd_list_secrets,
+        "delete-secret": cmd_delete_secret,
         "delete": cmd_delete,
         "validate": cmd_validate,
         "migrate-from-yaml": cmd_migrate_from_yaml,
+        "history": cmd_history,
     }
 
     handler = commands.get(args.command)

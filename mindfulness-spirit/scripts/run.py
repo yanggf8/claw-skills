@@ -138,8 +138,8 @@ def resolve_persona(mindfulness_config, registry_conn=None):
     }
 
 
-def resolve_devto_key(slug, registry_conn, config):
-    """Try persona_registry secret, then DEV_TO_API_KEY env, then config."""
+def resolve_devto_key(slug, registry_conn):
+    """Try persona_registry secret, then DEV_TO_API_KEY env."""
     if registry_conn is not None:
         try:
             key = persona_registry.get_secret(registry_conn, slug, "devto_api_key")
@@ -156,7 +156,7 @@ def resolve_devto_key(slug, registry_conn, config):
                 file=sys.stderr,
             )
         return env_key
-    return config.get("skills", {}).get("dev_to_api_key")
+    return None
 
 
 def load_skill_settings(config, registry_conn=None):
@@ -546,7 +546,12 @@ def main():
 
     # 2. 作家 LLM
     history_block = format_history_for_prompt(history_rows)
-    writer_prompt = f"""你是{persona["role"]}，主題是「身心靈 × AI」。
+    author_byline = persona.get("name") or persona["slug"]
+    signature_block = (
+        f"*—— {author_byline}（{persona['role']}）*\n\n"
+        "*本文為個人觀察，立場不代表任何宗教傳統。歡迎各傳統的讀者帶著自身的智慧框架閱讀與回應。*"
+    )
+    writer_prompt = f"""你是{persona["role"]}，筆名「{author_byline}」，主題是「身心靈 × AI」。
 你的讀者是對科技與靈性都感興趣的中文知識工作者。
 
 寫作原則：
@@ -561,6 +566,11 @@ def main():
 {prompt_items}
 
 **重要：在文章中引用素材時，必須嚴格使用 [來源 #N] 格式（例如 [來源 #1]），不可直接寫 [1] 或 #1。**
+
+**文末署名（必填，原樣輸出，不要改寫）：**
+在最後一段之後插入一條 `---` 分隔線，然後原樣加上下列兩行署名：
+
+{signature_block}
 
 請輸出完整 markdown 文章。"""
 
@@ -593,6 +603,7 @@ def main():
 
 請輸出修改後的完整 markdown 文章，不要列出修改清單，
 **務必保留原稿中的 [來源 #N] 引用標記，刪除其他多餘的編號標記**，保持繁體中文。
+**文末署名區塊（`---` 分隔線後的兩行斜體文字）必須原樣保留，不可改寫或刪除。**
 
 初稿：
 <<<
@@ -610,7 +621,7 @@ def main():
     final_markdown = restore_source_links(final_output, items)
 
     # 5. dev.to 發布
-    dev_to_key = resolve_devto_key(persona["slug"], registry_conn, config)
+    dev_to_key = resolve_devto_key(persona["slug"], registry_conn)
 
     title = "未命名身心靈文章"
     match = re.search(r'^#\s+(.+)$', final_markdown, re.MULTILINE)
