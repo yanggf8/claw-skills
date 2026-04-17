@@ -709,9 +709,21 @@ def main():
         f"*—— <span translate=\"no\">{author_byline}</span>（{persona['role']}）*\n\n"
         "*本文為個人觀察，立場不代表任何宗教傳統。歡迎各傳統的讀者帶著自身的智慧框架閱讀與回應。*"
     )
+    persona_voice_block = ""
+    if persona.get("expression"):
+        persona_voice_block += f"\n## 表達風格\n{persona['expression']}\n"
+    if persona.get("mental_models"):
+        persona_voice_block += f"\n## 心智模型\n{persona['mental_models']}\n"
+    if persona.get("heuristics"):
+        persona_voice_block += f"\n## 啟發法\n{persona['heuristics']}\n"
+    if persona.get("antipatterns"):
+        persona_voice_block += f"\n## 反模式（避免）\n{persona['antipatterns']}\n"
+    if persona.get("limits"):
+        persona_voice_block += f"\n## 限制\n{persona['limits']}\n"
+
     writer_prompt = f"""你是{persona["role"]}，筆名「{author_byline}」，主題是「身心靈 × AI」。
 你的讀者是對科技與靈性都感興趣的中文知識工作者。
-
+{persona_voice_block}
 寫作原則：
 - 跨宗教/跨靈性傳統包容，不獨尊任一宗派
 - 非營利視角，不推銷產品、不商業化

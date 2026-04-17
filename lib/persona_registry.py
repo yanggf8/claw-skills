@@ -54,7 +54,7 @@ class Persona:
     heuristics: Optional[str] = None
     antipatterns: Optional[str] = None
     limits: Optional[str] = None
-    hash_version: int = 1
+    hash_version: int = 1  # kept for legacy hash compatibility
 
 
 def connect(database_url: str, auth_token: Optional[str] = None):
@@ -158,7 +158,18 @@ MIGRATIONS = [
 ]
 
 
+def _has_webapp_schema(conn) -> bool:
+    """Return True if the DB was created by the webapp seed (has user_id on persona)."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM pragma_table_info('persona') WHERE name='user_id'"
+    ).fetchone()
+    return bool(row and row[0])
+
+
 def ensure_schema(conn) -> None:
+    # Webapp seed already applied a superset schema — skip migrations to avoid conflict.
+    if _has_webapp_schema(conn):
+        return
     current = _current_schema_version(conn)
     for version, migrate in MIGRATIONS:
         if version <= current:
@@ -169,41 +180,56 @@ def ensure_schema(conn) -> None:
 
 
 def upsert(conn, persona: Persona) -> None:
-    conn.execute(
-        """
-        INSERT INTO persona (slug, role, name, expression, mental_models,
-                             heuristics, antipatterns, limits, hash_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(slug) DO UPDATE SET
-          role = excluded.role,
-          name = excluded.name,
-          expression = excluded.expression,
-          mental_models = excluded.mental_models,
-          heuristics = excluded.heuristics,
-          antipatterns = excluded.antipatterns,
-          limits = excluded.limits,
-          hash_version = excluded.hash_version,
-          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        """,
-        (
-            persona.slug,
-            persona.role,
-            persona.name,
-            persona.expression,
-            persona.mental_models,
-            persona.heuristics,
-            persona.antipatterns,
-            persona.limits,
-            persona.hash_version,
-        ),
-    )
+    if _has_webapp_schema(conn):
+        # Webapp schema: no hash_version, has persona_updated_at
+        conn.execute(
+            """
+            INSERT INTO persona (slug, role, name, expression, mental_models,
+                                 heuristics, antipatterns, limits, persona_updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            ON CONFLICT(slug) DO UPDATE SET
+              role = excluded.role,
+              name = excluded.name,
+              expression = excluded.expression,
+              mental_models = excluded.mental_models,
+              heuristics = excluded.heuristics,
+              antipatterns = excluded.antipatterns,
+              limits = excluded.limits,
+              preview_text = NULL,
+              persona_updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            """,
+            (persona.slug, persona.role, persona.name, persona.expression,
+             persona.mental_models, persona.heuristics, persona.antipatterns,
+             persona.limits),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO persona (slug, role, name, expression, mental_models,
+                                 heuristics, antipatterns, limits, hash_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(slug) DO UPDATE SET
+              role = excluded.role,
+              name = excluded.name,
+              expression = excluded.expression,
+              mental_models = excluded.mental_models,
+              heuristics = excluded.heuristics,
+              antipatterns = excluded.antipatterns,
+              limits = excluded.limits,
+              hash_version = excluded.hash_version,
+              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            """,
+            (persona.slug, persona.role, persona.name, persona.expression,
+             persona.mental_models, persona.heuristics, persona.antipatterns,
+             persona.limits, persona.hash_version),
+        )
 
 
 def get(conn, slug: str) -> Persona:
     row = conn.execute(
         """
         SELECT slug, role, name, expression, mental_models,
-               heuristics, antipatterns, limits, hash_version
+               heuristics, antipatterns, limits
         FROM persona WHERE slug = ?
         """,
         (slug,),
@@ -219,7 +245,6 @@ def get(conn, slug: str) -> Persona:
         heuristics=row[5],
         antipatterns=row[6],
         limits=row[7],
-        hash_version=int(row[8]),
     )
 
 
