@@ -1,7 +1,7 @@
 ---
 name: persona-skill
-description: Writer-persona registry backed by Turso — stores personas and per-persona secrets, serves them via CLI
-version: 0.3.0
+description: Writer-persona registry backed by Turso — personas, secrets, editorial plans, and publish history via CLI
+version: 0.4.0
 author: yanggf
 always: false
 requires_bins:
@@ -13,9 +13,9 @@ requires_env:
 
 # persona-skill
 
-Writer-persona registry backed by a single Turso (libsql) database. Other skills (e.g. `mindfulness-spirit`, `ainews`) import `lib/persona_registry` directly to fetch personas and per-persona secrets. This CLI is the admin interface — upsert from YAML, rotate secrets, list slugs.
+Writer-persona registry backed by a single Turso (libsql) database. Other skills (e.g. `mindfulness-spirit`, `ainews`) import `lib/persona_registry` and `lib/persona_history` directly. This CLI is the admin interface — manage personas, secrets, editorial plans, and publish history.
 
-YAML files in `personas/` are the version-controlled input format. Turso is the runtime source of truth. Secrets (e.g. dev.to API keys) live in `persona_secret` rows and are only ever set via stdin — never argv.
+All runtime data lives in Turso. No YAML files at runtime — `create`/`update` CLI commands write directly to the DB. YAML upsert and migrate-from-yaml are legacy paths for initial migration only.
 
 ## CLI Usage
 
@@ -26,7 +26,7 @@ python3 scripts/persona_skill.py get ping-w
 # List all slugs
 python3 scripts/persona_skill.py list
 
-# Create a persona directly (no YAML file needed)
+# Create a persona directly
 python3 scripts/persona_skill.py create new-writer --role "科技記者" --name "New Writer"
 
 # Update specific fields (unspecified fields keep their current value)
@@ -35,7 +35,7 @@ python3 scripts/persona_skill.py update ping-w --name "Ping W. v2" --expression 
 # Upsert one persona from YAML (legacy; prefer create/update)
 python3 scripts/persona_skill.py upsert personas/ping-w.yaml
 
-# Bulk upsert from a directory (idempotent)
+# Bulk upsert from a directory (legacy, idempotent)
 python3 scripts/persona_skill.py migrate-from-yaml personas/
 
 # Validate YAML without touching the DB
@@ -61,6 +61,14 @@ python3 scripts/persona_skill.py delete ping-w
 # View recent publish history
 python3 scripts/persona_skill.py history --skill mindfulness-spirit
 python3 scripts/persona_skill.py history --persona ping-w --limit 5 --json
+
+# List editorial plans
+python3 scripts/persona_skill.py plan-list
+python3 scripts/persona_skill.py plan-list --skill mindfulness-spirit --json
+
+# Show plan with topics and status
+python3 scripts/persona_skill.py plan-show mindfulness-spirit inner-algorithm
+python3 scripts/persona_skill.py plan-show mindfulness-spirit inner-algorithm --json
 ```
 
 ### Exit Codes
@@ -131,18 +139,33 @@ python3 scripts/persona_skill.py set-secret ping-w devto_api_key
 
 `get` never returns secrets. `list-secrets` returns kinds only, never values. `get-secret` shows masked output (length + prefix) by default; `--reveal` prints the full value but is blocked when stdout is not an interactive TTY (prevents leakage into logs, agent transcripts, or CI).
 
+## Editorial Plans
+
+Monthly editorial plans live in the `editorial_plan` and `editorial_topic` tables (schema v2). Each plan is a long-lived series with a unique `(skill, series_slug)` key. Topics have `angle`, `lens`, `direction`, and `key_question` fields that get injected into the writer prompt at runtime.
+
+Topic statuses: `planned` → `published` or `skipped`. State transitions are guarded — only `planned` topics can be published or skipped.
+
+`plan-show` displays topics with status icons: `○` planned, `●` published, `×` skipped.
+
 ## Library API
 
-Consumer skills should import `lib/persona_registry` directly instead of shelling out:
+Consumer skills should import `lib/persona_registry` and `lib/persona_history` directly:
 
 ```python
 import persona_registry
+import persona_history
 
 conn = persona_registry.connect_from_env()
 persona_registry.ensure_schema(conn)
+persona_history.ensure_schema(conn)
 
 persona = persona_registry.get(conn, "ping-w")              # → Persona dataclass
 devto_key = persona_registry.get_secret(conn, "ping-w", "devto_api_key")  # → str | None
+
+# Editorial plans
+plan = persona_history.get_plan(conn, skill="mindfulness-spirit", series_slug="inner-algorithm")
+topic = persona_history.next_topic(conn, plan_id=plan.id)    # → TopicRow | None
+persona_history.mark_topic_published(conn, topic.id, history_id=42)
 ```
 
 ## Dependencies
