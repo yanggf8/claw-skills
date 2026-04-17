@@ -6,3 +6,11 @@ mindfulness-spirit/failed/
 mindfulness-spirit/runs/
 mindfulness-spirit/status.json
 .superpowers/
+
+# credentials — never commit
+.env
+.env.local
+.dev.vars
+.secrets
+*.secrets
+*.credentials.json
