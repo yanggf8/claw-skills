@@ -400,6 +400,52 @@ def cmd_history(args: argparse.Namespace) -> None:
             print(f"  {stance}")
 
 
+def cmd_plan_list(args: argparse.Namespace) -> None:
+    conn = _open_history_db()
+    plans = persona_history.list_plans(conn, skill=args.skill)
+    conn.close()
+
+    if args.json:
+        from dataclasses import asdict as _asdict
+        print(json.dumps([_asdict(p) for p in plans], ensure_ascii=False, default=str))
+    else:
+        if not plans:
+            print("(no plans)")
+            return
+        for p in plans:
+            print(f"{p.month}  {p.skill}/{p.series_slug}  {p.series_title}")
+
+
+def cmd_plan_show(args: argparse.Namespace) -> None:
+    conn = _open_history_db()
+    plan = persona_history.get_plan(conn, skill=args.skill, series_slug=args.series)
+    if plan is None:
+        print(f"no plan: {args.skill}/{args.series}", file=sys.stderr)
+        conn.close()
+        sys.exit(2)
+
+    topics = persona_history.list_topics(conn, plan_id=plan.id)
+    conn.close()
+
+    if args.json:
+        from dataclasses import asdict as _asdict
+        out = _asdict(plan)
+        out["topics"] = [_asdict(t) for t in topics]
+        print(json.dumps(out, ensure_ascii=False, default=str))
+    else:
+        print(f"Series: {plan.series_title}")
+        print(f"Start:  {plan.month}")
+        if plan.series_theme:
+            print(f"Theme:  {plan.series_theme[:120]}…" if len(plan.series_theme or "") > 120 else f"Theme:  {plan.series_theme}")
+        print()
+        for t in topics:
+            status_icon = {"planned": "○", "published": "●", "skipped": "×"}.get(t.status, "?")
+            print(f"  {status_icon} W{t.week} {t.target_date}  [{t.lens}] [{t.direction}]")
+            print(f"    {t.title_hint}")
+            if t.key_question:
+                print(f"    Q: {t.key_question}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="persona_skill.py",
@@ -464,6 +510,15 @@ def main() -> None:
     p_hist.add_argument("--limit", type=int, default=10, help="Max rows (default 10)")
     p_hist.add_argument("--json", action="store_true", help="Output as JSON array")
 
+    p_plist = sub.add_parser("plan-list", help="List editorial plans")
+    p_plist.add_argument("--skill", default=None, help="Filter by skill")
+    p_plist.add_argument("--json", action="store_true")
+
+    p_pshow = sub.add_parser("plan-show", help="Show plan with topics")
+    p_pshow.add_argument("skill")
+    p_pshow.add_argument("series", help="Series slug")
+    p_pshow.add_argument("--json", action="store_true")
+
     args = parser.parse_args()
 
     commands = {
@@ -480,6 +535,8 @@ def main() -> None:
         "validate": cmd_validate,
         "migrate-from-yaml": cmd_migrate_from_yaml,
         "history": cmd_history,
+        "plan-list": cmd_plan_list,
+        "plan-show": cmd_plan_show,
     }
 
     handler = commands.get(args.command)

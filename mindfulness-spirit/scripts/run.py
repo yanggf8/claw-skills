@@ -18,6 +18,7 @@ import persona_registry  # noqa: E402
 
 SKILL_NAME = "mindfulness-spirit"
 STREAM_NAME = "mindfulness"
+SERIES_SLUG = "inner-algorithm"
 HISTORY_LIMIT = 8
 
 # --- Configuration ---
@@ -277,6 +278,90 @@ def send_telegram(bot_token, chat_id, text):
         print(f"Error sending Telegram: {e}", file=sys.stderr)
 
 
+def fetch_devto_article(api_key, devto_id):
+    """Fetch a single article from dev.to by id. Returns parsed JSON."""
+    url = f"https://dev.to/api/articles/{devto_id}"
+    headers = {"Accept": "application/json", "api-key": api_key}
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def update_devto_article(api_key, devto_id, body_markdown):
+    """PUT updated body_markdown to an existing dev.to article. Returns parsed JSON."""
+    url = f"https://dev.to/api/articles/{devto_id}"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "api-key": api_key,
+    }
+    data = json.dumps({"article": {"body_markdown": body_markdown}}).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="PUT")
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def patch_signature(body, author_byline, role):
+    """Replace plain-text author signature with translate="no" version.
+
+    Returns (patched_body, changed).
+    """
+    old_sig = f"*—— {author_byline}（{role}）*"
+    new_sig = f'*—— <span translate="no">{author_byline}</span>（{role}）*'
+    if old_sig in body and new_sig not in body:
+        return body.replace(old_sig, new_sig), True
+    return body, False
+
+
+def cmd_fix_signature(args):
+    """Fetch one article from dev.to, patch its author signature, PUT it back."""
+    config = load_config()
+    registry_conn, _ = _open_registry_connection()
+    skill_settings = load_skill_settings(config, registry_conn)
+    persona = skill_settings["persona"]
+    author_byline = persona.get("name") or persona["slug"]
+    role = persona["role"]
+
+    api_key = resolve_devto_key(persona["slug"], registry_conn)
+    if registry_conn is not None:
+        registry_conn.close()
+
+    if not api_key:
+        print("ERROR: no dev.to API key found.", file=sys.stderr)
+        return 1
+
+    try:
+        article = fetch_devto_article(api_key, args.devto_id)
+    except Exception as e:
+        print(f"ERROR: fetch failed: {e}", file=sys.stderr)
+        return 1
+
+    body = article.get("body_markdown", "")
+    patched, changed = patch_signature(body, author_byline, role)
+
+    if not changed:
+        print("Signature already has translate=no — no change needed.")
+        return 0
+
+    old_sig = f"*—— {author_byline}（{role}）*"
+    new_sig = f'*—— <span translate="no">{author_byline}</span>（{role}）*'
+    print(f"OLD: {old_sig}")
+    print(f"NEW: {new_sig}")
+
+    if args.dry_run:
+        print("[DRY-RUN] would update article.")
+        return 0
+
+    try:
+        update_devto_article(api_key, args.devto_id, patched)
+        print(f"Updated article {args.devto_id}: {article.get('url', '')}")
+    except Exception as e:
+        print(f"ERROR: update failed: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
 def post_to_devto(api_key, title, body, dry_run=False, published=True, main_image_url=None):
     """Return (article_url, devto_id, error). devto_id is None when the API
     response didn't include an integer id or on failure."""
@@ -444,12 +529,48 @@ def open_history_connection():
 def format_history_for_prompt(rows):
     if not rows:
         return ""
-    lines = ["=== 最近寫過的文章（避免重複論點與連結） ==="]
+    lines = [
+        "=== 最近寫過的文章（嚴格禁止重複） ===",
+        "下列是你過去已發表的文章。你**必須**：",
+        "1. 標題不可與下列任何標題使用相同句式或相似比喻。",
+        "2. 開場段落不可重複相同的提問句型或場景設定。",
+        "3. 已引用過的連結不可再次作為主要論據（可提及但不可重述）。",
+        "4. 已表達過的立場不可用相似措辭重述——需找到全新切入角度。",
+        "",
+    ]
     for r in rows:
         stance = (r.stance or "").strip()
         if len(stance) > 120:
             stance = stance[:117] + "…"
-        lines.append(f"- {r.date} · 《{r.title}》 · {stance}")
+        links_str = ""
+        if r.key_links:
+            truncated = [u[:60] for u in r.key_links[:3]]
+            links_str = " · 已用連結: " + ", ".join(truncated)
+        lines.append(f"- {r.date} · 《{r.title}》 · 立場: {stance}{links_str}")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def format_topic_for_prompt(topic):
+    """Build a prompt block from the active editorial topic."""
+    if topic is None:
+        return ""
+    lines = [
+        "=== 本期主題指引（editorial plan） ===",
+        f"系列週次：W{topic.week}",
+        f"主題提示：{topic.title_hint}",
+        f"切入角度（angle）：{topic.angle}",
+        f"觀察視角（lens）：{topic.lens}",
+        f"方向：{topic.direction}",
+    ]
+    if topic.key_question:
+        lines.append(f"核心提問：{topic.key_question}")
+    lines.append("")
+    lines.append(
+        "請以上述主題提示和切入角度為本篇文章的主軸。"
+        "從素材中選取與此角度相關的新聞，圍繞核心提問展開論述。"
+    )
+    lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -483,10 +604,28 @@ def derive_stance_from_markdown(md, fallback_title):
 
 def main():
     parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+
+    # default (write) subcommand
+    p_write = sub.add_parser("write", help="Generate and publish an article (default)")
+    p_write.add_argument("--deliver-to", help="Telegram chat ID")
+    p_write.add_argument("--account", help="Telegram account name in config")
+    p_write.add_argument("--dry-run", action="store_true", help="Don't post to dev.to or Telegram")
+
+    # fix-signature subcommand
+    fix = sub.add_parser("fix-signature", help="Patch author signature in a published dev.to article")
+    fix.add_argument("devto_id", type=int, help="dev.to article id")
+    fix.add_argument("--dry-run", action="store_true", help="Show what would change without updating")
+
+    # top-level flags (backward compat: `run.py --dry-run` without subcommand)
     parser.add_argument("--deliver-to", help="Telegram chat ID")
     parser.add_argument("--account", help="Telegram account name in config")
     parser.add_argument("--dry-run", action="store_true", help="Don't post to dev.to or Telegram")
+
     args = parser.parse_args()
+
+    if args.command == "fix-signature":
+        return cmd_fix_signature(args)
 
     config = load_config()
 
@@ -518,6 +657,24 @@ def main():
         except Exception as e:  # noqa: BLE001
             print(f"persona_history.recent failed: {e}", file=sys.stderr)
 
+    # Query editorial plan for today's topic
+    active_topic = None
+    if history_conn is not None:
+        try:
+            plan = persona_history.get_plan(
+                history_conn, skill=SKILL_NAME, series_slug=SERIES_SLUG,
+            )
+            if plan is not None:
+                active_topic = persona_history.next_topic(
+                    history_conn, plan_id=plan.id,
+                )
+                if active_topic:
+                    print(f"Editorial plan: W{active_topic.week} — {active_topic.title_hint}")
+                else:
+                    print("Editorial plan: all topics published or skipped.", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"editorial plan query failed: {e}", file=sys.stderr)
+
     run_id = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         STATUS_DIR.mkdir(parents=True, exist_ok=True)
@@ -546,9 +703,10 @@ def main():
 
     # 2. 作家 LLM
     history_block = format_history_for_prompt(history_rows)
+    topic_block = format_topic_for_prompt(active_topic)
     author_byline = persona.get("name") or persona["slug"]
     signature_block = (
-        f"*—— {author_byline}（{persona['role']}）*\n\n"
+        f"*—— <span translate=\"no\">{author_byline}</span>（{persona['role']}）*\n\n"
         "*本文為個人觀察，立場不代表任何宗教傳統。歡迎各傳統的讀者帶著自身的智慧框架閱讀與回應。*"
     )
     writer_prompt = f"""你是{persona["role"]}，筆名「{author_byline}」，主題是「身心靈 × AI」。
@@ -562,10 +720,16 @@ def main():
 - 2000-3500 字
 - 結構：標題 (H1) → 引言 → ## 今日靈感 → ## 深度觀察 → ## 實踐角落 → ## 延伸閱讀
 
-{history_block}下面是今天的素材（編號清單）：
+{history_block}{topic_block}下面是今天的素材（編號清單）：
 {prompt_items}
 
 **重要：在文章中引用素材時，必須嚴格使用 [來源 #N] 格式（例如 [來源 #1]），不可直接寫 [1] 或 #1。**
+
+**反重複規則（違反任何一條就是不及格）：**
+- 若上方「最近寫過的文章」清單不為空，你的標題、開場、和核心論點必須與所有已發表文章**明顯不同**。
+- 不可再用已出現過的比喻（例如「工具是為了讓你放手」已經用過，不可變體重述）。
+- 開場段落禁止使用「想像一下…」「你有沒有想過…」「當 X 遇上 Y」等已在前幾篇用過的句式。
+- 若素材與過去文章的主題高度重疊，你必須找到**完全不同的切入角度**（例如：技術細節、使用者故事、歷史脈絡、批判視角）。
 
 **文末署名（必填，原樣輸出，不要改寫）：**
 在最後一段之後插入一條 `---` 分隔線，然後原樣加上下列兩行署名：
@@ -654,7 +818,7 @@ def main():
         )
     elif history_conn is not None and not args.dry_run:
         try:
-            persona_history.record(
+            history_id = persona_history.record(
                 history_conn,
                 skill=SKILL_NAME,
                 stream=STREAM_NAME,
@@ -667,6 +831,14 @@ def main():
                 devto_id=devto_id,
                 devto_url=draft_url,
             )
+            if active_topic is not None:
+                try:
+                    persona_history.mark_topic_published(
+                        history_conn, active_topic.id, history_id,
+                    )
+                    print(f"Editorial plan: W{active_topic.week} marked published.")
+                except ValueError as e:
+                    print(f"mark_topic_published failed: {e}", file=sys.stderr)
         except Exception as e:  # noqa: BLE001
             print(f"persona_history.record failed: {e}", file=sys.stderr)
 

@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - optional dependency
     libsql = None
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DB_URL_ENV = "PERSONA_REGISTRY_DB_URL"
 DB_TOKEN_ENV = "PERSONA_REGISTRY_DB_TOKEN"
@@ -69,11 +69,43 @@ class HistoryRow:
     created_at: str
 
 
+@dataclass(frozen=True)
+class PlanRow:
+    """A long-lived series plan. `month` is the starting month, not a
+    per-month constraint — UNIQUE(skill, series_slug) allows only one
+    plan per series regardless of month."""
+    id: int
+    skill: str
+    series_slug: str
+    month: str
+    series_title: str
+    series_theme: Optional[str]
+    created_at: str
+
+
+@dataclass(frozen=True)
+class TopicRow:
+    """A single topic within a series plan."""
+    id: int
+    plan_id: int
+    week: int
+    target_date: str
+    title_hint: str
+    angle: str
+    lens: str
+    direction: str
+    key_question: Optional[str]
+    status: str
+    history_id: Optional[int]
+    created_at: str
+
+
 def connect(database_url: str, auth_token: Optional[str] = None):
     if database_url == ":memory:":
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_SECONDS * 1000}")
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     if libsql is None:
@@ -185,8 +217,56 @@ def _migrate_to_v1(conn) -> None:
     )
 
 
+def _migrate_to_v2(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS editorial_plan (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          skill         TEXT    NOT NULL,
+          series_slug   TEXT    NOT NULL,
+          month         TEXT    NOT NULL,
+          series_title  TEXT    NOT NULL,
+          series_theme  TEXT,
+          created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          UNIQUE(skill, series_slug)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS editorial_topic (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          plan_id       INTEGER NOT NULL REFERENCES editorial_plan(id),
+          week          INTEGER NOT NULL,
+          target_date   TEXT    NOT NULL,
+          title_hint    TEXT    NOT NULL,
+          angle         TEXT    NOT NULL,
+          lens          TEXT    NOT NULL,
+          direction     TEXT    NOT NULL DEFAULT 'tech-first',
+          key_question  TEXT,
+          status        TEXT    NOT NULL DEFAULT 'planned',
+          history_id    INTEGER REFERENCES persona_history(id),
+          created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_et_plan_week
+          ON editorial_topic(plan_id, week)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_et_status
+          ON editorial_topic(status, target_date)
+        """
+    )
+
+
 MIGRATIONS = [
     (1, _migrate_to_v1),
+    (2, _migrate_to_v2),
 ]
 
 
@@ -346,6 +426,166 @@ def set_devto_result(
         (devto_id, devto_url, row_id),
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Editorial plan CRUD
+# ---------------------------------------------------------------------------
+
+
+def create_plan(
+    conn,
+    *,
+    skill: str,
+    series_slug: str,
+    month: str,
+    series_title: str,
+    series_theme: Optional[str] = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO editorial_plan (skill, series_slug, month, series_title, series_theme)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (skill, series_slug, month, series_title, series_theme),
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    if row_id is None:
+        row = conn.execute("SELECT last_insert_rowid()").fetchone()
+        row_id = int(row[0])
+    return int(row_id)
+
+
+def get_plan(conn, *, skill: str, series_slug: str) -> Optional[PlanRow]:
+    row = conn.execute(
+        """
+        SELECT id, skill, series_slug, month, series_title, series_theme, created_at
+        FROM editorial_plan
+        WHERE skill = ? AND series_slug = ?
+        """,
+        (skill, series_slug),
+    ).fetchone()
+    if row is None:
+        return None
+    return PlanRow(
+        id=int(row[0]), skill=row[1], series_slug=row[2],
+        month=row[3], series_title=row[4], series_theme=row[5], created_at=row[6],
+    )
+
+
+def list_plans(conn, *, skill: Optional[str] = None) -> list[PlanRow]:
+    if skill:
+        rows = conn.execute(
+            "SELECT id, skill, series_slug, month, series_title, series_theme, created_at "
+            "FROM editorial_plan WHERE skill = ? ORDER BY month DESC",
+            (skill,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, skill, series_slug, month, series_title, series_theme, created_at "
+            "FROM editorial_plan ORDER BY month DESC",
+        ).fetchall()
+    return [
+        PlanRow(id=int(r[0]), skill=r[1], series_slug=r[2],
+                month=r[3], series_title=r[4], series_theme=r[5], created_at=r[6])
+        for r in rows
+    ]
+
+
+def add_topic(
+    conn,
+    *,
+    plan_id: int,
+    week: int,
+    target_date: str,
+    title_hint: str,
+    angle: str,
+    lens: str,
+    direction: str = "tech-first",
+    key_question: Optional[str] = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO editorial_topic
+            (plan_id, week, target_date, title_hint, angle, lens, direction, key_question)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (plan_id, week, target_date, title_hint, angle, lens, direction, key_question),
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    if row_id is None:
+        row = conn.execute("SELECT last_insert_rowid()").fetchone()
+        row_id = int(row[0])
+    return int(row_id)
+
+
+def list_topics(conn, *, plan_id: int) -> list[TopicRow]:
+    rows = conn.execute(
+        """
+        SELECT id, plan_id, week, target_date, title_hint, angle, lens, direction,
+               key_question, status, history_id, created_at
+        FROM editorial_topic
+        WHERE plan_id = ?
+        ORDER BY week
+        """,
+        (plan_id,),
+    ).fetchall()
+    return [_row_to_topic(r) for r in rows]
+
+
+def next_topic(conn, *, plan_id: int) -> Optional[TopicRow]:
+    row = conn.execute(
+        """
+        SELECT id, plan_id, week, target_date, title_hint, angle, lens, direction,
+               key_question, status, history_id, created_at
+        FROM editorial_topic
+        WHERE plan_id = ? AND status = 'planned'
+        ORDER BY week
+        LIMIT 1
+        """,
+        (plan_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_topic(row)
+
+
+def mark_topic_published(conn, topic_id: int, history_id: int) -> None:
+    cursor = conn.execute(
+        "UPDATE editorial_topic SET status = 'published', history_id = ? "
+        "WHERE id = ? AND status = 'planned'",
+        (history_id, topic_id),
+    )
+    conn.commit()
+    if cursor.rowcount == 0:
+        raise ValueError(
+            f"topic {topic_id} not updated — either missing or not in 'planned' status"
+        )
+
+
+def mark_topic_skipped(conn, topic_id: int) -> None:
+    cursor = conn.execute(
+        "UPDATE editorial_topic SET status = 'skipped' "
+        "WHERE id = ? AND status = 'planned'",
+        (topic_id,),
+    )
+    conn.commit()
+    if cursor.rowcount == 0:
+        raise ValueError(
+            f"topic {topic_id} not updated — either missing or not in 'planned' status"
+        )
+
+
+def _row_to_topic(row) -> TopicRow:
+    return TopicRow(
+        id=int(row[0]), plan_id=int(row[1]), week=int(row[2]),
+        target_date=row[3], title_hint=row[4], angle=row[5],
+        lens=row[6], direction=row[7], key_question=row[8],
+        status=row[9], history_id=int(row[10]) if row[10] is not None else None,
+        created_at=row[11],
+    )
 
 
 def _row_to_history(row) -> HistoryRow:

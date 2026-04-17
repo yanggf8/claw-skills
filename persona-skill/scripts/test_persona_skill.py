@@ -347,5 +347,168 @@ class InProcessRoundtripTests(unittest.TestCase):
         conn.close()
 
 
+class PlanCLITests(unittest.TestCase):
+    """plan-list / plan-show CLI paths."""
+
+    def test_plan_list_empty(self):
+        r = _run("plan-list")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("no plans", r.stdout)
+
+    def test_plan_list_json_empty(self):
+        r = _run("plan-list", "--json")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(json.loads(r.stdout), [])
+
+    def test_plan_show_unknown_exits_2(self):
+        r = _run("plan-show", "nonexistent-skill", "nonexistent-series")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no plan", r.stderr)
+
+
+class EditorialPlanInProcessTests(unittest.TestCase):
+    """In-process tests for editorial plan CRUD and guarded transitions."""
+
+    @classmethod
+    def setUpClass(cls):
+        lib_path = str(Path(__file__).resolve().parent.parent.parent / "lib")
+        if lib_path not in sys.path:
+            sys.path.insert(0, lib_path)
+
+    def _fresh_conn(self):
+        import persona_registry
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute("PRAGMA foreign_keys = ON")
+        persona_registry.ensure_schema(conn)
+        return conn
+
+    def test_plan_create_and_topic_roundtrip(self):
+        import persona_history
+        conn = self._fresh_conn()
+        persona_history.ensure_schema(conn)
+
+        plan_id = persona_history.create_plan(
+            conn, skill="test", series_slug="test-series",
+            month="2026-05", series_title="Test Series",
+        )
+        self.assertIsInstance(plan_id, int)
+
+        plan = persona_history.get_plan(conn, skill="test", series_slug="test-series")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.series_title, "Test Series")
+
+        topic_id = persona_history.add_topic(
+            conn, plan_id=plan_id, week=0, target_date="2026-04-28",
+            title_hint="Opener", angle="overview", lens="overview",
+            direction="tech-first", key_question="Why?",
+        )
+        self.assertIsInstance(topic_id, int)
+
+        topics = persona_history.list_topics(conn, plan_id=plan_id)
+        self.assertEqual(len(topics), 1)
+        self.assertEqual(topics[0].title_hint, "Opener")
+        self.assertEqual(topics[0].status, "planned")
+
+        nxt = persona_history.next_topic(conn, plan_id=plan_id)
+        self.assertIsNotNone(nxt)
+        self.assertEqual(nxt.id, topic_id)
+        conn.close()
+
+    def test_mark_published_guards_status(self):
+        import persona_history
+        import persona_registry
+        conn = self._fresh_conn()
+        persona_history.ensure_schema(conn)
+
+        plan_id = persona_history.create_plan(
+            conn, skill="test", series_slug="guard-test",
+            month="2026-05", series_title="Guard Test",
+        )
+        # Need a history row for the FK
+        p = persona_registry.Persona(slug="guard", role="test")
+        persona_registry.upsert(conn, p)
+        history_id = persona_history.record(
+            conn, skill="test", stream="test", persona_slug="guard",
+            date="2026-04-28", title="T", stance="S",
+            key_links=[], writer_hash="sha256:abc",
+        )
+
+        topic_id = persona_history.add_topic(
+            conn, plan_id=plan_id, week=0, target_date="2026-04-28",
+            title_hint="T", angle="a", lens="l",
+        )
+
+        # Publish succeeds from planned
+        persona_history.mark_topic_published(conn, topic_id, history_id)
+        topics = persona_history.list_topics(conn, plan_id=plan_id)
+        self.assertEqual(topics[0].status, "published")
+
+        # Publishing again raises ValueError (already published)
+        with self.assertRaises(ValueError):
+            persona_history.mark_topic_published(conn, topic_id, history_id)
+        conn.close()
+
+    def test_mark_skipped_guards_status(self):
+        import persona_history
+        conn = self._fresh_conn()
+        persona_history.ensure_schema(conn)
+
+        plan_id = persona_history.create_plan(
+            conn, skill="test", series_slug="skip-test",
+            month="2026-05", series_title="Skip Test",
+        )
+        topic_id = persona_history.add_topic(
+            conn, plan_id=plan_id, week=0, target_date="2026-04-28",
+            title_hint="T", angle="a", lens="l",
+        )
+
+        persona_history.mark_topic_skipped(conn, topic_id)
+        topics = persona_history.list_topics(conn, plan_id=plan_id)
+        self.assertEqual(topics[0].status, "skipped")
+
+        # Skipping again raises ValueError
+        with self.assertRaises(ValueError):
+            persona_history.mark_topic_skipped(conn, topic_id)
+        conn.close()
+
+    def test_next_topic_skips_non_planned(self):
+        import persona_history
+        conn = self._fresh_conn()
+        persona_history.ensure_schema(conn)
+
+        plan_id = persona_history.create_plan(
+            conn, skill="test", series_slug="next-test",
+            month="2026-05", series_title="Next Test",
+        )
+        t0 = persona_history.add_topic(
+            conn, plan_id=plan_id, week=0, target_date="2026-04-28",
+            title_hint="W0", angle="a", lens="l",
+        )
+        t1 = persona_history.add_topic(
+            conn, plan_id=plan_id, week=1, target_date="2026-05-05",
+            title_hint="W1", angle="a", lens="l",
+        )
+
+        persona_history.mark_topic_skipped(conn, t0)
+        nxt = persona_history.next_topic(conn, plan_id=plan_id)
+        self.assertIsNotNone(nxt)
+        self.assertEqual(nxt.id, t1)
+        self.assertEqual(nxt.title_hint, "W1")
+        conn.close()
+
+    def test_orphan_plan_id_rejected(self):
+        import persona_history
+        conn = self._fresh_conn()
+        persona_history.ensure_schema(conn)
+
+        with self.assertRaises(Exception):
+            persona_history.add_topic(
+                conn, plan_id=999, week=0, target_date="2026-04-28",
+                title_hint="T", angle="a", lens="l",
+            )
+        conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
