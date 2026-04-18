@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Personal agent skills — Python scripts invoked as cron jobs or on-demand by the **nullclaw**, **openclaw**, or **nanoclaw** agent. Each skill lives in its own directory. Same source, same `SKILL.md` format, three hosts.
 
-The `cct` skill (CCT trading intelligence) lives separately in `~/a/cct/skills/cct/` and is versioned with that project.
-
 ## Current agent support
 
 All three agents are supported by the same code. The `SKILL.md` format is the standard Claude Code skill format — all three use the same frontmatter (`name`, `description`, `always`). Differences are isolated to config/env resolution and install layout:
@@ -158,11 +156,33 @@ nullclaw cron backup
 
 Cron expressions use UTC. Taiwan (CST) = UTC+8, EST = UTC-5.
 
+## Testing
+
+`lib/test_*.py` are plain `unittest` files, runnable directly with no pytest or runner:
+
+```bash
+python3 lib/test_telegram_retry.py
+python3 lib/test_persona_history.py
+python3 lib/test_oil_store.py
+# etc.
+```
+
+## Gotchas
+
+- **`weather` needs `CWA_API_KEY`**: put it in `~/.nullclaw/.env` (default) or `~/.openclaw/.env` and export `CLAW_ENV` to point at it. Without the key, Taiwan forecasts silently return no data.
+- **OpenClaw `weather` name collision**: OpenClaw ships a bundled `weather` skill (wttr.in). Workspace skills take precedence, so this repo's `weather` wins. Rename the folder + frontmatter `name:` if you want both.
+
+## Design notes
+
+Prior design context lives in `docs/specs/` (e.g. `2026-04-15-oilcon-skill-design.md`, `2026-04-16-turso-consolidation.md`). Check there before redesigning a skill from scratch.
+
 ## Skills reference
 
 | Skill | Script args | External API |
 |-------|-------------|--------------|
 | `news` | `--topics`, `--account-topics`, `manage list\|add\|remove` | Google News RSS |
+| `cct` | `--mode <pre-market\|eod\|...>` | CCT internal |
+| `cct2` | `--mode pre-market\|eod` | Yahoo Finance + dual LLM |
 | `stock` | `--market tw\|hk\|all`, `--symbol CODE` | TWSE, Yahoo Finance |
 | `weather` | `--location NAME` (repeatable) | CWA (Taiwan), HKO (HK) |
 | `traffic` | `--from`, `--to`, `--via` | TomTom Routing API |
