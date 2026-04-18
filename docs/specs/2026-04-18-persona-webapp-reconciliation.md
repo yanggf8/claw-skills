@@ -1,7 +1,7 @@
 # Persona-webapp reconciliation plan
 
 **Date**: 2026-04-18
-**Status**: draft, awaiting review (P5 goes to Gemini)
+**Status**: P3 done, P5 decided (Option B + fallback), P1/P2/P4/P5-impl pending
 
 ## Context
 
@@ -60,30 +60,47 @@ Rename + extend to match the webapp model:
 
 Remove: `plan-list`, `plan-show`.
 
-### P5. Writer-side data access (Gemini review)
+### P5. Writer-side data access — Option B with direct-DB fallback (decided 2026-04-18)
 
 **Problem**: persona-skill writer prompt injects topic context (angle, lens, direction, key_question) at publish time. Source of truth moved from `editorial_topic` → `installment` / `issue`. Writer runs in CLI process and needs to read these rows, then mark them published.
 
-**Options:**
+**Race analysis (revised)**:
+- Webapp is an editing/management UI with per-user data scope; it does not write articles.
+- Articles are written by skills (CLI). Webapp and CLI do not contend for the same `installment` / `issue` rows.
+- Only overlap surface is `persona`: admin could edit a persona while CLI is reading it for writer prompt → handled by optimistic concurrency (re-read `persona_updated_at` at write-back; if changed since prompt assembly, warn and skip).
+- The theoretical race that originally favoured Option A does not apply.
 
-| | Read | Write (mark published) | Pros | Cons |
-|---|---|---|---|---|
-| **A. Direct DB** | Turso `installment` | Turso + `persona_history` | Simplest, matches current history write-back | Two writers (webapp UI + CLI) on same row, theoretical race |
-| **B. API-only** | `GET /api/columns/:id` + service token | `POST /api/personas/:slug/history` | Single write path, DB token stays in webapp only | Cron depends on webapp uptime; new allowlist paths |
-| **C. Split** | Direct DB for reads | Service token API for writes | Minimal service-token surface | Two code paths, consistency harder to reason about |
+**Decision**: Option B (API-first) with direct-Turso fallback when the API is unreachable.
 
-**Current direction (in-progress)**: persona-skill already has `_webapp_request` helper — pointing at Option B.
+- CLI tries webapp API first (`PERSONA_API_URL` + `PERSONA_SERVICE_TOKEN` in env). `_webapp_request` helper in `persona_skill.py` already implements this path.
+- On connection error / timeout / 5xx → fall back to direct Turso client (existing `lib/persona_registry` + `lib/persona_history`). Keeps cron robust when webapp is down.
+- Personas: optimistic concurrency via `persona_updated_at` compare before history write-back.
 
-**Lean**: A would be simplest. Race is theoretical for a single-user nightly cron. Option B couples cron availability to webapp deploy.
+**API additions needed** (extend `SERVICE_ALLOWED_PATHS` in `src/auth.ts`):
 
-**For Gemini**: evaluate against failure modes (webapp down during cron, DB token rotation, concurrent webapp edit during cron window) and operational simplicity. Given B is already partway implemented, is the cost of switching back to A worth the simplicity? Or does B's clean separation justify the deploy-dependency cost?
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/personas/:slug/columns` | Writer lists persona's columns to pick next installment |
+| GET | `/api/personas/:slug/streams` | Same for streams/issues |
+| GET | `/api/columns/:id/installments/next` | Writer fetches next `planned` installment |
+| GET | `/api/streams/:id/issues/next` | Same for issues |
+| PUT | `/api/columns/installments/:id` | Mark installment published, set history_id |
+| PUT | `/api/streams/issues/:id` | Same for issue |
+
+`POST /api/personas/:slug/history` already exists for history write-back.
+
+**Rationale for B over A**:
+- Single write path through webapp preserves scope checks + audit log
+- DB token stays in webapp only (smaller blast radius if CLI host compromised)
+- Service token infrastructure + allowlist already exist
+- Fallback path covers the webapp-downtime concern that was B's main weakness
 
 ## Execution order
 
-1. **P3** — doc update (cheap, documentation truth first)
-2. **P1** — schema init (reproducibility fix)
-3. **P2** — seed split (data hygiene)
-4. **P5 Gemini review** — decide A vs B vs C
-5. **P4** — CLI completion, using the P5 decision for writer path
+1. **P3** — doc update ✅ (done 2026-04-18)
+2. **P1** — schema init script
+3. **P2** — seed script / data split
+4. **P4** — CLI rename + extend (`column-*`, `installment-*`, `stream-*`, `issue-*`)
+5. **P5** — implement API additions in webapp + wire CLI fallback path
 
-Everything except P5 can proceed without blocking on review.
+P5 no longer blocked on review.
