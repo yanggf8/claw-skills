@@ -8,6 +8,23 @@ requires_bins: ["python3", "nullclaw"]
 requires_env: ["PERSONA_REGISTRY_DB_URL", "PERSONA_REGISTRY_DB_TOKEN"]
 ---
 
+# Deprecated: Archived 2026-04-21
+
+This skill has been absorbed into `persona-core`. Do not run the legacy
+`scripts/run.py` writer pipeline for new work.
+
+New agent-side flow:
+
+```bash
+persona-core mindfulness next-topic --series inner-algorithm
+persona-core mindfulness sources
+# agent drafts/edits the article in its own LLM
+persona-core mindfulness publish --file draft.md --series inner-algorithm --publish
+```
+
+For a non-public preview, use `--draft`; draft mode records draft history but
+leaves the planned installment available for the later `--publish` run.
+
 # mindfulness-spirit
 
 「身心靈 × AI」主題的系列文章自動產出引擎。由 Turso 中的編輯計畫驅動，依序產出系列文章，發布到 dev.to。作者身份、寫作風格、API 金鑰全部從 Turso persona-registry 載入。
