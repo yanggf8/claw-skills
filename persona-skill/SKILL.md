@@ -11,6 +11,27 @@ requires_env:
   - PERSONA_REGISTRY_DB_TOKEN
 ---
 
+# Deprecated: Archived 2026-04-21
+
+This skill has been absorbed into `persona-core`. Do not use
+`scripts/persona_skill.py` for new work.
+
+Replacement commands:
+
+```bash
+persona-core personas list
+persona-core personas get <slug>
+persona-core personas create --file persona.yaml
+persona-core personas update <slug> --file persona.yaml
+persona-core secrets list <slug>
+persona-core secrets set <slug> <kind>
+persona-core plans list
+persona-core plans show <skill> <series-slug>
+persona-core history list --persona <slug>
+```
+
+Rollback remains available from the `v-final` tag.
+
 # persona-skill
 
 Writer-persona registry backed by a single Turso (libsql) database. Other skills (e.g. `mindfulness-spirit`, `ainews`) import `lib/persona_registry` and `lib/persona_history` directly. This CLI is the admin interface — manage personas, secrets, editorial plans, and publish history.

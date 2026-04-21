@@ -190,8 +190,8 @@ Prior design context lives in `docs/specs/` (e.g. `2026-04-15-oilcon-skill-desig
 | `doughcon` | `--mode deliver\|record` | PizzINT API |
 | `oilcon` | `--mode deliver\|record` | Yahoo Finance, Turso |
 | `agent-reach` | agent-only, see SKILL.md | 13+ platforms |
-| `mindfulness-spirit` | `write`, `fix-signature DEVTO_ID`, `--dry-run` | Google News RSS, dev.to, Turso |
-| `persona-skill` | `get\|list\|create\|update\|delete`, `set-secret\|get-secret\|delete-secret`, `history`, `plan-list\|plan-show` | Turso |
+| `mindfulness-spirit` | archived at `v-final`; use `persona-core mindfulness {next-topic,sources,publish}` | Google News RSS, dev.to, Turso |
+| `persona-skill` | archived at `v-final`; use `persona-core personas|secrets|plans|history` | Turso |
 
 ### Shared libraries (`lib/`)
 
