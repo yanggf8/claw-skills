@@ -28,6 +28,7 @@ LLM_CUSTOM_TOPIC_LIMIT = 8
 LLM_DEFAULT_TIMEOUT_SECS = 180
 LLM_CUSTOM_TIMEOUT_SECS = 180
 LLM_SECTION_TIMEOUT_SECS = 90
+LLM_TRANSLATION_TIMEOUT_SECS = 60
 DEFAULT_SECTION_SPECS = {
     "ai": {
         "header": "**🤖 AI 人工智慧**",
@@ -247,12 +248,16 @@ def _attach_links(summary: str, link_map: dict[str, str]) -> str:
 
 def _news_bullet_lines(summary: str) -> list[str]:
     """Return news item bullets that should carry source markers."""
+    import re
+
     lines = []
     for line in summary.splitlines():
         stripped = line.strip()
-        if not stripped.startswith("-"):
+        if stripped in ("---", "--", "***"):
             continue
-        body = stripped[1:].strip()
+        if not stripped.startswith("-") and not re.match(r"^#\d+\b(?!,)", stripped):
+            continue
+        body = stripped[1:].strip() if stripped.startswith("-") else stripped
         if not body or body.startswith("...") or "今日無相關新聞" in body:
             continue
         lines.append(line)
@@ -266,10 +271,55 @@ def _marker_validation_stats(summary: str, numbered: dict[int, dict]) -> tuple[i
     marked = 0
     bullet_lines = _news_bullet_lines(summary)
     for line in bullet_lines:
-        match = re.match(r"^\s*-\s*#(\d+)\b(?!,)", line)
+        match = re.match(r"^\s*(?:-\s*)?#(\d+)\b(?!,)", line)
         if match and int(match.group(1)) in numbered:
             marked += 1
     return marked, len(bullet_lines)
+
+
+def _extract_leading_marker_ids(summary: str, numbered: dict[int, dict]) -> list[int]:
+    import re
+
+    seen = set()
+    ids = []
+    for line in _news_bullet_lines(summary):
+        match = re.match(r"^\s*(?:-\s*)?#(\d+)\b(?!,)", line)
+        if not match:
+            continue
+        num = int(match.group(1))
+        if num in numbered and num not in seen:
+            ids.append(num)
+            seen.add(num)
+    return ids
+
+
+def _count_cjk(text: str) -> int:
+    return sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+
+
+def _strip_marker_prefix(line: str) -> str:
+    import re
+
+    return re.sub(r"^\s*(?:-\s*)?#\d+\b(?!,)\s*", "", line).strip()
+
+
+def _language_validation_stats(summary: str) -> tuple[int, int]:
+    """Return (Chinese-looking bullets, total news bullets)."""
+    chinese = 0
+    bullet_lines = _news_bullet_lines(summary)
+    for line in bullet_lines:
+        body = _strip_marker_prefix(line)
+        first_cjk = next((idx for idx, ch in enumerate(body) if "\u4e00" <= ch <= "\u9fff"), -1)
+        if _count_cjk(body) >= 2 and first_cjk >= 0 and first_cjk <= 18:
+            chinese += 1
+    return chinese, len(bullet_lines)
+
+
+def _language_validation_passed(summary: str) -> bool:
+    chinese, total = _language_validation_stats(summary)
+    if total == 0:
+        return False
+    return chinese * 5 >= total * 4
 
 
 def _number_items_for_prompt(
@@ -324,21 +374,24 @@ def _log_llm_validation_failed(
     total_bullets: int,
     numbered: dict[int, dict],
     reason: str,
+    extra: dict | None = None,
 ) -> None:
-    log_trace(
-        "llm_validation_failed",
-        variant=variant,
-        reason=reason,
-        returncode=getattr(result, "returncode", None),
-        stdout_len=len(getattr(result, "stdout", "") or ""),
-        stderr_len=len(getattr(result, "stderr", "") or ""),
-        items_numbered=len(numbered),
-        marked_bullets=marked_bullets,
-        total_bullets=total_bullets,
-        stdout_sample=_clip_subprocess_text(summary, 1200),
-        line_sample=_sample_nonempty_lines(summary, 8),
-        bullet_sample=[line.strip()[:240] for line in _news_bullet_lines(summary)[:8]],
-    )
+    fields = {
+        "variant": variant,
+        "reason": reason,
+        "returncode": getattr(result, "returncode", None),
+        "stdout_len": len(getattr(result, "stdout", "") or ""),
+        "stderr_len": len(getattr(result, "stderr", "") or ""),
+        "items_numbered": len(numbered),
+        "marked_bullets": marked_bullets,
+        "total_bullets": total_bullets,
+        "stdout_sample": _clip_subprocess_text(summary, 1200),
+        "line_sample": _sample_nonempty_lines(summary, 8),
+        "bullet_sample": [line.strip()[:240] for line in _news_bullet_lines(summary)[:8]],
+    }
+    if extra:
+        fields.update(extra)
+    log_trace("llm_validation_failed", **fields)
 
 
 def _llm_source_item_counts(all_items: dict[str, list[dict]]) -> dict[str, int]:
@@ -403,9 +456,11 @@ def _fallback_section_lines(key: str, items: list[dict], limit: int, link_map: d
     if not items:
         return ["- 今日無相關新聞"]
     lines = []
-    for item in items[:limit]:
+    for idx, item in enumerate(items[:limit], start=1):
         title = item["title"]
         link = link_map.get(title, item.get("link", ""))
+        if key == "ai" and _count_cjk(title) < 2:
+            title = f"AI 新聞來源 {idx}（摘要翻譯暫時失敗）"
         if link:
             lines.append(f"- {title} [🔗]({link})")
         else:
@@ -418,19 +473,86 @@ def _attach_numbered_links(summary: str, numbered: dict[int, dict]) -> tuple[str
 
     attached = {"count": 0}
 
-    def replace_ref(m):
-        num = int(m.group(1))
+    marker_line = re.compile(r"^\s*(?:-\s*)?#(\d+)\b(?!,)\s*")
+
+    def replace_line(line: str) -> str:
+        match = marker_line.match(line)
+        if not match:
+            return line
+        num = int(match.group(1))
         item = numbered.get(num)
+        body = line[match.end():].lstrip()
         if item and item["link"]:
             attached["count"] += 1
-            return f"[🔗]({item['link']}) "
-        return ""
+            return f"- [🔗]({item['link']}) {body}"
+        return f"- {body}" if body else "-"
 
-    return re.sub(r"#(\d+)\s*", replace_ref, summary), attached["count"]
+    return "\n".join(replace_line(line) for line in summary.splitlines()), attached["count"]
+
+
+def _translate_selected_section(
+    key: str,
+    selected_ids: list[int],
+    numbered: dict[int, dict],
+    date_str: str,
+) -> list[str] | None:
+    if not selected_ids:
+        return None
+
+    selected_numbered = {idx: numbered[idx] for idx in selected_ids if idx in numbered}
+    raw = "\n".join(f"#{idx} {item['title']}" for idx, item in selected_numbered.items())
+    prompt = (
+        f"你是新聞標題翻譯編輯。以下是今天({date_str})已選出的新聞標題，每則有編號 #N。\n\n"
+        f"{raw}\n\n"
+        f"請只把每則標題翻譯成繁體中文，保留公司名、人名、產品名英文，且不要改變編號或順序。\n"
+        f"輸出格式必須只有 dash bullets：\n"
+        f"- #N 繁體中文標題\n"
+        f"- #N ...\n\n"
+        f"每行必須以繁體中文新聞句子開始；不要先輸出英文原標題，也不要用「英文（中文）」格式。\n"
+        f"不要輸出開場白、區塊標題、解釋或英文原標題。"
+    )
+    result = _run_nullclaw_agent(
+        prompt,
+        LLM_TRANSLATION_TIMEOUT_SECS,
+        f"default_{key}_translate",
+        {key: [numbered[idx] for idx in selected_ids if idx in numbered]},
+        selected_numbered,
+    )
+    summary = result.stdout.strip()
+    marked_bullets, total_bullets = _marker_validation_stats(summary, selected_numbered)
+    chinese_bullets, language_total = _language_validation_stats(summary)
+    if (
+        total_bullets > 0 and
+        marked_bullets == total_bullets and
+        _language_validation_passed(summary)
+    ):
+        with_links, links_attached = _attach_numbered_links(summary, selected_numbered)
+        if links_attached > 0:
+            return with_links.splitlines()
+
+    _log_llm_validation_failed(
+        f"default_{key}_translate",
+        result,
+        summary,
+        marked_bullets,
+        total_bullets,
+        selected_numbered,
+        "translation_retry_validation",
+        {
+            "chinese_bullets": chinese_bullets,
+            "language_total": language_total,
+        },
+    )
+    return None
 
 
 def _trim_digest_links(text: str) -> str:
     import re
+
+    def strip_links_keep_spacing(value: str) -> str:
+        value = re.sub(r"\s*\[🔗\]\([^)]+\)\s*", " ", value)
+        value = re.sub(r"^-\s*", "- ", value, flags=re.MULTILINE)
+        return "\n".join(line.rstrip() for line in value.splitlines())
 
     if len(text) <= 4000:
         return text
@@ -443,12 +565,12 @@ def _trim_digest_links(text: str) -> str:
         elif line.startswith("**"):
             in_ai = False
         if not in_ai and "[🔗](" in line:
-            line = re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", line)
+            line = strip_links_keep_spacing(line)
         trimmed.append(line)
     result = "\n".join(trimmed)
     if len(result) <= 4000:
         return result
-    return re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", text)
+    return strip_links_keep_spacing(text)
 
 
 def _summarize_default_section(key: str, items: list[dict], date_str: str, link_map: dict[str, str]) -> list[str]:
@@ -472,6 +594,7 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
         f"規則：\n"
         f"- 每則新聞前面必須保留原始編號 #N\n"
         f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞（公司名、人名）的英文\n"
+        f"- 每行必須以繁體中文新聞句子開始，不要輸出英文原標題或「英文（中文）」格式\n"
         f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞"
     )
     try:
@@ -486,21 +609,45 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
         if summary:
             marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
             if total_bullets > 0 and marked_bullets == total_bullets:
-                with_links, links_attached = _attach_numbered_links(summary, numbered)
-                if links_attached > 0:
-                    return with_links.splitlines()
-                log_trace(
-                    "llm_link_validation_failed",
-                    variant=f"default_{key}",
-                    section=key,
-                    returncode=result.returncode,
-                    stdout_len=len(result.stdout or ""),
-                    items_numbered=len(numbered),
-                    marked_bullets=marked_bullets,
-                    total_bullets=total_bullets,
-                    stdout_sample=_clip_subprocess_text(summary, 1200),
-                    line_sample=_sample_nonempty_lines(summary, 8),
-                )
+                chinese_bullets, language_total = _language_validation_stats(summary)
+                if not _language_validation_passed(summary):
+                    _log_llm_validation_failed(
+                        f"default_{key}",
+                        result,
+                        summary,
+                        marked_bullets,
+                        total_bullets,
+                        numbered,
+                        "language_validation",
+                        {
+                            "chinese_bullets": chinese_bullets,
+                            "language_total": language_total,
+                        },
+                    )
+                    translated = _translate_selected_section(
+                        key,
+                        _extract_leading_marker_ids(summary, numbered),
+                        numbered,
+                        date_str,
+                    )
+                    if translated is not None:
+                        return translated
+                else:
+                    with_links, links_attached = _attach_numbered_links(summary, numbered)
+                    if links_attached > 0:
+                        return with_links.splitlines()
+                    log_trace(
+                        "llm_link_validation_failed",
+                        variant=f"default_{key}",
+                        section=key,
+                        returncode=result.returncode,
+                        stdout_len=len(result.stdout or ""),
+                        items_numbered=len(numbered),
+                        marked_bullets=marked_bullets,
+                        total_bullets=total_bullets,
+                        stdout_sample=_clip_subprocess_text(summary, 1200),
+                        line_sample=_sample_nonempty_lines(summary, 8),
+                    )
             else:
                 _log_llm_validation_failed(
                     f"default_{key}",
@@ -671,6 +818,22 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
                 )
             else:
                 attached = {"count": 0}
+                chinese_bullets, language_total = _language_validation_stats(summary)
+                if not _language_validation_passed(summary):
+                    _log_llm_validation_failed(
+                        "custom",
+                        result,
+                        summary,
+                        marked_bullets,
+                        total_bullets,
+                        numbered,
+                        "language_validation",
+                        {
+                            "chinese_bullets": chinese_bullets,
+                            "language_total": language_total,
+                        },
+                    )
+                    raise ValueError("LLM custom summary failed language validation")
 
                 def replace_ref(m):
                     num = int(m.group(1))
