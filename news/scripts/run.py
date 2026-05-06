@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """News skill: fetch Google News RSS feeds and format a daily summary."""
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
-
-import tempfile
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
@@ -18,11 +18,60 @@ from delivery import deliver_or_fail
 from trace_marker import emit_skill_status, emit_trace
 
 TOPICS_FILE = os.path.expanduser("~/.nullclaw/news-topics.json")
+TRACE_FILE = os.path.expanduser("~/.nullclaw/skill-traces.jsonl")
+LLM_ITEM_LIMITS = {
+    "ai": 30,
+    "tech": 12,
+    "general": 8,
+}
+LLM_CUSTOM_TOPIC_LIMIT = 8
+LLM_DEFAULT_TIMEOUT_SECS = 180
+LLM_CUSTOM_TIMEOUT_SECS = 180
+LLM_SECTION_TIMEOUT_SECS = 90
+DEFAULT_SECTION_SPECS = {
+    "ai": {
+        "header": "**🤖 AI 人工智慧**",
+        "limit": 30,
+        "fallback_limit": 8,
+        "pick": "5-8",
+        "focus": "重大研究突破、政策變化、產品發布、產業併購、國安與監管等真正有影響力的 AI 新聞",
+    },
+    "tech": {
+        "header": "**💻 科技 & 半導體**",
+        "limit": 12,
+        "fallback_limit": 5,
+        "pick": "3-5",
+        "focus": "半導體、晶片、消費電子、太空科技與重要非 AI 科技新聞",
+    },
+    "general": {
+        "header": "**🌏 重大新聞**",
+        "limit": 8,
+        "fallback_limit": 3,
+        "pick": "2-3",
+        "focus": "最重大的非科技一般新聞",
+    },
+}
 
 # Default topics for accounts without a stored preference
 DEFAULT_TOPICS = {
     "main": None,  # None means use the hardcoded AI/tech/general feeds
 }
+
+
+def log_trace(event: str, **fields) -> None:
+    """Append structured skill diagnostics without logging secrets."""
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "job_id": os.environ.get("NULLCLAW_JOB_ID", "interactive"),
+        "skill": "news",
+        "event": event,
+        **fields,
+    }
+    try:
+        with open(TRACE_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[WARN] trace write failed: {e}", file=sys.stderr)
 
 
 def load_topics() -> dict[str, list[str]]:
@@ -196,92 +245,259 @@ def _attach_links(summary: str, link_map: dict[str, str]) -> str:
     return "\n".join(result)
 
 
-def summarize_llm(all_items: dict[str, list[dict]]) -> str:
-    """Ask the nullclaw agent to curate and summarize news for significance."""
-    import subprocess
+def _news_bullet_lines(summary: str) -> list[str]:
+    """Return news item bullets that should carry source markers."""
+    lines = []
+    for line in summary.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("-"):
+            continue
+        body = stripped[1:].strip()
+        if not body or body.startswith("...") or "今日無相關新聞" in body:
+            continue
+        lines.append(line)
+    return lines
+
+
+def _marker_validation_stats(summary: str, numbered: dict[int, dict]) -> tuple[int, int]:
+    """Return (marked_bullets, total_news_bullets) for valid leading #N markers."""
     import re
 
-    tw_now = datetime.now(timezone(timedelta(hours=8)))
-    date_str = tw_now.strftime("%Y/%m/%d (%a)")
+    marked = 0
+    bullet_lines = _news_bullet_lines(summary)
+    for line in bullet_lines:
+        match = re.match(r"^\s*-\s*#(\d+)\b(?!,)", line)
+        if match and int(match.group(1)) in numbered:
+            marked += 1
+    return marked, len(bullet_lines)
 
-    # Number all items so LLM can reference by ID
-    numbered = {}  # id -> {title, link}
+
+def _number_items_for_prompt(
+    all_items: dict[str, list[dict]],
+    labels: list[str] | None = None,
+    limits: dict[str, int] | None = None,
+) -> tuple[dict[int, dict], str]:
+    """Build the numbered LLM prompt input, capped to keep summarization responsive."""
+    numbered = {}
     sections = []
     idx = 1
-    for label, items in all_items.items():
-        if items:
-            lines = []
-            for it in items:
-                numbered[idx] = {"title": it["title"], "link": it.get("link", "")}
-                lines.append(f"  #{idx} {it['title']}")
-                idx += 1
-            sections.append(f"[{label}]\n" + "\n".join(lines))
-    raw = "\n".join(sections)
+    label_iter = labels if labels is not None else list(all_items.keys())
+    for label in label_iter:
+        items = all_items.get(label, [])
+        if not items:
+            continue
+        limit = (limits or {}).get(label, len(items))
+        lines = []
+        for it in items[:limit]:
+            numbered[idx] = {"title": it["title"], "link": it.get("link", "")}
+            lines.append(f"  #{idx} {it['title']}")
+            idx += 1
+        sections.append(f"[{label}]\n" + "\n".join(lines))
+    return numbered, "\n".join(sections)
 
+
+def _clip_subprocess_text(value, limit: int = 500) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return str(value).strip()[:limit]
+
+
+def _llm_source_item_counts(all_items: dict[str, list[dict]]) -> dict[str, int]:
+    return {label: len(items) for label, items in all_items.items()}
+
+
+def _run_nullclaw_agent(prompt: str, timeout_secs: int, variant: str, all_items: dict[str, list[dict]], numbered: dict[int, dict]):
+    import subprocess
+
+    argv = [os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw"), "agent", "-m", prompt]
+    env = os.environ.copy()
+    env["NULLCLAW_AGENT_TIMING_TRACE"] = "1"
+    started = time.monotonic()
+    log_trace(
+        "llm_agent_start",
+        variant=variant,
+        timeout_secs=timeout_secs,
+        source_item_counts=_llm_source_item_counts(all_items),
+        items_numbered=len(numbered),
+        prompt_chars=len(prompt),
+    )
+    try:
+        result = subprocess.run(
+            argv,
+            capture_output=True, text=True, timeout=timeout_secs, env=env,
+        )
+    except subprocess.TimeoutExpired as e:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        log_trace(
+            "llm_agent_timeout",
+            variant=variant,
+            timeout_secs=timeout_secs,
+            elapsed_ms=elapsed_ms,
+            source_item_counts=_llm_source_item_counts(all_items),
+            items_numbered=len(numbered),
+            prompt_chars=len(prompt),
+            stdout_len=len(e.stdout or ""),
+            stderr_len=len(e.stderr or ""),
+            stdout_tail=_clip_subprocess_text(e.stdout, 4000),
+            stderr_tail=_clip_subprocess_text(e.stderr, 4000),
+        )
+        return subprocess.CompletedProcess(
+            argv,
+            124,
+            stdout=_clip_subprocess_text(e.stdout, 10000),
+            stderr=_clip_subprocess_text(e.stderr, 10000),
+        )
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    log_trace(
+        "llm_agent_exit",
+        variant=variant,
+        elapsed_ms=elapsed_ms,
+        returncode=result.returncode,
+        stdout_len=len(result.stdout or ""),
+        stderr_len=len(result.stderr or ""),
+        stderr_tail=_clip_subprocess_text(result.stderr, 4000),
+    )
+    return result
+
+
+def _fallback_section_lines(key: str, items: list[dict], limit: int, link_map: dict[str, str]) -> list[str]:
+    if not items:
+        return ["- 今日無相關新聞"]
+    lines = []
+    for item in items[:limit]:
+        title = item["title"]
+        link = link_map.get(title, item.get("link", ""))
+        if link:
+            lines.append(f"- {title} [🔗]({link})")
+        else:
+            lines.append(f"- {title}")
+    return lines
+
+
+def _attach_numbered_links(summary: str, numbered: dict[int, dict]) -> tuple[str, int]:
+    import re
+
+    attached = {"count": 0}
+
+    def replace_ref(m):
+        num = int(m.group(1))
+        item = numbered.get(num)
+        if item and item["link"]:
+            attached["count"] += 1
+            return f"[🔗]({item['link']}) "
+        return ""
+
+    return re.sub(r"#(\d+)\s*", replace_ref, summary), attached["count"]
+
+
+def _trim_digest_links(text: str) -> str:
+    import re
+
+    if len(text) <= 4000:
+        return text
+    lines = text.split("\n")
+    in_ai = False
+    trimmed = []
+    for line in lines:
+        if "AI 人工智慧" in line:
+            in_ai = True
+        elif line.startswith("**"):
+            in_ai = False
+        if not in_ai and "[🔗](" in line:
+            line = re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", line)
+        trimmed.append(line)
+    result = "\n".join(trimmed)
+    if len(result) <= 4000:
+        return result
+    return re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", text)
+
+
+def _summarize_default_section(key: str, items: list[dict], date_str: str, link_map: dict[str, str]) -> list[str]:
+    spec = DEFAULT_SECTION_SPECS[key]
+    if not items:
+        return ["- 今日無相關新聞"]
+
+    section_items = {key: items}
+    numbered, raw = _number_items_for_prompt(
+        section_items,
+        labels=[key],
+        limits={key: spec["limit"]},
+    )
     prompt = (
-        f"你是新聞編輯。以下是今天({date_str})從多個來源蒐集的新聞標題（每則有編號 #N），"
-        f"分為 AI（美國、中國、台灣、實驗室動態）、科技半導體、以及一般重大新聞。\n\n"
+        f"你是新聞編輯。以下是今天({date_str})的「{spec['header']}」候選新聞標題（每則有編號 #N）。\n\n"
         f"{raw}\n\n"
-        f"請做以下工作：\n"
-        f"1. 從所有 AI 類新聞中，只挑出真正有影響力、有意義的 5-8 則（重大研究突破、政策變化、產品發布、產業併購等）。"
-        f"排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類的新聞。\n"
-        f"2. 科技半導體挑 3-5 則重要的。\n"
-        f"3. 一般新聞挑 2-3 則最重大的。\n"
-        f"4. 用繁體中文輸出，格式嚴格如下（不要加其他說明）：\n\n"
-        f"📰 早安新聞摘要 — {date_str}\n\n"
-        f"**🤖 AI 人工智慧**\n"
+        f"請挑出 {spec['pick']} 則{spec['focus']}。\n"
+        f"用繁體中文輸出，格式嚴格如下（不要輸出標題、開場白或結語）：\n"
         f"- #N 新聞標題\n"
-        f"- ...\n\n"
-        f"**💻 科技 & 半導體**\n"
-        f"- #N ...\n\n"
-        f"**🌏 重大新聞**\n"
         f"- #N ...\n\n"
         f"規則：\n"
         f"- 每則新聞前面必須保留原始編號 #N\n"
         f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞（公司名、人名）的英文\n"
-        f"- 只輸出摘要本身，不要加開場白或結語"
+        f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞"
     )
     try:
-        result = subprocess.run(
-            [os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw"), "agent", "-m", prompt],
-            capture_output=True, text=True, timeout=60,
+        result = _run_nullclaw_agent(
+            prompt,
+            LLM_SECTION_TIMEOUT_SECS,
+            f"default_{key}",
+            section_items,
+            numbered,
         )
         summary = result.stdout.strip()
         if summary:
-            # Replace #N references with links
-            def replace_ref(m):
-                num = int(m.group(1))
-                item = numbered.get(num)
-                if item and item["link"]:
-                    return f"[🔗]({item['link']}) "
-                return ""
-            with_links = re.sub(r"#(\d+)\s*", replace_ref, summary)
-            # Telegram limit is 4096 chars; if too long, strip links
-            if len(with_links) <= 4000:
-                return with_links
-            # Keep links only for AI section (most valuable), strip rest
-            lines = with_links.split("\n")
-            in_ai = False
-            trimmed = []
-            for line in lines:
-                if "AI 人工智慧" in line:
-                    in_ai = True
-                elif line.startswith("**"):
-                    in_ai = False
-                if not in_ai and "[🔗](" in line:
-                    line = re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", line)
-                trimmed.append(line)
-            result_text = "\n".join(trimmed)
-            if len(result_text) <= 4000:
-                return result_text
-            # Still too long — strip all links
-            return re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", with_links)
+            marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
+            if total_bullets > 0 and marked_bullets == total_bullets:
+                with_links, links_attached = _attach_numbered_links(summary, numbered)
+                if links_attached > 0:
+                    return with_links.splitlines()
+            print(
+                "[WARN] LLM section validation failed: "
+                f"section={key} marked={marked_bullets}/{total_bullets}",
+                file=sys.stderr,
+            )
     except Exception as e:
-        print(f"[WARN] LLM summary failed: {e}", file=sys.stderr)
+        print(f"[WARN] LLM section summary failed: section={key} {e}", file=sys.stderr)
 
-    # Fallback: raw listing with links
+    return _fallback_section_lines(key, items, spec["fallback_limit"], link_map)
+
+
+def summarize_llm(all_items: dict[str, list[dict]]) -> str:
+    """Ask the nullclaw agent to curate and summarize news for significance."""
+    tw_now = datetime.now(timezone(timedelta(hours=8)))
+    date_str = tw_now.strftime("%Y/%m/%d (%a)")
+
     link_map = _build_link_map(all_items)
-    return fallback_summary(all_items, date_str, link_map)
+    lines = [f"\U0001f4f0 早安新聞摘要 — {date_str}\n"]
+    section_keys = ("ai", "tech", "general")
+    section_results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(section_keys)) as pool:
+        futures = {
+            pool.submit(
+                _summarize_default_section,
+                key,
+                all_items.get(key, []),
+                date_str,
+                link_map,
+            ): key
+            for key in section_keys
+        }
+        for future in concurrent.futures.as_completed(futures):
+            key = futures[future]
+            try:
+                section_results[key] = future.result()
+            except Exception as e:
+                print(f"[WARN] LLM section worker failed: section={key} {e}", file=sys.stderr)
+                spec = DEFAULT_SECTION_SPECS[key]
+                section_results[key] = _fallback_section_lines(key, all_items.get(key, []), spec["fallback_limit"], link_map)
+
+    for key in section_keys:
+        spec = DEFAULT_SECTION_SPECS[key]
+        lines.append(spec["header"])
+        lines.extend(section_results[key])
+        lines.append("")
+    return _trim_digest_links("\n".join(lines))
 
 
 def fallback_summary(all_items: dict[str, list[dict]], date_str: str, link_map: dict[str, str] | None = None) -> str:
@@ -335,19 +551,11 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
     tw_now = datetime.now(timezone(timedelta(hours=8)))
     date_str = tw_now.strftime("%Y/%m/%d (%a)")
 
-    numbered = {}
-    sections = []
-    idx = 1
-    for topic in topics:
-        items = all_items.get(topic, [])
-        if items:
-            lines = []
-            for it in items:
-                numbered[idx] = {"title": it["title"], "link": it.get("link", "")}
-                lines.append(f"  #{idx} {it['title']}")
-                idx += 1
-            sections.append(f"[{topic}]\n" + "\n".join(lines))
-    raw = "\n".join(sections)
+    numbered, raw = _number_items_for_prompt(
+        all_items,
+        labels=topics,
+        limits={topic: LLM_CUSTOM_TOPIC_LIMIT for topic in topics},
+    )
 
     topic_list = "、".join(topics)
     topic_format = "\n".join(f"**{t}**\n- #N ...\n" for t in topics)
@@ -369,22 +577,38 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
         f"- 只輸出摘要本身，不要加開場白或結語"
     )
     try:
-        result = subprocess.run(
-            [os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw"), "agent", "-m", prompt],
-            capture_output=True, text=True, timeout=90,
-        )
+        result = _run_nullclaw_agent(prompt, LLM_CUSTOM_TIMEOUT_SECS, "custom", all_items, numbered)
         summary = result.stdout.strip()
         if summary:
-            def replace_ref(m):
-                num = int(m.group(1))
-                item = numbered.get(num)
-                if item and item["link"]:
-                    return f"[🔗]({item['link']}) "
-                return ""
-            with_links = re.sub(r"#(\d+)\s*", replace_ref, summary)
-            if len(with_links) <= 4000:
-                return with_links
-            return re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", with_links)
+            marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
+            if total_bullets == 0 or marked_bullets != total_bullets:
+                print(
+                    "[WARN] LLM summary marker validation failed: "
+                    f"{marked_bullets}/{total_bullets} bullets have valid #N markers",
+                    file=sys.stderr,
+                )
+            else:
+                attached = {"count": 0}
+
+                def replace_ref(m):
+                    num = int(m.group(1))
+                    item = numbered.get(num)
+                    if item and item["link"]:
+                        attached["count"] += 1
+                        return f"[🔗]({item['link']}) "
+                    return ""
+
+                with_links = re.sub(r"#(\d+)\s*", replace_ref, summary)
+                if total_bullets > 0 and attached["count"] == 0:
+                    print(
+                        "[WARN] LLM summary link validation failed: "
+                        f"0 links attached for {total_bullets} bullets",
+                        file=sys.stderr,
+                    )
+                elif len(with_links) <= 4000:
+                    return with_links
+                else:
+                    return re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", with_links)
     except Exception as e:
         print(f"[WARN] LLM summary failed: {e}", file=sys.stderr)
 
