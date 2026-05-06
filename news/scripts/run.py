@@ -483,7 +483,7 @@ def _attach_numbered_links(summary: str, numbered: dict[int, dict]) -> tuple[str
         body = line[match.end():].lstrip()
         if item and item["link"]:
             attached["count"] += 1
-            return f"- [🔗]({item['link']}) {body}"
+            return f"- {body} [🔗]({item['link']})"
         return f"- {body}" if body else "-"
 
     return "\n".join(replace_line(line) for line in summary.splitlines()), attached["count"]
