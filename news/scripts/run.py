@@ -304,6 +304,43 @@ def _clip_subprocess_text(value, limit: int = 500) -> str:
     return str(value).strip()[:limit]
 
 
+def _sample_nonempty_lines(value: str, limit: int = 8) -> list[str]:
+    lines = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lines.append(stripped[:240])
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _log_llm_validation_failed(
+    variant: str,
+    result,
+    summary: str,
+    marked_bullets: int,
+    total_bullets: int,
+    numbered: dict[int, dict],
+    reason: str,
+) -> None:
+    log_trace(
+        "llm_validation_failed",
+        variant=variant,
+        reason=reason,
+        returncode=getattr(result, "returncode", None),
+        stdout_len=len(getattr(result, "stdout", "") or ""),
+        stderr_len=len(getattr(result, "stderr", "") or ""),
+        items_numbered=len(numbered),
+        marked_bullets=marked_bullets,
+        total_bullets=total_bullets,
+        stdout_sample=_clip_subprocess_text(summary, 1200),
+        line_sample=_sample_nonempty_lines(summary, 8),
+        bullet_sample=[line.strip()[:240] for line in _news_bullet_lines(summary)[:8]],
+    )
+
+
 def _llm_source_item_counts(all_items: dict[str, list[dict]]) -> dict[str, int]:
     return {label: len(items) for label, items in all_items.items()}
 
@@ -452,9 +489,45 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
                 with_links, links_attached = _attach_numbered_links(summary, numbered)
                 if links_attached > 0:
                     return with_links.splitlines()
+                log_trace(
+                    "llm_link_validation_failed",
+                    variant=f"default_{key}",
+                    section=key,
+                    returncode=result.returncode,
+                    stdout_len=len(result.stdout or ""),
+                    items_numbered=len(numbered),
+                    marked_bullets=marked_bullets,
+                    total_bullets=total_bullets,
+                    stdout_sample=_clip_subprocess_text(summary, 1200),
+                    line_sample=_sample_nonempty_lines(summary, 8),
+                )
+            else:
+                _log_llm_validation_failed(
+                    f"default_{key}",
+                    result,
+                    summary,
+                    marked_bullets,
+                    total_bullets,
+                    numbered,
+                    "marker_validation",
+                )
             print(
                 "[WARN] LLM section validation failed: "
                 f"section={key} marked={marked_bullets}/{total_bullets}",
+                file=sys.stderr,
+            )
+        else:
+            _log_llm_validation_failed(
+                f"default_{key}",
+                result,
+                summary,
+                0,
+                0,
+                numbered,
+                "empty_stdout",
+            )
+            print(
+                f"[WARN] LLM section validation failed: section={key} empty stdout",
                 file=sys.stderr,
             )
     except Exception as e:
@@ -582,6 +655,15 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
         if summary:
             marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
             if total_bullets == 0 or marked_bullets != total_bullets:
+                _log_llm_validation_failed(
+                    "custom",
+                    result,
+                    summary,
+                    marked_bullets,
+                    total_bullets,
+                    numbered,
+                    "marker_validation",
+                )
                 print(
                     "[WARN] LLM summary marker validation failed: "
                     f"{marked_bullets}/{total_bullets} bullets have valid #N markers",
@@ -600,6 +682,17 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
 
                 with_links = re.sub(r"#(\d+)\s*", replace_ref, summary)
                 if total_bullets > 0 and attached["count"] == 0:
+                    log_trace(
+                        "llm_link_validation_failed",
+                        variant="custom",
+                        returncode=result.returncode,
+                        stdout_len=len(result.stdout or ""),
+                        items_numbered=len(numbered),
+                        marked_bullets=marked_bullets,
+                        total_bullets=total_bullets,
+                        stdout_sample=_clip_subprocess_text(summary, 1200),
+                        line_sample=_sample_nonempty_lines(summary, 8),
+                    )
                     print(
                         "[WARN] LLM summary link validation failed: "
                         f"0 links attached for {total_bullets} bullets",
@@ -609,6 +702,17 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
                     return with_links
                 else:
                     return re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", with_links)
+        else:
+            _log_llm_validation_failed(
+                "custom",
+                result,
+                summary,
+                0,
+                0,
+                numbered,
+                "empty_stdout",
+            )
+            print("[WARN] LLM summary validation failed: empty stdout", file=sys.stderr)
     except Exception as e:
         print(f"[WARN] LLM summary failed: {e}", file=sys.stderr)
 
