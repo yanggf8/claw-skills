@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """News skill: fetch Google News RSS feeds and format a daily summary."""
 import argparse
-import concurrent.futures
 import json
 import os
 import sys
@@ -692,25 +691,18 @@ def summarize_llm(all_items: dict[str, list[dict]]) -> str:
     lines = [f"\U0001f4f0 早安新聞摘要 — {date_str}\n"]
     section_keys = ("ai", "tech", "general")
     section_results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(section_keys)) as pool:
-        futures = {
-            pool.submit(
-                _summarize_default_section,
+    for key in section_keys:
+        try:
+            section_results[key] = _summarize_default_section(
                 key,
                 all_items.get(key, []),
                 date_str,
                 link_map,
-            ): key
-            for key in section_keys
-        }
-        for future in concurrent.futures.as_completed(futures):
-            key = futures[future]
-            try:
-                section_results[key] = future.result()
-            except Exception as e:
-                print(f"[WARN] LLM section worker failed: section={key} {e}", file=sys.stderr)
-                spec = DEFAULT_SECTION_SPECS[key]
-                section_results[key] = _fallback_section_lines(key, all_items.get(key, []), spec["fallback_limit"], link_map)
+            )
+        except Exception as e:
+            print(f"[WARN] LLM section worker failed: section={key} {e}", file=sys.stderr)
+            spec = DEFAULT_SECTION_SPECS[key]
+            section_results[key] = _fallback_section_lines(key, all_items.get(key, []), spec["fallback_limit"], link_map)
 
     for key in section_keys:
         spec = DEFAULT_SECTION_SPECS[key]
