@@ -489,6 +489,47 @@ def _attach_numbered_links(summary: str, numbered: dict[int, dict]) -> tuple[str
     return "\n".join(replace_line(line) for line in summary.splitlines()), attached["count"]
 
 
+def _strip_links_keep_spacing(value: str) -> str:
+    import re
+
+    value = re.sub(r"\s*\[🔗\]\([^)]+\)\s*", " ", value)
+    value = re.sub(r"^-\s*", "- ", value, flags=re.MULTILINE)
+    return "\n".join(line.rstrip() for line in value.splitlines())
+
+
+def _trim_links_to_limit(text: str, limit: int = 4000) -> str:
+    if len(text) <= limit:
+        return text
+
+    lines = text.splitlines()
+    for idx in range(len(lines) - 1, -1, -1):
+        if "[🔗](" not in lines[idx]:
+            continue
+        lines[idx] = _strip_links_keep_spacing(lines[idx])
+        candidate = "\n".join(lines)
+        if len(candidate) <= limit:
+            return candidate
+    return _trim_lines_to_limit(_strip_links_keep_spacing(text), limit)
+
+
+def _trim_lines_to_limit(text: str, limit: int = 4000) -> str:
+    if len(text) <= limit:
+        return text
+
+    lines = text.splitlines()
+    for idx in range(len(lines) - 1, -1, -1):
+        if not lines[idx].lstrip().startswith("-"):
+            continue
+        del lines[idx]
+        candidate = "\n".join(lines)
+        if len(candidate) <= limit:
+            return candidate
+
+    if limit <= 20:
+        return text[:limit]
+    return text[: limit - 20].rstrip() + "\n…（已截短）"
+
+
 def _translate_selected_section(
     key: str,
     selected_ids: list[int],
@@ -546,13 +587,6 @@ def _translate_selected_section(
 
 
 def _trim_digest_links(text: str) -> str:
-    import re
-
-    def strip_links_keep_spacing(value: str) -> str:
-        value = re.sub(r"\s*\[🔗\]\([^)]+\)\s*", " ", value)
-        value = re.sub(r"^-\s*", "- ", value, flags=re.MULTILINE)
-        return "\n".join(line.rstrip() for line in value.splitlines())
-
     if len(text) <= 4000:
         return text
     lines = text.split("\n")
@@ -564,12 +598,12 @@ def _trim_digest_links(text: str) -> str:
         elif line.startswith("**"):
             in_ai = False
         if not in_ai and "[🔗](" in line:
-            line = strip_links_keep_spacing(line)
+            line = _strip_links_keep_spacing(line)
         trimmed.append(line)
     result = "\n".join(trimmed)
     if len(result) <= 4000:
         return result
-    return strip_links_keep_spacing(text)
+    return _trim_links_to_limit(text)
 
 
 def _summarize_default_section(key: str, items: list[dict], date_str: str, link_map: dict[str, str]) -> list[str]:
@@ -757,9 +791,6 @@ def _fetch_custom_topics(topics: list[str]) -> dict[str, list[dict]]:
 
 def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) -> str:
     """LLM curation for custom topic feeds."""
-    import subprocess
-    import re
-
     tw_now = datetime.now(timezone(timedelta(hours=8)))
     date_str = tw_now.strftime("%Y/%m/%d (%a)")
 
@@ -809,7 +840,6 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
                     file=sys.stderr,
                 )
             else:
-                attached = {"count": 0}
                 chinese_bullets, language_total = _language_validation_stats(summary)
                 if not _language_validation_passed(summary):
                     _log_llm_validation_failed(
@@ -827,16 +857,8 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
                     )
                     raise ValueError("LLM custom summary failed language validation")
 
-                def replace_ref(m):
-                    num = int(m.group(1))
-                    item = numbered.get(num)
-                    if item and item["link"]:
-                        attached["count"] += 1
-                        return f"[🔗]({item['link']}) "
-                    return ""
-
-                with_links = re.sub(r"#(\d+)\s*", replace_ref, summary)
-                if total_bullets > 0 and attached["count"] == 0:
+                with_links, links_attached = _attach_numbered_links(summary, numbered)
+                if total_bullets > 0 and links_attached == 0:
                     log_trace(
                         "llm_link_validation_failed",
                         variant="custom",
@@ -853,10 +875,8 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
                         f"0 links attached for {total_bullets} bullets",
                         file=sys.stderr,
                     )
-                elif len(with_links) <= 4000:
-                    return with_links
                 else:
-                    return re.sub(r"\s*\[🔗\]\([^)]+\)\s*", "", with_links)
+                    return _trim_links_to_limit(with_links)
         else:
             _log_llm_validation_failed(
                 "custom",
