@@ -400,7 +400,7 @@ def _llm_source_item_counts(all_items: dict[str, list[dict]]) -> dict[str, int]:
 def _run_nullclaw_agent(prompt: str, timeout_secs: int, variant: str, all_items: dict[str, list[dict]], numbered: dict[int, dict]):
     import subprocess
 
-    argv = [os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw"), "agent", "-m", prompt]
+    argv = [os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw"), "agent", "--isolated", "-m", prompt]
     env = os.environ.copy()
     env["NULLCLAW_AGENT_TIMING_TRACE"] = "1"
     started = time.monotonic()
