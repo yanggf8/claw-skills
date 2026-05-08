@@ -229,12 +229,7 @@ class PersonaHistoryTests(unittest.TestCase):
     # ---------- connect_from_env ----------
 
     def _save_env(self):
-        keys = [
-            persona_history.DB_URL_ENV,
-            persona_history.DB_TOKEN_ENV,
-            persona_history._DEPRECATED_URL_ENV,
-            persona_history._DEPRECATED_TOKEN_ENV,
-        ]
+        keys = [persona_history.DB_URL_ENV, persona_history.DB_TOKEN_ENV]
         return {k: os.environ.get(k) for k in keys}
 
     def _restore_env(self, saved):
@@ -243,14 +238,12 @@ class PersonaHistoryTests(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        persona_history._deprecation_warned = False
 
     def test_connect_from_env_rejects_remote_without_token(self):
         saved = self._save_env()
         try:
             os.environ[persona_history.DB_URL_ENV] = "libsql://example.turso.io"
             os.environ.pop(persona_history.DB_TOKEN_ENV, None)
-            os.environ.pop(persona_history._DEPRECATED_URL_ENV, None)
             with self.assertRaises(persona_history.MissingCredentialsError):
                 persona_history.connect_from_env()
         finally:
@@ -260,22 +253,8 @@ class PersonaHistoryTests(unittest.TestCase):
         saved = self._save_env()
         try:
             os.environ.pop(persona_history.DB_URL_ENV, None)
-            os.environ.pop(persona_history._DEPRECATED_URL_ENV, None)
             with self.assertRaises(persona_history.MissingCredentialsError):
                 persona_history.connect_from_env()
-        finally:
-            self._restore_env(saved)
-
-    def test_connect_from_env_deprecated_alias_works(self):
-        saved = self._save_env()
-        try:
-            os.environ.pop(persona_history.DB_URL_ENV, None)
-            os.environ.pop(persona_history.DB_TOKEN_ENV, None)
-            os.environ[persona_history._DEPRECATED_URL_ENV] = ":memory:"
-            os.environ.pop(persona_history._DEPRECATED_TOKEN_ENV, None)
-            persona_history._deprecation_warned = False
-            conn = persona_history.connect_from_env()
-            conn.close()
         finally:
             self._restore_env(saved)
 
@@ -284,7 +263,6 @@ class PersonaHistoryTests(unittest.TestCase):
         try:
             os.environ[persona_history.DB_URL_ENV] = ":memory:"
             os.environ.pop(persona_history.DB_TOKEN_ENV, None)
-            os.environ.pop(persona_history._DEPRECATED_URL_ENV, None)
             conn = persona_history.connect_from_env()
             conn.close()
         finally:
