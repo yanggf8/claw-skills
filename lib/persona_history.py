@@ -121,7 +121,10 @@ def connect_from_env():
     return connect(database_url, auth_token=auth_token)
 
 
-SCHEMA_NAME = "persona_history"
+# Renamed from "persona_history" to avoid collision with the persona-core
+# webapp's persona_history table in the same Turso DB. The webapp owns a
+# different shape; this module owns persona_history_v3.
+SCHEMA_NAME = "persona_history_v3"
 
 
 def _ensure_schema_version_table(conn) -> None:
@@ -158,7 +161,7 @@ def _set_schema_version(conn, version: int) -> None:
 def _migrate_to_v1(conn) -> None:
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS persona_history (
+        CREATE TABLE IF NOT EXISTS persona_history_v3 (
           id              INTEGER PRIMARY KEY AUTOINCREMENT,
           skill           TEXT    NOT NULL,
           stream          TEXT    NOT NULL,
@@ -180,14 +183,14 @@ def _migrate_to_v1(conn) -> None:
     )
     conn.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_ph_persona_date_id
-          ON persona_history(persona_slug, date DESC, id DESC)
+        CREATE INDEX IF NOT EXISTS idx_phv3_persona_date_id
+          ON persona_history_v3(persona_slug, date DESC, id DESC)
         """
     )
     conn.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_ph_skill_stream_date_id
-          ON persona_history(skill, stream, date DESC, id DESC)
+        CREATE INDEX IF NOT EXISTS idx_phv3_skill_stream_date_id
+          ON persona_history_v3(skill, stream, date DESC, id DESC)
         """
     )
 
@@ -220,7 +223,7 @@ def _migrate_to_v2(conn) -> None:
           direction     TEXT    NOT NULL DEFAULT 'tech-first',
           key_question  TEXT,
           status        TEXT    NOT NULL DEFAULT 'planned',
-          history_id    INTEGER REFERENCES persona_history(id),
+          history_id    INTEGER REFERENCES persona_history_v3(id),
           created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )
         """
@@ -298,7 +301,7 @@ def record(
     key_links_json = json.dumps(key_links, ensure_ascii=False)
     cursor = conn.execute(
         """
-        INSERT INTO persona_history (
+        INSERT INTO persona_history_v3 (
           skill, stream, persona_slug, editor_slug,
           date, title, stance, key_links,
           draft_sha, git_dirty, writer_hash, editor_hash,
@@ -370,7 +373,7 @@ def recent(
                date, title, stance, key_links,
                draft_sha, git_dirty, writer_hash, editor_hash,
                devto_id, devto_url, created_at
-        FROM persona_history
+        FROM persona_history_v3
         WHERE {where}
         ORDER BY date DESC, id DESC
         LIMIT ?
@@ -394,7 +397,7 @@ def set_devto_result(
     """
     conn.execute(
         """
-        UPDATE persona_history
+        UPDATE persona_history_v3
         SET devto_id = ?, devto_url = ?
         WHERE id = ?
         """,

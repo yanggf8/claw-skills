@@ -24,9 +24,9 @@ class PersonaHistoryTests(unittest.TestCase):
         persona_history.ensure_schema(self.conn)
         row = self.conn.execute(
             "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'persona_history'"
+            "WHERE type = 'table' AND name = 'persona_history_v3'"
         ).fetchone()
-        self.assertEqual(row[0], "persona_history")
+        self.assertEqual(row[0], "persona_history_v3")
 
     def test_ensure_schema_bumps_user_version(self):
         row = self.conn.execute(
@@ -40,12 +40,12 @@ class PersonaHistoryTests(unittest.TestCase):
         # migrations. We simulate by dropping the table manually and
         # confirming ensure_schema does not recreate it when user_version is
         # already current.
-        self.conn.execute("DROP TABLE persona_history")
+        self.conn.execute("DROP TABLE persona_history_v3")
         self.conn.commit()
         persona_history.ensure_schema(self.conn)
         row = self.conn.execute(
             "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'persona_history'"
+            "WHERE type = 'table' AND name = 'persona_history_v3'"
         ).fetchone()
         self.assertIsNone(row)
 
@@ -96,7 +96,7 @@ class PersonaHistoryTests(unittest.TestCase):
     def test_record_key_links_stored_as_json(self):
         self._record_sample(key_links=["https://x/1"])
         raw = self.conn.execute(
-            "SELECT key_links FROM persona_history LIMIT 1"
+            "SELECT key_links FROM persona_history_v3 LIMIT 1"
         ).fetchone()[0]
         self.assertEqual(json.loads(raw), ["https://x/1"])
 
