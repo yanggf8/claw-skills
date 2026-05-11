@@ -72,6 +72,60 @@ Summarize in Traditional Chinese with this exact format:
 
 今日重點一句話：（一句話總結今日最重要的事）
 
+## Resilience
+
+The script splits long LLM work into small substages so a host crash mid-run
+does not have to start over. Each completed substage is cached on disk; the
+next attempt picks up where the last one died.
+
+Substaging policy:
+
+- **Default-feed mode (`summarize_llm`)**: the AI section's items are split into
+  two halves (Level 2). Each half is one LLM call (~14-30s). On per-half
+  failure (timeout / non-zero exit / empty stdout), only that half is split
+  one more time into quarters (Level 3). If a quarter still fails, the run
+  is aborted with an alert (no recursion past Level 3). Tech and general
+  remain single calls.
+- **Custom-topics mode (`summarize_llm_custom`, used by `--account-topics`)**:
+  one LLM call per topic, sequential. On per-topic failure that topic falls
+  back to a raw bullet listing of recent titles (still useful), and an alert
+  fires for the degraded topic. Other topics continue normally.
+
+Cache: `~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`. Keyed by
+`(date, variant, range)`. Swept on script start: subdirectories older than 7
+days are deleted. Safe to wipe manually.
+
+## Failure alerts (hard rule)
+
+Whenever the skill cannot send the full intended news — this includes any
+silent quality degradation — it alerts the operator. Two channels, both
+attempted on every failure:
+
+1. Append to `~/.nullclaw/news-failures.log` (plain text, append-only,
+   rotated at 1 MiB). This is the durable record and survives Telegram
+   outages.
+2. Best-effort Telegram message to the same chat the news would have gone
+   to (`fail_on_delivery_error=False`, never raises).
+
+Coverage matrix (every path that ends without the full intended news):
+
+| Failure | Behavior |
+|---|---|
+| All RSS feeds returned 0 items | Alert + exit 1, no digest sent. |
+| AI Level 3 quarter still fails | Alert + exit 1, no digest sent. |
+| Tech / general fell back to non-LLM bullets | Alert; digest still ships with degraded section. |
+| Custom-topic fell back to raw listing | Alert (`custom_topics_fell_back` or `all_custom_topics_failed`); digest still ships. |
+| Telegram send failed | Alert via the on-disk log (Telegram itself is down); exit 1. |
+| Uncaught exception in main() | Alert with truncated traceback; exit 1. |
+
+To inspect what happened on a given run, use:
+
+```bash
+cat ~/.nullclaw/news-failures.log
+nullclaw cron trace <job_id_prefix> --event news_failure
+nullclaw cron trace <job_id_prefix> --event ai_substage
+```
+
 ## Notes
 
 - Delivery: Telegram `7972814626`
