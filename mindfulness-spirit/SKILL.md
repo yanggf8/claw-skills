@@ -4,13 +4,53 @@ description: 身心靈 × AI 系列文章自動產出，支援編輯計畫驅動
 version: 0.3.0
 author: yanggf
 always: false
-requires_bins: ["python3", "nullclaw"]
+requires_bins: ["python3", "nullclaw", "persona-core"]
 requires_env: ["PERSONA_REGISTRY_DB_URL", "PERSONA_REGISTRY_DB_TOKEN"]
 ---
 
 # mindfulness-spirit
 
 「身心靈 × AI」主題的系列文章自動產出引擎。由 Turso 中的編輯計畫驅動，依序產出系列文章，發布到 dev.to。作者身份、寫作風格、API 金鑰全部從 Turso persona-registry 載入。
+
+## Status: migrated to persona-core (2026-05-11)
+
+This skill is now fully integrated into [persona-core](https://github.com/yanggf8/persona-core).
+The migration is complete — there is **no separate "mindfulness-spirit" data
+layer to maintain**. Everything below uses persona-core's Turso schema:
+
+- **Column metadata**: `persona-core`'s `content_column` table holds the
+  active column row (`slug='inner-algorithm'`, `theme='mindfulness'`,
+  `skill='mindfulness-spirit'`, `status='active'`, `persona_slug='ping-w'`).
+- **Per-issue history**: `persona-core`'s `persona_history` table records
+  every published article (`skill='mindfulness-spirit'`,
+  `stream='inner-algorithm'`, with dev.to URL and timestamp).
+- **Persona profile + secrets**: `persona-core`'s `persona_registry` table
+  holds the writer persona (Ping W.) and the dev.to API key.
+- **Editorial plan**: `persona-core`'s `editorial_plan` table holds the
+  series topics; `next_topic()` and `mark_topic_published()` SQL
+  contracts are locked by tests in `cli-rs/src/commands/history.rs`.
+
+**For users / future agents**: when you want to inspect or modify this
+skill's behavior beyond the prompts in this SKILL.md, use the persona-core
+CLI directly. Examples:
+
+```bash
+persona-core personas get ping-w                    # writer profile
+persona-core history list --skill mindfulness-spirit --limit 10
+persona-core streams issues prepare inner-algorithm  # next topic + draft scaffold
+```
+
+Do **not** introduce a parallel persona-store, persona-CLI, or
+mindfulness-spirit-only Turso schema. Anything you'd want for column
+writing belongs in persona-core.
+
+**Implementation note (transitional)**: the live `scripts/run.py` still
+imports `persona_history` and `persona_registry` from
+`~/a/claw-skills/lib/` rather than shelling out to the `persona-core` CLI.
+Both lib functions write to the same Turso DB persona-core uses, so
+behavior is identical. The lib-import will be cut to a `persona-core`
+shell-out in a follow-up. Until then, the lib remains the only consumer
+of these Python modules — they are **not** intended as a public API.
 
 ## Subcommands
 
@@ -51,7 +91,7 @@ Persona identity is loaded from the `persona-registry` Turso DB via `lib/persona
 
 dev.to API key resolution order (first non-empty wins):
 
-1. `persona_secret` row — `persona-skill set-secret <slug> devto_api_key` (preferred; per-persona)
+1. `persona_secret` row — `persona-core secrets set <slug> devto_api_key <key>` (preferred; per-persona)
 2. `DEV_TO_API_KEY` environment variable (legacy, logs a back-compat warning)
 
 ## Editorial plan integration
@@ -62,7 +102,7 @@ When an `editorial_plan` exists for this skill in Turso, the write flow automati
 2. Injects the topic's `angle`, `lens`, `direction`, and `key_question` into the writer prompt
 3. After successful publish, calls `mark_topic_published()` to link the topic to its history row
 
-The active series slug is `inner-algorithm` (hardcoded in `SERIES_SLUG`). Use `persona-skill plan-show mindfulness-spirit inner-algorithm` to view topic status.
+The active series slug is `inner-algorithm` (hardcoded in `SERIES_SLUG`). Use `persona-core streams issues list inner-algorithm` to view topic status.
 
 ## Anti-repetition
 
