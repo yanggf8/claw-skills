@@ -18,6 +18,10 @@ from trace_marker import emit_skill_status, emit_trace
 
 TOPICS_FILE = os.path.expanduser("~/.nullclaw/news-topics.json")
 TRACE_FILE = os.path.expanduser("~/.nullclaw/skill-traces.jsonl")
+NEWS_CACHE_DIR = os.path.expanduser("~/.nullclaw/.news-cache")
+NEWS_FAILURE_LOG = os.path.expanduser("~/.nullclaw/news-failures.log")
+NEWS_CACHE_TTL_DAYS = 7
+NEWS_FAILURE_LOG_MAX_BYTES = 1_048_576  # 1 MiB; rotate to .1 then truncate
 LLM_ITEM_LIMITS = {
     "ai": 30,
     "tech": 12,
@@ -28,6 +32,9 @@ LLM_DEFAULT_TIMEOUT_SECS = 180
 LLM_CUSTOM_TIMEOUT_SECS = 180
 LLM_SECTION_TIMEOUT_SECS = 90
 LLM_TRANSLATION_TIMEOUT_SECS = 60
+# Substaging: each Level-2 half (or Level-3 quarter) gets a smaller timeout
+# than the original 90s monolithic call — half-size prompts should not need it.
+AI_SUBSTAGE_TIMEOUT_SECS = 60
 DEFAULT_SECTION_SPECS = {
     "ai": {
         "header": "**🤖 AI 人工智慧**",
@@ -72,6 +79,126 @@ def log_trace(event: str, **fields) -> None:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError as e:
         print(f"[WARN] trace write failed: {e}", file=sys.stderr)
+
+
+class AlertContext:
+    """Captures who to alert when the skill cannot send news.
+
+    Built once in main() from CLI args; threaded explicitly through the
+    summarize_* functions so a reader can see exactly which call sites can
+    fail-alert. Avoids a global state holder.
+    """
+    __slots__ = ("deliver_to", "account", "job_id")
+
+    def __init__(self, deliver_to, account, job_id):
+        self.deliver_to = deliver_to
+        self.account = account
+        self.job_id = job_id or "interactive"
+
+
+def _news_cache_sweep() -> None:
+    """Delete cache subdirectories older than NEWS_CACHE_TTL_DAYS. Best-effort."""
+    import shutil
+    if not os.path.isdir(NEWS_CACHE_DIR):
+        return
+    cutoff = time.time() - NEWS_CACHE_TTL_DAYS * 86400
+    try:
+        for entry in os.listdir(NEWS_CACHE_DIR):
+            p = os.path.join(NEWS_CACHE_DIR, entry)
+            try:
+                if os.path.isdir(p) and os.path.getmtime(p) < cutoff:
+                    shutil.rmtree(p, ignore_errors=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _news_cache_path(date_str: str, variant: str, start: int, end: int) -> str:
+    # date_str format: "YYYY/MM/DD (Mon)" -> safe component "YYYY-MM-DD"
+    safe_date = date_str.split()[0].replace("/", "-")
+    d = os.path.join(NEWS_CACHE_DIR, safe_date)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{variant}-{start:03d}-{end:03d}.txt")
+
+
+def _news_cache_get(date_str: str, variant: str, start: int, end: int):
+    path = _news_cache_path(date_str, variant, start, end)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = f.read()
+        log_trace("news_cache_hit", variant=variant, start=start, end=end)
+        return data
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        log_trace("news_cache_read_error", variant=variant, error=str(e))
+        return None
+
+
+def _news_cache_put(date_str: str, variant: str, start: int, end: int, body: str) -> None:
+    path = _news_cache_path(date_str, variant, start, end)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+        log_trace("news_cache_write", variant=variant, start=start, end=end, bytes=len(body))
+    except OSError as e:
+        log_trace("news_cache_write_error", variant=variant, error=str(e))
+
+
+def _alert_failure(ctx: "AlertContext", reason: str, detail: str) -> None:
+    """Notify the operator that the news skill could not deliver news.
+
+    Always best-effort — never raises:
+      1. Append a plain-text record to NEWS_FAILURE_LOG (durable on-disk).
+      2. Send a Telegram message to ctx.deliver_to (immediate, may fail).
+
+    Order matters: file log first so the failure record survives even if
+    Telegram itself is the failure mode.
+    """
+    ts = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+    block = (
+        f"=== {ts} CST ===\n"
+        f"job_id: {ctx.job_id}\n"
+        f"deliver_to: {ctx.deliver_to or '(none)'}\n"
+        f"account: {ctx.account}\n"
+        f"reason: {reason}\n"
+        f"detail: {detail}\n"
+        "\n"
+    )
+
+    # 1. Durable on-disk log. Rotate at NEWS_FAILURE_LOG_MAX_BYTES.
+    try:
+        if os.path.exists(NEWS_FAILURE_LOG) and os.path.getsize(NEWS_FAILURE_LOG) > NEWS_FAILURE_LOG_MAX_BYTES:
+            try:
+                os.replace(NEWS_FAILURE_LOG, NEWS_FAILURE_LOG + ".1")
+            except OSError:
+                pass
+        with open(NEWS_FAILURE_LOG, "a", encoding="utf-8") as f:
+            f.write(block)
+    except OSError as e:
+        log_trace("news_failure_log_error", error=str(e))
+
+    log_trace("news_failure_alert", reason=reason, detail_chars=len(detail))
+
+    # 2. Best-effort Telegram. If chat_id is unset (interactive run), skip.
+    if not ctx.deliver_to:
+        return
+    try:
+        msg = (
+            f"⚠️ 新聞無法送出 — {ts}\n"
+            f"原因：{reason}\n"
+            f"細節：{detail[:500]}\n"
+            f"job_id: {ctx.job_id}"
+        )
+        deliver_or_fail(
+            ctx.deliver_to,
+            msg,
+            account=ctx.account,
+            fail_on_delivery_error=False,  # we are already in a failure path
+        )
+    except Exception as e:
+        log_trace("news_failure_alert_telegram_error", error=str(e))
 
 
 def load_topics() -> dict[str, list[str]]:
@@ -606,10 +733,14 @@ def _trim_digest_links(text: str) -> str:
     return _trim_links_to_limit(text)
 
 
-def _summarize_default_section(key: str, items: list[dict], date_str: str, link_map: dict[str, str]) -> list[str]:
+def _summarize_default_section(key: str, items: list[dict], date_str: str, link_map: dict[str, str]) -> tuple[list[str], bool]:
+    """Return (lines, used_fallback). used_fallback=True iff the LLM path
+    failed and we returned _fallback_section_lines. Empty-input case returns
+    a placeholder with used_fallback=False (no LLM was attempted).
+    """
     spec = DEFAULT_SECTION_SPECS[key]
     if not items:
-        return ["- 今日無相關新聞"]
+        return ["- 今日無相關新聞"], False
 
     section_items = {key: items}
     numbered, raw = _number_items_for_prompt(
@@ -664,11 +795,11 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
                         date_str,
                     )
                     if translated is not None:
-                        return translated
+                        return translated, False
                 else:
                     with_links, links_attached = _attach_numbered_links(summary, numbered)
                     if links_attached > 0:
-                        return with_links.splitlines()
+                        return with_links.splitlines(), False
                     log_trace(
                         "llm_link_validation_failed",
                         variant=f"default_{key}",
@@ -713,10 +844,177 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
     except Exception as e:
         print(f"[WARN] LLM section summary failed: section={key} {e}", file=sys.stderr)
 
-    return _fallback_section_lines(key, items, spec["fallback_limit"], link_map)
+    return _fallback_section_lines(key, items, spec["fallback_limit"], link_map), True
 
 
-def summarize_llm(all_items: dict[str, list[dict]]) -> str:
+def _run_ai_substage(
+    items: list[dict],
+    start: int,
+    end: int,
+    date_str: str,
+) -> tuple[bool, list[str], str]:
+    """Run one LLM call covering items[start:end] and return (ok, lines, error).
+
+    ok=True   → lines is the validated bullet list for this range; error="".
+    ok=False  → lines=[]; error is a short string describing the hard failure
+                (timeout / non-zero exit / empty stdout / marker validation).
+
+    A successful run is cached and returned from cache on the next attempt
+    of the same range on the same date.
+    """
+    variant = "default_ai_substage"
+    cached = _news_cache_get(date_str, variant, start, end)
+    if cached is not None:
+        return True, cached.splitlines(), ""
+
+    sub_items = items[start:end]
+    if not sub_items:
+        return True, [], ""
+
+    section_items = {"ai": sub_items}
+    numbered, raw = _number_items_for_prompt(
+        section_items,
+        labels=["ai"],
+        limits={"ai": len(sub_items)},
+    )
+    spec = DEFAULT_SECTION_SPECS["ai"]
+    # Smaller pick count proportional to batch size; the two halves are
+    # concatenated, so each half should not over-select.
+    pick_count = max(2, len(sub_items) // 3)
+    prompt = (
+        f"你是新聞編輯。以下是今天({date_str})的「{spec['header']}」候選新聞標題（每則有編號 #N），這是分批處理的批次。\n\n"
+        f"{raw}\n\n"
+        f"請從這個批次挑出 {pick_count} 則{spec['focus']}。\n"
+        f"用繁體中文輸出，格式嚴格如下（不要輸出標題、開場白或結語）：\n"
+        f"- #N 新聞標題\n"
+        f"- #N ...\n\n"
+        f"規則：\n"
+        f"- 每則新聞前面必須保留原始編號 #N\n"
+        f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞（公司名、人名）的英文\n"
+        f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞"
+    )
+
+    result = _run_nullclaw_agent(
+        prompt,
+        AI_SUBSTAGE_TIMEOUT_SECS,
+        f"{variant}_{start}_{end}",
+        section_items,
+        numbered,
+    )
+    summary = (result.stdout or "").strip()
+
+    if result.returncode == 124:
+        return False, [], f"timeout after {AI_SUBSTAGE_TIMEOUT_SECS}s"
+    if result.returncode != 0:
+        return False, [], f"exit_code={result.returncode}"
+    if not summary:
+        return False, [], "empty_stdout"
+
+    marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
+    if total_bullets == 0 or marked_bullets != total_bullets:
+        return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
+
+    with_links, links_attached = _attach_numbered_links(summary, numbered)
+    if links_attached == 0:
+        return False, [], "no_links_attached"
+
+    body = with_links
+    _news_cache_put(date_str, variant, start, end, body)
+    return True, body.splitlines(), ""
+
+
+class _AiSubstageExhausted(Exception):
+    """Raised when Level 3 substaging fails for any required quarter.
+
+    Caller (summarize_llm) re-raises so main() can record exit-1 without
+    delivering a partial digest. The alert is sent from inside the substage
+    path before this exception is raised.
+    """
+    pass
+
+
+def _summarize_default_ai_substaged(
+    items: list[dict],
+    date_str: str,
+    ctx: "AlertContext",
+) -> list[str]:
+    """Run default_ai as two Level-2 halves; on per-half failure escalate to
+    Level 3 (one more half-cut on that half only). If any Level-3 quarter
+    still fails, alert and raise _AiSubstageExhausted.
+    """
+    if not items:
+        return ["- 今日無相關新聞"]
+
+    n = len(items)
+    mid = n // 2
+
+    log_trace("ai_substage_start", total_items=n, level2_a=[0, mid], level2_b=[mid, n])
+
+    halves = [(0, mid), (mid, n)]
+    half_results: list[list[str] | None] = [None, None]
+    half_errors: list[str] = ["", ""]
+
+    # Level 2: two halves, sequential.
+    for i, (s, e) in enumerate(halves):
+        ok, lines, err = _run_ai_substage(items, s, e, date_str)
+        if ok:
+            half_results[i] = lines
+        else:
+            half_errors[i] = err
+            log_trace("ai_substage_level2_failed", half=i, range=[s, e], error=err)
+
+    # Level 3: only on halves that failed in Level 2.
+    for i, (s, e) in enumerate(halves):
+        if half_results[i] is not None:
+            continue
+        sub_n = e - s
+        if sub_n <= 1:
+            # Cannot halve further; treat the failed half as exhausted.
+            detail = (
+                f"default_ai Level 2 half items[{s}..{e}] failed with size {sub_n}, "
+                f"cannot subdivide further. Level 2 error: {half_errors[i]}"
+            )
+            _alert_failure(ctx, "ai_substage_level3_failed", detail)
+            raise _AiSubstageExhausted(detail)
+
+        sub_mid = s + sub_n // 2
+        quarters = [(s, sub_mid), (sub_mid, e)]
+        log_trace("ai_substage_level3_start", failed_half=i, quarters=quarters)
+
+        merged: list[str] = []
+        for qs, qe in quarters:
+            ok, lines, err = _run_ai_substage(items, qs, qe, date_str)
+            if not ok:
+                cached_ok = [
+                    [qqs, qqe]
+                    for qqs, qqe in quarters
+                    if _news_cache_get(date_str, "default_ai_substage", qqs, qqe) is not None
+                ]
+                detail = (
+                    f"default_ai Level 3 quarter items[{qs}..{qe}] failed: {err}; "
+                    f"Level 2 half [{s}..{e}] error: {half_errors[i]}; "
+                    f"quarters cached so far: {cached_ok}"
+                )
+                _alert_failure(ctx, "ai_substage_level3_failed", detail)
+                raise _AiSubstageExhausted(detail)
+            merged.extend(lines)
+
+        half_results[i] = merged
+
+    # Concatenate the two halves' bullets in input order. Disjoint by construction.
+    final: list[str] = []
+    for lines in half_results:
+        final.extend(lines or [])
+
+    if not final:
+        log_trace("ai_substage_empty_after_merge", total_items=n)
+        return ["- 今日無相關新聞"]
+
+    log_trace("ai_substage_complete", total_items=n, total_bullets=len(final))
+    return final
+
+
+def summarize_llm(all_items: dict[str, list[dict]], ctx: "AlertContext") -> str:
     """Ask the nullclaw agent to curate and summarize news for significance."""
     tw_now = datetime.now(timezone(timedelta(hours=8)))
     date_str = tw_now.strftime("%Y/%m/%d (%a)")
@@ -724,19 +1022,52 @@ def summarize_llm(all_items: dict[str, list[dict]]) -> str:
     link_map = _build_link_map(all_items)
     lines = [f"\U0001f4f0 早安新聞摘要 — {date_str}\n"]
     section_keys = ("ai", "tech", "general")
-    section_results = {}
+    section_results: dict[str, list[str]] = {}
+    degraded_sections: list[str] = []  # sections that fell back to non-LLM
+
     for key in section_keys:
         try:
-            section_results[key] = _summarize_default_section(
-                key,
-                all_items.get(key, []),
-                date_str,
-                link_map,
-            )
+            if key == "ai":
+                # Substaged path: Level 2 (always) → Level 3 (per failed half)
+                # → escalate via _AiSubstageExhausted on terminal failure.
+                section_results[key] = _summarize_default_ai_substaged(
+                    all_items.get(key, []), date_str, ctx,
+                )
+            else:
+                # Existing single-call path; tuple return tells us authoritatively
+                # whether the LLM succeeded or we used the non-LLM fallback.
+                lines_out, used_fallback = _summarize_default_section(
+                    key, all_items.get(key, []), date_str, link_map,
+                )
+                section_results[key] = lines_out
+                if used_fallback and all_items.get(key):
+                    degraded_sections.append(key)
+        except _AiSubstageExhausted:
+            # Alert was already sent from inside _summarize_default_ai_substaged.
+            # Re-raise so main() exits 1 and does not deliver a partial digest.
+            raise
         except Exception as e:
             print(f"[WARN] LLM section worker failed: section={key} {e}", file=sys.stderr)
             spec = DEFAULT_SECTION_SPECS[key]
-            section_results[key] = _fallback_section_lines(key, all_items.get(key, []), spec["fallback_limit"], link_map)
+            section_results[key] = _fallback_section_lines(
+                key, all_items.get(key, []), spec["fallback_limit"], link_map,
+            )
+            degraded_sections.append(key)
+            _alert_failure(
+                ctx,
+                f"section_{key}_exception",
+                f"section {key} raised {type(e).__name__}: {e}",
+            )
+
+    if degraded_sections:
+        # News still goes out, but quality is degraded. Per the hard rule
+        # ("whenever the skill cannot send out the news"), this counts:
+        # the operator wanted LLM-curated news, not a raw bullet dump.
+        _alert_failure(
+            ctx,
+            "section_fallback_used",
+            f"sections delivered using non-LLM fallback: {degraded_sections}",
+        )
 
     for key in section_keys:
         spec = DEFAULT_SECTION_SPECS[key]
@@ -789,7 +1120,7 @@ def _fetch_custom_topics(topics: list[str]) -> dict[str, list[dict]]:
     return all_items
 
 
-def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) -> str:
+def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str], ctx: "AlertContext") -> str:
     """LLM curation for custom topic feeds."""
     tw_now = datetime.now(timezone(timedelta(hours=8)))
     date_str = tw_now.strftime("%Y/%m/%d (%a)")
@@ -891,6 +1222,16 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str]) ->
     except Exception as e:
         print(f"[WARN] LLM summary failed: {e}", file=sys.stderr)
 
+    # Reaching this point means the LLM custom-summary path failed (any reason
+    # above) and we are dropping to a raw bullet listing. Per the hard rule —
+    # "whenever the skill cannot send out the news" — this counts as degraded
+    # delivery and must alert.
+    _alert_failure(
+        ctx,
+        "custom_summary_fell_back",
+        "summarize_llm_custom dropped to non-LLM raw listing — LLM call or validation failed",
+    )
+
     # Fallback: raw listing
     lines = [f"\U0001f4f0 每日新聞摘要 — {date_str}\n"]
     link_map = _build_link_map(all_items)
@@ -974,38 +1315,92 @@ def main():
         emit_trace()
         return
 
-    # Deliver news (default command or explicit "deliver")
-    topics = _resolve_topics(args)
+    # Opportunistic cache cleanup before any heavy work.
+    _news_cache_sweep()
 
-    if topics:
-        all_items = _fetch_custom_topics(topics)
-        summary = summarize_llm_custom(all_items, topics)
-    else:
-        ai_us = fetch_feed(FEEDS["ai_us"])
-        ai_labs = fetch_feed(FEEDS["ai_labs"])
-        ai_cn = fetch_feed(FEEDS["ai_cn"])
-        ai_tw = fetch_feed(FEEDS["ai_tw"])
-        tech = fetch_feed(FEEDS["tech"])
-        general = fetch_feed(FEEDS["general"])
+    # Build the alert context once so every failure path can use it.
+    ctx = AlertContext(
+        deliver_to=getattr(args, "deliver_to", None),
+        account=args.account,
+        job_id=os.environ.get("NULLCLAW_JOB_ID"),
+    )
 
-        all_items = {
-            "ai": dedup(ai_us + ai_labs + ai_cn + ai_tw),
-            "tech": dedup(tech),
-            "general": dedup(general),
-        }
+    try:
+        # Deliver news (default command or explicit "deliver")
+        topics = _resolve_topics(args)
 
-        summary = summarize_llm(all_items)
+        if topics:
+            all_items = _fetch_custom_topics(topics)
+        else:
+            ai_us = fetch_feed(FEEDS["ai_us"])
+            ai_labs = fetch_feed(FEEDS["ai_labs"])
+            ai_cn = fetch_feed(FEEDS["ai_cn"])
+            ai_tw = fetch_feed(FEEDS["ai_tw"])
+            tech = fetch_feed(FEEDS["tech"])
+            general = fetch_feed(FEEDS["general"])
 
-    has_items = any(items for items in all_items.values())
+            all_items = {
+                "ai": dedup(ai_us + ai_labs + ai_cn + ai_tw),
+                "tech": dedup(tech),
+                "general": dedup(general),
+            }
 
-    # Append job instance ID if running under cron
-    job_id = os.environ.get("NULLCLAW_JOB_ID")
-    if job_id:
-        summary += f"\n\n`{job_id}`"
+        has_items = any(items for items in all_items.values())
+        if not has_items:
+            # Every RSS feed returned 0 items. There is no news to send.
+            # Per the hard rule, alert and exit non-zero.
+            _alert_failure(
+                ctx,
+                "all_feeds_empty",
+                "every RSS feed returned 0 items — likely network failure or feed outage",
+            )
+            emit_skill_status("failed")
+            emit_trace()
+            sys.exit(1)
 
-    deliver_or_fail(args.deliver_to, summary, account=args.account)
-    emit_skill_status("ok" if has_items else "failed")
-    emit_trace()
+        if topics:
+            summary = summarize_llm_custom(all_items, topics, ctx)
+        else:
+            summary = summarize_llm(all_items, ctx)
+
+        if ctx.job_id and ctx.job_id != "interactive":
+            summary += f"\n\n`{ctx.job_id}`"
+
+        deliver_or_fail(args.deliver_to, summary, account=args.account)
+        emit_skill_status("ok")
+        emit_trace()
+
+    except _AiSubstageExhausted:
+        # Alert was already sent from inside _summarize_default_ai_substaged.
+        # Exit 1 so cron records the failure; do NOT deliver a partial digest.
+        emit_skill_status("failed")
+        emit_trace()
+        sys.exit(1)
+
+    except SystemExit as se:
+        # deliver_or_fail calls sys.exit(1) when telegram.send returns False.
+        # The body was printed to stdout for cron capture but the message did
+        # NOT reach Telegram. Per the hard rule, alert before propagating.
+        # The on-disk failure log catches this even when Telegram is the
+        # dead channel.
+        if se.code not in (0, None):
+            _alert_failure(
+                ctx,
+                "telegram_delivery_failed",
+                "deliver_or_fail exited non-zero — telegram.send returned False",
+            )
+        raise
+
+    except Exception as e:
+        import traceback
+        _alert_failure(
+            ctx,
+            "uncaught_exception",
+            f"{type(e).__name__}: {e}\n{traceback.format_exc()[:1500]}",
+        )
+        emit_skill_status("failed")
+        emit_trace()
+        raise
 
 
 if __name__ == "__main__":
