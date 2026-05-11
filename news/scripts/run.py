@@ -1120,136 +1120,167 @@ def _fetch_custom_topics(topics: list[str]) -> dict[str, list[dict]]:
     return all_items
 
 
-def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str], ctx: "AlertContext") -> str:
-    """LLM curation for custom topic feeds."""
-    tw_now = datetime.now(timezone(timedelta(hours=8)))
-    date_str = tw_now.strftime("%Y/%m/%d (%a)")
+def _run_custom_topic(
+    topic: str,
+    items: list[dict],
+    date_str: str,
+) -> tuple[bool, list[str], str]:
+    """Run one LLM call covering exactly one custom topic; return (ok, lines, error).
 
+    ok=True   → lines is the validated bullet list for this topic; error="".
+    ok=False  → lines=[]; error is a short string describing the hard failure.
+
+    Per-topic granularity is the resumability unit: each call covers up to
+    LLM_CUSTOM_TOPIC_LIMIT items (~8) and finishes in ~10s on a healthy host,
+    well within typical kill windows. A successful call is cached at
+    ~/.nullclaw/.news-cache/<date>/custom-<safe_topic>.txt and reused on the
+    next attempt of the same (date, topic).
+    """
+    variant = "custom_topic"
+    safe_date = date_str.split()[0].replace("/", "-")
+    safe_topic = "".join(ch if ch.isalnum() else "_" for ch in topic)[:40]
+    cache_path = os.path.join(NEWS_CACHE_DIR, safe_date, f"custom-{safe_topic}.txt")
+    try:
+        with open(cache_path, encoding="utf-8") as f:
+            cached = f.read()
+        log_trace("news_cache_hit", variant=variant, topic=topic)
+        return True, cached.splitlines(), ""
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log_trace("news_cache_read_error", variant=variant, topic=topic, error=str(e))
+
+    if not items:
+        return True, ["- 今日無相關新聞"], ""
+
+    section_items = {topic: items[:LLM_CUSTOM_TOPIC_LIMIT]}
     numbered, raw = _number_items_for_prompt(
-        all_items,
-        labels=topics,
-        limits={topic: LLM_CUSTOM_TOPIC_LIMIT for topic in topics},
+        section_items,
+        labels=[topic],
+        limits={topic: LLM_CUSTOM_TOPIC_LIMIT},
     )
-
-    topic_list = "、".join(topics)
-    topic_format = "\n".join(f"**{t}**\n- #N ...\n" for t in topics)
-
     prompt = (
-        f"你是新聞編輯。以下是今天({date_str})從多個來源蒐集的新聞標題（每則有編號 #N），"
-        f"涵蓋以下主題：{topic_list}。\n\n"
+        f"你是新聞編輯。以下是今天({date_str})關於「{topic}」的候選新聞標題（每則有編號 #N）。\n\n"
         f"{raw}\n\n"
-        f"請做以下工作：\n"
-        f"1. 從每個主題中，挑出真正有影響力、有意義的 2-4 則新聞。"
-        f"排除瑣碎的、純行銷推廣的、政治宣傳性質的新聞。\n"
-        f"2. 用繁體中文輸出，格式嚴格如下（不要加其他說明）：\n\n"
-        f"📰 每日新聞摘要 — {date_str}\n\n"
-        f"{topic_format}\n"
+        f"請從中挑出 2-4 則真正有影響力、有意義的新聞，排除瑣碎、純行銷推廣、政治宣傳性質的新聞。\n"
+        f"用繁體中文輸出，格式嚴格如下（不要輸出標題、開場白或結語）：\n"
+        f"- #N 新聞標題\n"
+        f"- #N ...\n\n"
         f"規則：\n"
         f"- 每則新聞前面必須保留原始編號 #N\n"
-        f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞的英文\n"
-        f"- 如果某主題今日無相關新聞，該區塊寫「今日無相關新聞」\n"
-        f"- 只輸出摘要本身，不要加開場白或結語"
+        f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞（公司名、人名）的英文\n"
+        f"- 如果今日無相關新聞，輸出「- 今日無相關新聞」"
     )
+
+    result = _run_nullclaw_agent(
+        prompt,
+        AI_SUBSTAGE_TIMEOUT_SECS,
+        f"{variant}_{safe_topic}",
+        section_items,
+        numbered,
+    )
+    summary = (result.stdout or "").strip()
+
+    if result.returncode == 124:
+        return False, [], f"timeout after {AI_SUBSTAGE_TIMEOUT_SECS}s"
+    if result.returncode != 0:
+        return False, [], f"exit_code={result.returncode}"
+    if not summary:
+        return False, [], "empty_stdout"
+
+    marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
+    if total_bullets == 0 or marked_bullets != total_bullets:
+        return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
+
+    with_links, links_attached = _attach_numbered_links(summary, numbered)
+    if links_attached == 0:
+        # Bullets present but no link attached. Treat as success (still readable
+        # for the user) but skip caching so a re-run can try to do better.
+        return True, summary.splitlines(), ""
+
+    body = with_links
     try:
-        result = _run_nullclaw_agent(prompt, LLM_CUSTOM_TIMEOUT_SECS, "custom", all_items, numbered)
-        summary = result.stdout.strip()
-        if summary:
-            marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
-            if total_bullets == 0 or marked_bullets != total_bullets:
-                _log_llm_validation_failed(
-                    "custom",
-                    result,
-                    summary,
-                    marked_bullets,
-                    total_bullets,
-                    numbered,
-                    "marker_validation",
-                )
-                print(
-                    "[WARN] LLM summary marker validation failed: "
-                    f"{marked_bullets}/{total_bullets} bullets have valid #N markers",
-                    file=sys.stderr,
-                )
-            else:
-                chinese_bullets, language_total = _language_validation_stats(summary)
-                if not _language_validation_passed(summary):
-                    _log_llm_validation_failed(
-                        "custom",
-                        result,
-                        summary,
-                        marked_bullets,
-                        total_bullets,
-                        numbered,
-                        "language_validation",
-                        {
-                            "chinese_bullets": chinese_bullets,
-                            "language_total": language_total,
-                        },
-                    )
-                    raise ValueError("LLM custom summary failed language validation")
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            f.write(body)
+        log_trace("news_cache_write", variant=variant, topic=topic, bytes=len(body))
+    except OSError as e:
+        log_trace("news_cache_write_error", variant=variant, topic=topic, error=str(e))
+    return True, body.splitlines(), ""
 
-                with_links, links_attached = _attach_numbered_links(summary, numbered)
-                if total_bullets > 0 and links_attached == 0:
-                    log_trace(
-                        "llm_link_validation_failed",
-                        variant="custom",
-                        returncode=result.returncode,
-                        stdout_len=len(result.stdout or ""),
-                        items_numbered=len(numbered),
-                        marked_bullets=marked_bullets,
-                        total_bullets=total_bullets,
-                        stdout_sample=_clip_subprocess_text(summary, 1200),
-                        line_sample=_sample_nonempty_lines(summary, 8),
-                    )
-                    print(
-                        "[WARN] LLM summary link validation failed: "
-                        f"0 links attached for {total_bullets} bullets",
-                        file=sys.stderr,
-                    )
-                else:
-                    return _trim_links_to_limit(with_links)
+
+def _custom_topic_raw_listing(topic: str, items: list[dict], link_map: dict[str, str]) -> list[str]:
+    """Return the non-LLM raw bullet list for one topic (per-topic fallback)."""
+    if not items:
+        return ["- 今日無相關新聞"]
+    lines: list[str] = []
+    for item in items[:5]:
+        title = item["title"]
+        link = link_map.get(title, item.get("link", ""))
+        if link:
+            lines.append(f"- {title} [🔗]({link})")
         else:
-            _log_llm_validation_failed(
-                "custom",
-                result,
-                summary,
-                0,
-                0,
-                numbered,
-                "empty_stdout",
-            )
-            print("[WARN] LLM summary validation failed: empty stdout", file=sys.stderr)
-    except Exception as e:
-        print(f"[WARN] LLM summary failed: {e}", file=sys.stderr)
+            lines.append(f"- {title}")
+    return lines
 
-    # Reaching this point means the LLM custom-summary path failed (any reason
-    # above) and we are dropping to a raw bullet listing. Per the hard rule —
-    # "whenever the skill cannot send out the news" — this counts as degraded
-    # delivery and must alert.
-    _alert_failure(
-        ctx,
-        "custom_summary_fell_back",
-        "summarize_llm_custom dropped to non-LLM raw listing — LLM call or validation failed",
-    )
 
-    # Fallback: raw listing
-    lines = [f"\U0001f4f0 每日新聞摘要 — {date_str}\n"]
+def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str], ctx: "AlertContext") -> str:
+    """LLM curation for custom topic feeds.
+
+    Per-topic substaging: one LLM call per topic, sequential, cached. On a
+    per-topic LLM failure, that topic's section in the digest is replaced
+    by a raw bullet listing (still useful for the user) and the failure is
+    alerted ('topic X fell back'). Other topics deliver normally.
+
+    If every topic falls back, an additional 'all_custom_topics_failed' alert
+    fires; the digest still ships in raw form so the user is not left with
+    nothing.
+    """
+    tw_now = datetime.now(timezone(timedelta(hours=8)))
+    date_str = tw_now.strftime("%Y/%m/%d (%a)")
     link_map = _build_link_map(all_items)
+
+    log_trace("custom_substage_start", topic_count=len(topics), topics=topics)
+
+    sections: dict[str, list[str]] = {}
+    degraded_topics: list[str] = []
+
     for topic in topics:
-        lines.append(f"**{topic}**")
         items = all_items.get(topic, [])
-        if items:
-            for item in items[:5]:
-                title = item["title"]
-                link = link_map.get(title, item.get("link", ""))
-                if link:
-                    lines.append(f"- {title} [🔗]({link})")
-                else:
-                    lines.append(f"- {title}")
+        ok, lines, err = _run_custom_topic(topic, items, date_str)
+        if ok:
+            sections[topic] = lines
         else:
-            lines.append("- 今日無相關新聞")
-        lines.append("")
-    return "\n".join(lines)
+            log_trace("custom_topic_fell_back", topic=topic, error=err)
+            sections[topic] = _custom_topic_raw_listing(topic, items, link_map)
+            degraded_topics.append(topic)
+
+    if degraded_topics:
+        if len(degraded_topics) == len(topics):
+            _alert_failure(
+                ctx,
+                "all_custom_topics_failed",
+                f"every custom topic LLM call failed; full digest is raw-listing only. topics={degraded_topics}",
+            )
+        else:
+            _alert_failure(
+                ctx,
+                "custom_topics_fell_back",
+                f"these topics delivered as raw listings (LLM failed): {degraded_topics}",
+            )
+
+    lines_out = [f"\U0001f4f0 每日新聞摘要 — {date_str}\n"]
+    for topic in topics:
+        lines_out.append(f"**{topic}**")
+        lines_out.extend(sections.get(topic, ["- 今日無相關新聞"]))
+        lines_out.append("")
+
+    log_trace(
+        "custom_substage_complete",
+        topic_count=len(topics),
+        degraded_count=len(degraded_topics),
+    )
+    return _trim_links_to_limit("\n".join(lines_out))
 
 
 def _resolve_topics(args) -> list[str] | None:
