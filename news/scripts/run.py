@@ -32,6 +32,7 @@ LLM_DEFAULT_TIMEOUT_SECS = 180
 LLM_CUSTOM_TIMEOUT_SECS = 180
 LLM_SECTION_TIMEOUT_SECS = 90
 LLM_TRANSLATION_TIMEOUT_SECS = 60
+TELEGRAM_RAW_CHUNK_LIMIT = 3800
 # Substaging: each Level-2 half (or Level-3 quarter) gets a smaller timeout
 # than the original 90s monolithic call — half-size prompts should not need it.
 AI_SUBSTAGE_TIMEOUT_SECS = 60
@@ -639,6 +640,12 @@ def _trim_links_to_limit(text: str, limit: int = 4000) -> str:
     return _trim_lines_to_limit(_strip_links_keep_spacing(text), limit)
 
 
+def _markdown_visible_text(text: str) -> str:
+    import re
+
+    return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
+
 def _trim_lines_to_limit(text: str, limit: int = 4000) -> str:
     if len(text) <= limit:
         return text
@@ -714,7 +721,10 @@ def _translate_selected_section(
 
 
 def _trim_digest_links(text: str) -> str:
-    if len(text) <= 4000:
+    # Telegram's documented message limit is based on text after entity
+    # parsing, not raw Markdown URL bytes. Keep source links when the visible
+    # digest is short enough; delivery splits raw Markdown into safe chunks.
+    if len(_markdown_visible_text(text)) <= 4000:
         return text
     lines = text.split("\n")
     in_ai = False
@@ -731,6 +741,56 @@ def _trim_digest_links(text: str) -> str:
     if len(result) <= 4000:
         return result
     return _trim_links_to_limit(text)
+
+
+def _split_message_preserving_lines(body: str, limit: int = TELEGRAM_RAW_CHUNK_LIMIT) -> list[str]:
+    if len(body) <= limit:
+        return [body]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    def flush_current() -> None:
+        nonlocal current, current_len
+        if current:
+            chunks.append("".join(current).rstrip())
+            current = []
+            current_len = 0
+
+    for line in body.splitlines(keepends=True):
+        if len(line) > limit:
+            flush_current()
+            for start in range(0, len(line), limit):
+                chunks.append(line[start:start + limit].rstrip())
+            continue
+        if current and current_len + len(line) > limit:
+            flush_current()
+        current.append(line)
+        current_len += len(line)
+
+    flush_current()
+    return [chunk for chunk in chunks if chunk]
+
+
+def _deliver_news_or_fail(chat_id: str | None, body: str, account: str) -> None:
+    if not chat_id:
+        deliver_or_fail(chat_id, body, account=account)
+        return
+
+    chunks = _split_message_preserving_lines(body)
+    if len(chunks) == 1:
+        deliver_or_fail(chat_id, body, account=account)
+        return
+
+    log_trace(
+        "digest_delivery_split",
+        chunks=len(chunks),
+        raw_chars=len(body),
+        visible_chars=len(_markdown_visible_text(body)),
+    )
+    for idx, chunk in enumerate(chunks, start=1):
+        deliver_or_fail(chat_id, f"({idx}/{len(chunks)})\n{chunk}", account=account)
 
 
 def _summarize_default_section(key: str, items: list[dict], date_str: str, link_map: dict[str, str]) -> tuple[list[str], bool]:
@@ -1397,7 +1457,7 @@ def main():
         if ctx.job_id and ctx.job_id != "interactive":
             summary += f"\n\n`{ctx.job_id}`"
 
-        deliver_or_fail(args.deliver_to, summary, account=args.account)
+        _deliver_news_or_fail(args.deliver_to, summary, args.account)
         emit_skill_status("ok")
         emit_trace()
 

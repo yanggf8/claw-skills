@@ -95,6 +95,16 @@ Cache: `~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`. Keyed by
 `(date, variant, range)`. Swept on script start: subdirectories older than 7
 days are deleted. Safe to wipe manually.
 
+Delivery length handling:
+
+- Telegram message length is checked by visible Markdown text, not raw URL
+  bytes. This prevents long Google News RSS URLs from causing links to be
+  stripped while the user-visible digest still fits.
+- When raw Markdown is too large for one safe Telegram POST, the script splits
+  the digest on line boundaries and sends numbered chunks. The trace event
+  `digest_delivery_split` records the chunk count plus raw/visible character
+  counts.
+
 ## Failure alerts (hard rule)
 
 Whenever the skill cannot send the full intended news — this includes any
