@@ -37,9 +37,22 @@ python3 ~/.nullclaw/skills/weather/scripts/run.py --location 香港 --location �
 
 ## Notes
 
-- Taiwan locations: CWA API, key from `~/.nullclaw/.env` (`CWA_API_KEY`)
+- Taiwan locations: CWA API (`CWA_API_KEY` from `~/.nullclaw/.env`), with Open-Meteo as automatic fallback when CWA is down (timeout/5xx/empty records). Fallback lines are suffixed with `（備援）`.
 - Hong Kong locations: HKO API, no key required
 - Location routing is automatic based on name matching
+- CWA timeout is 8s so fallback engages quickly; Open-Meteo needs no API key
+
+## Fallback observability
+
+When the Open-Meteo fallback fires, three signals are emitted:
+
+1. **Stderr** — a single self-contained `[skill-event]` sentence naming primary, fallback, plain-language reason, scope, and elapsed ms. Example:
+   ```
+   [skill-event] Weather skill fell back from CWA to Open-Meteo because CWA request failed with TimeoutError: The read operation timed out. Fallback covered 1 Taiwan location and took 927ms.
+   ```
+   Audience is an agent reading the trace; phrasing is natural language, not key=val.
+2. **Trace status** — when `NULLCLAW_JOB_ID` is set, `[skill-status:degraded]` is emitted instead of `[skill-status:ok]` so cron run history surfaces the fallback without parsing the event line.
+3. **User message** — only the `（備援）` suffix on affected location lines; no error noise pushed to Telegram.
 - Telegram bot token loaded from `~/.nullclaw/config.json`
 - On API error: prints/sends `[WARN: weather unavailable - <reason>]`, exits 0
 - Selects the forecast period closest to current CST/HKT time

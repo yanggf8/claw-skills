@@ -32,3 +32,26 @@ def emit_trace(stream=sys.stdout):
     job_id = os.environ.get("NULLCLAW_JOB_ID")
     if job_id:
         print(f"[trace:{job_id}]", file=stream, flush=True)
+
+
+def emit_fallback(skill, primary, fallback, reason, scope, elapsed_ms=None, stream=sys.stderr):
+    """Emit a [skill-event] natural-language sentence describing a fallback.
+
+    Audience is an agent reading the trace later — phrasing should be a
+    complete sentence with skill, primary, fallback, reason in plain words,
+    and scope. Reason should NOT be a short code; use natural language like
+    "CWA returned HTTP 502" or "request timed out after 8s".
+
+    Always emits (no NULLCLAW_JOB_ID gate) so manual runs are also diagnosable.
+    Goes to stderr by default so it doesn't pollute cron-verified stdout.
+    """
+    parts = [
+        f"[skill-event] {skill} skill fell back from {primary} to {fallback}",
+        f"because {reason}.",
+        f"Fallback covered {scope}",
+    ]
+    if elapsed_ms is not None:
+        parts.append(f"and took {elapsed_ms}ms.")
+    else:
+        parts[-1] = parts[-1] + "."
+    print(" ".join(parts), file=stream, flush=True)
