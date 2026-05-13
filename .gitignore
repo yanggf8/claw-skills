@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+*.bak.*
 mindfulness-spirit/failed/
 mindfulness-spirit/runs/
 mindfulness-spirit/status.json
