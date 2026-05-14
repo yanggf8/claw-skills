@@ -162,7 +162,6 @@ Cron expressions use UTC. Taiwan (CST) = UTC+8, EST = UTC-5.
 
 ```bash
 python3 lib/test_telegram_retry.py
-python3 lib/test_persona_history.py
 python3 lib/test_oil_store.py
 # etc.
 ```
@@ -190,15 +189,30 @@ Prior design context lives in `docs/specs/` (e.g. `2026-04-15-oilcon-skill-desig
 | `doughcon` | `--mode deliver\|record` | PizzINT API |
 | `oilcon` | `--mode deliver\|record` | Yahoo Finance, Turso |
 | `agent-reach` | agent-only, see SKILL.md | 13+ platforms |
-| `mindfulness-spirit` | `write`, `fix-signature DEVTO_ID`, `--dry-run` | Google News RSS, dev.to, Turso |
-| `persona-skill` | `get\|list\|create\|update\|delete`, `set-secret\|get-secret\|delete-secret`, `history`, `plan-list\|plan-show` | Turso |
+| `mindfulness-spirit` | `write`, `fix-signature DEVTO_ID`, `--dry-run` | Google News RSS, dev.to, Turso (via `persona-core` CLI) |
+| `liko-finance-weekly` | `--dry-run`, `--check` | Turso (via `persona-core` CLI) |
+
+`persona-skill` was retired (Step 10 of the persona-core absorbing
+plan). Persona CRUD, secrets, history, and editorial plans are now
+managed exclusively via the `persona-core` Rust CLI:
+
+```bash
+persona-core personas show <slug>
+persona-core personas list
+persona-core secrets set <slug> <kind> <value>
+persona-core history list --persona <slug>
+persona-core plans list
+```
 
 ### Shared libraries (`lib/`)
 
 | Module | Purpose |
 |--------|---------|
-| `persona_registry` | Persona CRUD, secrets, schema v1 |
-| `persona_history` | Publish history, editorial plans, schema v2 |
+| `skill_runner` | Shared agent-first skill runtime helpers (subprocess wrappers, persona-core CLI shortcut, nullclaw agent invocation, cron skill-contract markers) |
 | `cover_image` | CogView-4 image generation + dev.to cover update CLI |
 | `telegram` | Telegram message delivery (auto-detects nullclaw/openclaw config) |
 | `heartbeat` | Wall-clock heartbeat for long-running subprocesses |
+
+`persona_registry` and `persona_history` were retired alongside
+`persona-skill`. All persona/history access goes through `persona-core`
+CLI now; no Python lib import needed.

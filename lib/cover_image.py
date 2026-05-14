@@ -142,14 +142,19 @@ def _cli():
     elif args.command == "update-devto":
         api_key = None
         if args.persona:
-            lib_path = str(Path(__file__).resolve().parent)
-            if lib_path not in sys.path:
-                sys.path.insert(0, lib_path)
-            import persona_registry
-            conn = persona_registry.connect_from_env()
-            persona_registry.ensure_schema(conn)
-            api_key = persona_registry.get_secret(conn, args.persona, "devto_api_key")
-            conn.close()
+            import subprocess
+            result = subprocess.run(
+                ["persona-core", "secrets", "get", args.persona, "devto_api_key", "--reveal"],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                print(
+                    f"persona-core secrets get failed for '{args.persona}/devto_api_key': "
+                    f"{result.stderr.strip() or result.stdout.strip()}",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            api_key = result.stdout.strip()
             if not api_key:
                 print(f"No devto_api_key secret for persona '{args.persona}'", file=sys.stderr)
                 sys.exit(2)
