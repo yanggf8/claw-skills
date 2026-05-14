@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -15,9 +16,8 @@ CONFIG_PATH = Path.home() / ".nullclaw" / "config.json"
 SKILL_DIR = Path(__file__).resolve().parent.parent
 PROMPTS_DIR = SKILL_DIR / "prompts"
 QUERIES = [
-    "mindfulness AI", "meditation technology", "AI spirituality",
-    "冥想 AI", "正念 數位", "身心靈 科技",
-    "AI consciousness", "artificial intelligence philosophy",
+    "mindfulness AI", "meditation technology", "AI spirituality", "冥想 AI",
+    "正念 數位", "身心靈 科技", "AI consciousness", "artificial intelligence philosophy",
 ]
 
 
@@ -37,25 +37,34 @@ def load_skill_settings():
     slug = raw.get("persona_slug")
     if not isinstance(slug, str) or not slug.strip():
         raise ValueError("missing skills.mindfulness_spirit.persona_slug in ~/.nullclaw/config.json")
-    return {
-        "persona_slug": slug.strip(),
-        "publish": raw.get("publish", True),
-        "main_image_url": raw.get("main_image_url"),
-    }
+    return {"persona_slug": slug.strip(), "publish": raw.get("publish", True), "main_image_url": raw.get("main_image_url")}
 
 
 def pc(*args, echo=False):
-    result = subprocess.run(
-        ["persona-core", *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = subprocess.run(["persona-core", *args], check=True, capture_output=True, text=True)
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
     if echo and result.stdout:
         print(result.stdout, end="")
     return result.stdout
+
+
+def run_nullclaw_agent(prompt, timeout_secs=300):
+    argv = [os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw"), "agent", "--isolated", "-m", prompt]
+    env = {**os.environ, "NULLCLAW_AGENT_TIMING_TRACE": "1"}
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_secs, env=env)
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            argv, 124, stdout=(exc.stdout or "")[:10000], stderr=(exc.stderr or "")[:10000]
+        )
+
+
+def agent_failure_reason(result):
+    if result.returncode == 124:
+        return "timed out after 300s"
+    stderr = (result.stderr or "").strip()
+    return f"exit code {result.returncode}: {stderr[:500]}" if stderr else f"exit code {result.returncode}"
 
 
 def get_rss_results(query):
@@ -114,15 +123,31 @@ def render_writer_prompt(settings, items):
 
 
 def write_inputs(work_dir, writer_prompt, items):
-    paths = {
-        "writer": work_dir / "writer.md",
-        "checklist": work_dir / "checklist.md",
-        "material": work_dir / "material.tsv",
-    }
+    paths = {"writer": work_dir / "writer.md", "checklist": work_dir / "checklist.md", "material": work_dir / "material.tsv"}
     paths["writer"].write_text(writer_prompt, encoding="utf-8")
     paths["checklist"].write_text((PROMPTS_DIR / "checklist.md.tmpl").read_text(encoding="utf-8"), encoding="utf-8")
     paths["material"].write_text(material_text(items), encoding="utf-8")
     return paths
+
+
+def run_writer_and_checklist(writer_prompt):
+    writer = run_nullclaw_agent(writer_prompt, 300)
+    if writer.returncode != 0:
+        print(writer.stdout or "", end="")
+        print(writer.stderr or "", end="", file=sys.stderr)
+        print(f"ERROR: writer agent failed: {agent_failure_reason(writer)}", file=sys.stderr)
+        return None, None, 1
+
+    writer_output = writer.stdout or ""
+    checklist_template = (PROMPTS_DIR / "checklist.md.tmpl").read_text(encoding="utf-8")
+    checklist_prompt = checklist_template.replace("{{WRITER_OUTPUT}}", writer_output)
+    checklist = run_nullclaw_agent(checklist_prompt, 300)
+    if checklist.returncode != 0:
+        reason = agent_failure_reason(checklist)
+        print(f"[checklist] degraded: {reason}", file=sys.stderr)
+        return writer_output, f"checklist phase degraded: {reason}", 0
+
+    return checklist.stdout or "", "checklist passed", 0
 
 
 def cmd_write(args):
@@ -141,19 +166,25 @@ def cmd_write(args):
     print(f"Persona: {settings['persona_slug']}")
     print(f"Legacy publish config: {settings['publish']}; main_image_url: {settings['main_image_url'] or '(none)'}")
     if args.dry_run:
-        print("[Dry-run] Skip prepare, draft, and publish.")
+        print("[Dry-run] Skip agent, prepare, update-body, and publish.")
         return 0
+
+    final_body, validation_summary, code = run_writer_and_checklist(paths["writer"].read_text(encoding="utf-8"))
+    if code != 0:
+        return code
+    paths["body"] = work_dir / "body.md"
+    paths["body"].write_text(final_body, encoding="utf-8")
 
     raw_id = pc("columns", "installments", "prepare", SKILL_NAME, "--print-id").strip()
     installment_id = str(int(raw_id))
     print(f"Prepared installment: {installment_id}")
     pc(
-        "columns", "installments", "draft", installment_id,
-        "--writer-prompt", "@" + str(paths["writer"]),
-        "--checklist-prompt", "@" + str(paths["checklist"]),
+        "columns", "installments", "update-body", installment_id,
+        "--body", "@" + str(paths["body"]),
         "--material", "@" + str(paths["material"]),
         "--restore-source-links", "--derive-stance", "--derive-key-links",
-        "--skill-id", SKILL_NAME,
+        "--validation-ok",
+        "--validation-summary", validation_summary,
         echo=True,
     )
     pc("columns", "installments", "publish", installment_id, "--skill-id", SKILL_NAME, echo=True)
@@ -162,10 +193,7 @@ def cmd_write(args):
 
 def cmd_fix_signature(args):
     settings = load_skill_settings()
-    pc_args = [
-        "columns", "installments", "repair-signature", str(args.devto_id),
-        "--persona", settings["persona_slug"],
-    ]
+    pc_args = ["columns", "installments", "repair-signature", str(args.devto_id), "--persona", settings["persona_slug"]]
     pc_args += ["--dry-run"] if args.dry_run else []
     pc(*pc_args, echo=True)
     return 0
@@ -174,8 +202,7 @@ def cmd_fix_signature(args):
 def build_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
-    write = sub.add_parser("write", help="Generate and publish an article")
-    write.add_argument("--dry-run", action="store_true")
+    sub.add_parser("write", help="Generate and publish an article").add_argument("--dry-run", action="store_true")
     fix = sub.add_parser("fix-signature", help="Patch a published dev.to article signature")
     fix.add_argument("devto_id", type=int, help="dev.to article id")
     fix.add_argument("--dry-run", action="store_true")

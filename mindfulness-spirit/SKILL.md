@@ -53,10 +53,11 @@ column row.
    `personas show`, `history list`, and `plans next` with `--as-prompt-block`.
 3. Render `prompts/writer.md.tmpl`; pass `prompts/checklist.md.tmpl` through.
 4. Write prompt + material TSV files to a temp directory.
-5. `columns installments prepare mindfulness-spirit --print-id`.
-6. `columns installments draft <id>` runs writer → checklist, restores
-   `[來源 #N]`, derives stance/key_links, and stores the body.
-7. `columns installments publish <id>` handles title/signature/secrets,
+5. Run writer → checklist with `nullclaw agent --isolated` inside the skill.
+6. `columns installments prepare mindfulness-spirit --print-id`.
+7. `columns installments update-body <id>` stores the body, restores
+   `[來源 #N]`, derives stance/key_links, and records validation status.
+8. `columns installments publish <id>` handles title/signature/secrets,
    delivery, failure dump/alert, history, and plan mark-published.
 
 `--dry-run` stops after RSS fetch, prompt-block reads, and temp-file rendering.
@@ -64,10 +65,10 @@ It prints the writer prompt path and does not prepare, draft, or publish.
 
 ## Operator Notes
 
-`draft` persists with `validation_ok=true`. A `validation_summary` containing
-`degraded` means the checklist phase failed and persona-core intentionally used
-the writer output as the deliverable body; treat that as a partial-success state
-worth reviewing.
+`update-body` persists with `validation_ok=true`. A `validation_summary`
+containing `degraded` means the checklist phase failed and the skill
+intentionally used the writer output as the deliverable body; treat that as a
+partial-success state worth reviewing.
 
 Prompt text lives in `prompts/writer.md.tmpl` and `prompts/checklist.md.tmpl`.
 Do not reintroduce `claw-skills/lib/persona_*.py` or `heartbeat.py` imports;
