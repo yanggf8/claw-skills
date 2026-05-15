@@ -974,6 +974,19 @@ def _run_ai_substage(
     if total_bullets == 0 or marked_bullets != total_bullets:
         return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
 
+    if not _language_validation_passed(summary):
+        translated = _translate_selected_section(
+            "ai",
+            _extract_leading_marker_ids(summary, numbered),
+            numbered,
+            date_str,
+        )
+        if translated is None:
+            return False, [], "language_validation"
+        body = "\n".join(translated)
+        _news_cache_put(date_str, variant, start, end, body)
+        return True, body.splitlines(), ""
+
     with_links, links_attached = _attach_numbered_links(summary, numbered)
     if links_attached == 0:
         return False, [], "no_links_attached"
