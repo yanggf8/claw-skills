@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import subprocess
 import unittest
+from unittest.mock import patch
 
 import run
 
@@ -42,10 +43,6 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
         ]
         self.calls = []
         self.cache = {}
-        self.orig_run_agent = run._run_nullclaw_agent
-        self.orig_cache_get = run._news_cache_get
-        self.orig_cache_put = run._news_cache_put
-        self.orig_log_trace = run.log_trace
 
         def fake_cache_get(date_str, variant, start, end):
             return self.cache.get((date_str, variant, start, end))
@@ -53,15 +50,20 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
         def fake_cache_put(date_str, variant, start, end, body):
             self.cache[(date_str, variant, start, end)] = body
 
-        run._news_cache_get = fake_cache_get
-        run._news_cache_put = fake_cache_put
-        run.log_trace = lambda *args, **kwargs: None
+        # addCleanup runs even if setUp later raises or a test mutates the
+        # attribute mid-flight; direct assignment + tearDown would leak
+        # patches into NewsDeliveryFormattingTests on cleanup failure.
+        for name, replacement in (
+            ("_news_cache_get", fake_cache_get),
+            ("_news_cache_put", fake_cache_put),
+            ("log_trace", lambda *args, **kwargs: None),
+        ):
+            self._install_patch(name, replacement)
 
-    def tearDown(self):
-        run._run_nullclaw_agent = self.orig_run_agent
-        run._news_cache_get = self.orig_cache_get
-        run._news_cache_put = self.orig_cache_put
-        run.log_trace = self.orig_log_trace
+    def _install_patch(self, name, replacement):
+        patcher = patch.object(run, name, replacement)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def set_agent_outputs(self, outputs):
         queue = list(outputs)
@@ -70,7 +72,7 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
             self.calls.append(variant)
             return subprocess.CompletedProcess(["nullclaw"], 0, stdout=queue.pop(0), stderr="")
 
-        run._run_nullclaw_agent = fake_run_agent
+        self._install_patch("_run_nullclaw_agent", fake_run_agent)
 
     def test_english_output_retries_translation_and_caches_chinese(self):
         self.set_agent_outputs([

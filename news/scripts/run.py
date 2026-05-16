@@ -983,9 +983,8 @@ def _run_ai_substage(
         )
         if translated is None:
             return False, [], "language_validation"
-        body = "\n".join(translated)
-        _news_cache_put(date_str, variant, start, end, body)
-        return True, body.splitlines(), ""
+        _news_cache_put(date_str, variant, start, end, "\n".join(translated))
+        return True, translated, ""
 
     with_links, links_attached = _attach_numbered_links(summary, numbered)
     if links_attached == 0:
