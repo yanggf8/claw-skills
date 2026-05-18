@@ -13,7 +13,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 # Resolve the shared skill lib. Resolution order matches the project-wide
@@ -42,6 +42,20 @@ def issue_status(issue_id: str) -> str | None:
             match = re.search(r"\bstatus=([^ ]+)", line)
             return match.group(1) if match else None
     return None
+
+
+def next_sunday_taipei(now: datetime | None = None) -> str:
+    """Upcoming Sunday in Asia/Taipei (UTC+8). Returns today if today is Sunday.
+
+    Matches the semantics of persona-core's retired upcoming_sunday_taipei
+    helper. persona-core's `streams issues prepare` requires --target-date
+    as of migration 014; this function preserves liko's prior cadence.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    taipei = (now + timedelta(hours=8)).date()
+    days_until_sunday = (6 - taipei.weekday()) % 7
+    return (taipei + timedelta(days=days_until_sunday)).isoformat()
 
 
 def load_context(issue_id: str, target_date: str) -> str:
@@ -194,9 +208,11 @@ def main(argv: list[str] | None = None) -> int:
             sr.emit_trace()
             return 0
 
+        target_date = next_sunday_taipei()
         prepared = sr.parse_labels(
             sr.run_cmd(
-                ["persona-core", "streams", "issues", "prepare", STREAM],
+                ["persona-core", "streams", "issues", "prepare", STREAM,
+                 "--target-date", target_date],
                 timeout=120,
                 cwd=REPO,
             )
