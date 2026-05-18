@@ -175,7 +175,7 @@ def cmd_write(args):
     paths["body"] = work_dir / "body.md"
     paths["body"].write_text(final_body, encoding="utf-8")
 
-    raw_id = pc("columns", "installments", "prepare", SKILL_NAME, "--print-id").strip()
+    raw_id = pc("columns", "installments", "prepare", SERIES_SLUG, "--print-id").strip()
     installment_id = str(int(raw_id))
     print(f"Prepared installment: {installment_id}")
     pc(
