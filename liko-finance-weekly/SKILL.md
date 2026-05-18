@@ -14,7 +14,7 @@ not call raw SQL, raw dev.to `curl`, or Telegram APIs directly.
 
 ## Script
 
-```text
+```
 ~/.nullclaw/skills/liko-finance-weekly/scripts/run.py
 ```
 
