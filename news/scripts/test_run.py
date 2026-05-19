@@ -131,5 +131,69 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+class CrosshalfDedupParserTests(unittest.TestCase):
+    def test_parse_extracts_id_per_line(self):
+        stdout = "#3\n#7\n#12\n"
+        self.assertEqual(run._parse_crosshalf_keep_ids(stdout), {3, 7, 12})
+
+    def test_parse_tolerates_whitespace_and_blank_lines(self):
+        stdout = "  #1\n\n   #5   \n\n#9\n"
+        self.assertEqual(run._parse_crosshalf_keep_ids(stdout), {1, 5, 9})
+
+    def test_parse_ignores_chatty_preamble(self):
+        # If the LLM ignores the "no preamble" instruction, the parser must
+        # still pick out the bare #N lines and drop the prose lines silently.
+        stdout = (
+            "好的，以下是保留的編號：\n"
+            "#2\n"
+            "#4\n"
+            "(共 2 則)\n"
+        )
+        self.assertEqual(run._parse_crosshalf_keep_ids(stdout), {2, 4})
+
+    def test_parse_returns_empty_set_on_unparseable_reply(self):
+        self.assertEqual(run._parse_crosshalf_keep_ids("no IDs here at all"), set())
+        self.assertEqual(run._parse_crosshalf_keep_ids(""), set())
+
+    def test_parse_rejects_inline_id_in_prose(self):
+        # `^\s*#N\s*$` is strict on purpose: a stray "#3" inside a sentence
+        # must not be mistaken for a keep decision.
+        stdout = "保留 #3 與 #7\n"
+        self.assertEqual(run._parse_crosshalf_keep_ids(stdout), set())
+
+    def test_apply_filters_bullets_by_id(self):
+        bullets = [
+            "- #1 first bullet",
+            "- #2 second bullet",
+            "- #3 third bullet",
+        ]
+        result = run._apply_crosshalf_keep_ids(bullets, {1, 3})
+        self.assertEqual(result, ["- #1 first bullet", "- #3 third bullet"])
+
+    def test_apply_empty_keep_ids_returns_input_unchanged(self):
+        # Sentinel: caller treats this as "LLM produced nothing usable, keep all."
+        bullets = ["- #1 a", "- #2 b"]
+        result = run._apply_crosshalf_keep_ids(bullets, set())
+        self.assertIs(result, bullets)
+
+    def test_apply_preserves_unmarked_bullets(self):
+        # A formatting glitch (no leading `- #N`) must not silently drop the
+        # bullet; this is the "fail open, prefer redundant over missing" rule.
+        bullets = [
+            "- #1 normal",
+            "- glitched bullet missing marker",
+            "- #2 also normal",
+        ]
+        result = run._apply_crosshalf_keep_ids(bullets, {1})
+        self.assertEqual(result, ["- #1 normal", "- glitched bullet missing marker"])
+
+    def test_apply_handles_id_not_in_input(self):
+        # LLM hallucinates a #99 that was never in the input. The applier must
+        # not insert it (we only filter, never synthesize).
+        bullets = ["- #1 a", "- #2 b"]
+        result = run._apply_crosshalf_keep_ids(bullets, {1, 99})
+        self.assertEqual(result, ["- #1 a"])
+
+
 if __name__ == "__main__":
     unittest.main()

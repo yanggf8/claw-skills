@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -819,7 +820,12 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
         f"- 每則新聞前面必須保留原始編號 #N\n"
         f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞（公司名、人名）的英文\n"
         f"- 每行必須以繁體中文新聞句子開始，不要輸出英文原標題或「英文（中文）」格式\n"
-        f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞"
+        f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n"
+        f"- 同一則新聞如果有多個來源（標題講同一件事，例如「百度Q1財報」三個版本），只挑一則：\n"
+        f"  優先選免費來源（cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、Reuters、AP、ScienceDaily、TechCrunch 等）\n"
+        f"  避開付費牆來源（WSJ、Bloomberg、FT、Nikkei、Barron's 等）\n"
+        f"  只有付費來源報導時才保留付費來源\n"
+        f"- 重複判斷以「事件本身」為準：同公司同季財報、同一政策公告、同一產品發布、同一研究突破都算重複"
     )
     try:
         result = _run_nullclaw_agent(
@@ -951,7 +957,11 @@ def _run_ai_substage(
         f"規則：\n"
         f"- 每則新聞前面必須保留原始編號 #N\n"
         f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞（公司名、人名）的英文\n"
-        f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞"
+        f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n"
+        f"- 同一則新聞如果有多個來源（標題講同一件事），只挑一則：\n"
+        f"  優先選免費來源（cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、Reuters、AP、ScienceDaily、TechCrunch 等）\n"
+        f"  避開付費牆來源（WSJ、Bloomberg、FT、Nikkei、Barron's 等）\n"
+        f"  只有付費來源報導時才保留付費來源"
     )
 
     result = _run_nullclaw_agent(
@@ -1073,7 +1083,10 @@ def _summarize_default_ai_substaged(
 
         half_results[i] = merged
 
-    # Concatenate the two halves' bullets in input order. Disjoint by construction.
+    # Concatenate the two halves' bullets in input order. Disjoint by construction
+    # of the per-half input ranges, but the SAME real-world story may show up in
+    # both halves with different sources (e.g., Baidu Q1 financials covered by
+    # WSJ in half A and cnyes in half B). Run a cross-half dedup pass.
     final: list[str] = []
     for lines in half_results:
         final.extend(lines or [])
@@ -1082,8 +1095,115 @@ def _summarize_default_ai_substaged(
         log_trace("ai_substage_empty_after_merge", total_items=n)
         return ["- 今日無相關新聞"]
 
+    before_dedup = len(final)
+    final = _crosshalf_dedup(final, date_str)
+    if len(final) != before_dedup:
+        log_trace(
+            "ai_substage_crosshalf_dedup",
+            before=before_dedup,
+            after=len(final),
+            removed=before_dedup - len(final),
+        )
+
     log_trace("ai_substage_complete", total_items=n, total_bullets=len(final))
     return final
+
+
+def _parse_crosshalf_keep_ids(stdout: str) -> set[int]:
+    """Extract the set of bullet IDs to keep from the LLM crosshalf-dedup reply.
+
+    The expected reply is one `#<id>` token per line. Tolerant of leading/trailing
+    whitespace; any line that does not match `^\\s*#\\d+\\s*$` is ignored so a
+    chatty LLM does not poison the result.
+    """
+    keep_ids: set[int] = set()
+    for line in stdout.splitlines():
+        m = re.match(r"^\s*#(\d+)\s*$", line.strip())
+        if m:
+            keep_ids.add(int(m.group(1)))
+    return keep_ids
+
+
+def _apply_crosshalf_keep_ids(bullets: list[str], keep_ids: set[int]) -> list[str]:
+    """Filter bullets to those whose leading `- #N` ID is in `keep_ids`.
+
+    Bullets without a parseable leading `- #N` marker are kept unchanged so a
+    formatting glitch never silently drops content. Returns the same `bullets`
+    object on the no-op path (`keep_ids` empty) so callers can detect "LLM
+    returned nothing useful, fall back to input."
+    """
+    if not keep_ids:
+        return bullets
+    kept: list[str] = []
+    for bullet in bullets:
+        m = re.match(r"^-\s*#(\d+)\b", bullet)
+        if not m:
+            kept.append(bullet)
+            continue
+        if int(m.group(1)) in keep_ids:
+            kept.append(bullet)
+    return kept
+
+
+def _crosshalf_dedup(bullets: list[str], date_str: str) -> list[str]:
+    """Drop cross-half duplicates by asking the LLM to keep one per story.
+
+    Each bullet is `- #N <title>` already validated by the per-half pass.
+    The LLM gets the bullet list verbatim and returns the bullet IDs to KEEP.
+    On any failure (timeout, exit, parse) the input is returned unchanged —
+    a redundant but accurate digest beats a missing one.
+    """
+    if len(bullets) < 2:
+        return bullets
+
+    numbered_text = "\n".join(bullets)
+    prompt = (
+        f"以下是 {date_str} AI 新聞摘要，每行格式為「- #N 標題」。\n"
+        f"請找出講同一件事但被列了多次的新聞（同公司同季財報、同一政策、同一產品發布、同一研究突破都算重複），"
+        f"每組重複只保留一則：\n"
+        f"- 優先保留免費來源（cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、Reuters、AP、ScienceDaily、TechCrunch 等）\n"
+        f"- 避開付費牆來源（WSJ、Bloomberg、FT、Nikkei、Barron's 等）\n"
+        f"- 只有付費來源報導時才保留付費來源\n\n"
+        f"{numbered_text}\n\n"
+        f"只輸出要保留的 #N 編號，每行一個，例如：\n"
+        f"#3\n"
+        f"#7\n"
+        f"#12\n"
+        f"不要輸出標題、開場白或結語，不要保留全部編號（如果沒有重複也要逐一列出每個編號）。"
+    )
+
+    try:
+        result = _run_nullclaw_agent(
+            prompt,
+            LLM_SECTION_TIMEOUT_SECS,
+            "crosshalf_dedup",
+            {"ai": []},
+            {},
+        )
+    except Exception as e:
+        log_trace("crosshalf_dedup_exception", error=f"{type(e).__name__}: {e}")
+        return bullets
+
+    if result.returncode != 0:
+        log_trace("crosshalf_dedup_nonzero_exit", returncode=result.returncode)
+        return bullets
+
+    summary = (result.stdout or "").strip()
+    if not summary:
+        log_trace("crosshalf_dedup_empty_stdout")
+        return bullets
+
+    keep_ids = _parse_crosshalf_keep_ids(summary)
+    if not keep_ids:
+        log_trace("crosshalf_dedup_no_ids_parsed", stdout_sample=summary[:400])
+        return bullets
+
+    kept = _apply_crosshalf_keep_ids(bullets, keep_ids)
+    if not kept:
+        log_trace("crosshalf_dedup_kept_nothing", input_bullets=len(bullets), keep_ids=len(keep_ids))
+        return bullets
+
+    return kept
 
 
 def summarize_llm(all_items: dict[str, list[dict]], ctx: "AlertContext") -> str:
