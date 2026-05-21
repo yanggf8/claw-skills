@@ -91,6 +91,20 @@ Substaging policy:
   back to a raw bullet listing of recent titles (still useful), and an alert
   fires for the degraded topic. Other topics continue normally.
 
+Cross-source dedup (default-feed AI section, 2026-05-19):
+
+Each per-section / per-substage prompt asks the LLM to prefer free-source
+coverage (cnyes, TechNews, Yahoo新聞, MoneyDJ, 工商時報, Reuters, AP,
+ScienceDaily, TechCrunch) over paid outlets (WSJ, Bloomberg, FT, Nikkei,
+Barron's) when multiple sources cover the same story (same company-quarter
+financials, same policy announcement, same product launch, same research
+breakthrough). Paid-only stories are kept. After the two AI halves are
+merged, `_crosshalf_dedup` runs one more LLM pass over the joined bullets
+to catch stories that landed in both halves with different sources. Fails
+open: any timeout/parse error returns the unfiltered input — a redundant
+digest beats a missing one. Trace events: `ai_substage_crosshalf_dedup`,
+`crosshalf_dedup_{exception,nonzero_exit,empty_stdout,no_ids_parsed,kept_nothing}`.
+
 Cache: `~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`. Keyed by
 `(date, variant, range)`. Swept on script start: subdirectories older than 7
 days are deleted. Safe to wipe manually.
