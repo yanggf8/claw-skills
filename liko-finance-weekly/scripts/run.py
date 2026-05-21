@@ -9,11 +9,10 @@ markers) lives in ``~/clawd/skills/lib/skill_runner.py``.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Resolve the shared skill lib. Resolution order matches the project-wide
@@ -130,7 +129,7 @@ CONTEXT:
     )
 
 
-def repair_with_agent(body: str, violations: list[str], timeout: int) -> str:
+def repair_with_agent(body: str, validation_report: str, timeout: int) -> str:
     prompt = f"""你是 liko-finance weekly issue 的驗證修復器。
 
 下方 issue body 未通過 persona-core R1/R2/R3 驗證。請只修格式與違規句，不要新增新聞，不要改變核心內容。
@@ -146,8 +145,8 @@ def repair_with_agent(body: str, violations: list[str], timeout: int) -> str:
 - 不要讓動作行以編號、粗體符號或項目符號開頭。
 - 不要使用買 / 賣 / 申購 / 贖回 / 轉倉 / 加碼 / 減碼 / 進場 / 出場 作為動作。
 
-驗證錯誤：
-{chr(10).join(f"- {v}" for v in violations)}
+驗證器輸出：
+{validation_report}
 
 原文：
 {body}
@@ -164,33 +163,21 @@ END_ISSUE_BODY
     )
 
 
-def validate_body_file(path: Path) -> dict:
-    stdout = sr.run_cmd(
+def validate_body_file(path: Path) -> tuple[bool, str]:
+    """Run persona-core validate-body. Return (passed, report_text).
+
+    `validate-body` exits 0 when the body passes and non-zero when it
+    fails, printing the violations as plain text. The exit code is the
+    pass/fail signal — no parsing. On failure, report_text is the raw
+    validator output, fed verbatim into the repair agent prompt.
+    """
+    rc, stdout, stderr = sr.run_cmd_tolerant(
         ["persona-core", "streams", "issues", "validate-body", f"@{path}"],
         cwd=REPO,
     )
-    labels = sr.parse_labels(stdout)
-    ok = labels.get("ok") == "yes"
-    violations = [
-        line[2:].strip()
-        for line in stdout.splitlines()
-        if line.startswith("- ") and line[2:].strip()
-    ]
-    return {"ok": ok, "violations": violations, "stdout": stdout}
-
-
-def validation_result_payload(check: dict, target_date: str) -> str:
-    payload = {
-        "ok": check["ok"],
-        "violations": check["violations"],
-        "validated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "validator": "persona-core streams issues validate-body",
-        "rules_checked": ["R1", "R2", "R3"],
-        "stream": STREAM,
-        "target_date": target_date,
-        "source_policy": str(SOURCE_DOC),
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    passed = rc == 0
+    report = stdout.strip() or stderr.strip()
+    return passed, report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -209,16 +196,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         target_date = next_sunday_taipei()
-        prepared = sr.parse_labels(
-            sr.run_cmd(
-                ["persona-core", "streams", "issues", "prepare", STREAM,
-                 "--target-date", target_date],
-                timeout=120,
-                cwd=REPO,
-            )
-        )
-        issue_id = prepared["issue_id"]
-        target_date = prepared["target_date"]
+        # `prepare --print-id` emits only the bare issue_id — no labels to
+        # parse. target_date is the value we just passed in, so reuse it
+        # directly rather than reading it back.
+        issue_id = sr.run_cmd(
+            ["persona-core", "streams", "issues", "prepare", STREAM,
+             "--target-date", target_date, "--print-id"],
+            timeout=120,
+            cwd=REPO,
+        ).strip()
         status = issue_status(issue_id)
         sr.log(f"issue_id={issue_id} target_date={target_date} status={status}")
 
@@ -228,36 +214,38 @@ def main(argv: list[str] | None = None) -> int:
             sr.emit_trace()
             return 0
 
+        # Stage markers bracket the long-running agent/validation steps so a
+        # stalled run is diagnosable from the log — "which stage" not just
+        # "it timed out". Plain-text lines, agent-readable, no parsing.
+        sr.log("stage: load_context start")
         context = load_context(issue_id, target_date)
+        sr.log("stage: draft start (agent call)")
         body = draft_with_agent(context, args.agent_timeout)
+        sr.log(f"stage: draft done ({len(body)} chars)")
         body_path = sr.write_temp_text(f"liko-{target_date}-", ".md", body)
-        check = validate_body_file(body_path)
-        if not check["ok"]:
-            sr.log("initial validation failed; asking agent for one repair pass")
-            body = repair_with_agent(body, check["violations"], args.agent_timeout)
+        sr.log("stage: validate start")
+        passed, report = validate_body_file(body_path)
+        sr.log(f"stage: validate done (passed={passed})")
+        if not passed:
+            sr.log("stage: repair start (initial validation failed, one repair pass)")
+            body = repair_with_agent(body, report, args.agent_timeout)
+            sr.log(f"stage: repair done ({len(body)} chars)")
             body_path = sr.write_temp_text(f"liko-{target_date}-repair-", ".md", body)
-            check = validate_body_file(body_path)
-        result_path = sr.write_temp_text(
-            f"liko-{target_date}-validation-",
-            ".json",
-            validation_result_payload(check, target_date),
-        )
+            sr.log("stage: re-validate start")
+            passed, report = validate_body_file(body_path)
+            sr.log(f"stage: re-validate done (passed={passed})")
 
-        if not check["ok"]:
-            sr.log("validation failed")
-            sr.log(check["stdout"].strip())
+        if not passed:
+            sr.log("validation failed after repair pass")
+            sr.log(report)
             if not args.dry_run:
                 sr.run_cmd(
                     [
-                        "persona-core",
-                        "streams",
-                        "issues",
-                        "update-body",
-                        issue_id,
-                        "--validation-result",
-                        f"@{result_path}",
-                        "--status",
-                        "skipped",
+                        "persona-core", "streams", "issues", "update-body", issue_id,
+                        "--no-validation-ok",
+                        "--validation-summary",
+                        "R1/R2/R3 validation failed after one repair pass; issue skipped",
+                        "--status", "skipped",
                     ],
                     timeout=120,
                     cwd=REPO,
@@ -267,39 +255,36 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         if args.dry_run:
-            print(f"dry_run: yes")
+            print("dry_run: yes")
             print(f"issue_id: {issue_id}")
             print(f"target_date: {target_date}")
             print(f"body_path: {body_path}")
-            print(f"validation_result_path: {result_path}")
+            print("validation: passed")
             print("would_update_body: yes")
             print("would_publish: yes")
             sr.emit_status("ok")
             sr.emit_trace()
             return 0
 
+        sr.log("stage: update-body start")
         sr.run_cmd(
             [
-                "persona-core",
-                "streams",
-                "issues",
-                "update-body",
-                issue_id,
-                "--body",
-                f"@{body_path}",
-                "--validation-result",
-                f"@{result_path}",
-                "--status",
-                "validated",
+                "persona-core", "streams", "issues", "update-body", issue_id,
+                "--body", f"@{body_path}",
+                "--validation-ok",
+                "--validation-summary", "R1/R2/R3 validation passed",
+                "--status", "validated",
             ],
             timeout=120,
             cwd=REPO,
         )
+        sr.log("stage: publish start")
         publish_out = sr.run_cmd(
             ["persona-core", "streams", "issues", "publish", issue_id, "--target", "both"],
             timeout=180,
             cwd=REPO,
         )
+        sr.log("stage: publish done")
         print(publish_out.strip())
         sr.emit_status("ok")
         sr.emit_trace()

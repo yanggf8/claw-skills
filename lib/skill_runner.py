@@ -34,6 +34,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +43,12 @@ from pathlib import Path
 # right trace id without each skill having to fish for it.
 _SKILL_ID: str = ""
 JOB_ID: str = os.environ.get("NULLCLAW_JOB_ID", "")
+
+# Monotonic reference captured at module import — i.e. skill process start.
+# Every log line is prefixed with elapsed seconds since this point so a
+# reader can see how long each stage took and where a stalled run is stuck,
+# without subtracting wall-clock timestamps.
+_START_MONO: float = time.monotonic()
 
 
 def init(skill_id: str) -> None:
@@ -62,10 +69,16 @@ def _require_init() -> str:
 
 
 def log(message: str) -> None:
-    """Tagged stderr log line: '[<skill>/<job_id>] <message>' or '[<skill>] <message>'."""
+    """Tagged stderr log line with elapsed time:
+    '[+<elapsed>s] [<skill>/<job_id>] <message>'.
+
+    The '+Ns' prefix is seconds since skill process start — read stage
+    durations straight off the log, no clock subtraction.
+    """
     skill = _require_init()
-    prefix = f"[{skill}/{JOB_ID}]" if JOB_ID else f"[{skill}]"
-    print(f"{prefix} {message}", file=sys.stderr, flush=True)
+    elapsed = time.monotonic() - _START_MONO
+    tag = f"[{skill}/{JOB_ID}]" if JOB_ID else f"[{skill}]"
+    print(f"[+{elapsed:.1f}s] {tag} {message}", file=sys.stderr, flush=True)
 
 
 def emit_status(status: str) -> None:
@@ -128,6 +141,33 @@ def run_cmd(
     return proc.stdout
 
 
+def run_cmd_tolerant(
+    args: list[str],
+    *,
+    timeout: int = 120,
+    input_text: str | None = None,
+    cwd: str | Path | None = None,
+) -> tuple[int, str, str]:
+    """Like run_cmd, but never raises on non-zero exit.
+
+    Returns (returncode, stdout, stderr). Use this for commands whose
+    non-zero exit is a meaningful signal rather than an error — e.g.
+    `persona-core streams issues validate-body` exits non-zero when the
+    body fails validation and prints the violations to stdout. The caller
+    branches on returncode; no parsing of the output is needed.
+    """
+    log("$ " + _display_args(args))
+    proc = subprocess.run(
+        args,
+        cwd=str(cwd) if cwd else None,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
 def pc(*args: str, timeout: int = 120, input_text: str | None = None) -> str:
     """Convenience wrapper: run `persona-core <args>` and return stdout."""
     return run_cmd(["persona-core", *args], timeout=timeout, input_text=input_text)
@@ -141,14 +181,38 @@ def call_agent(
 ) -> str:
     """Run `nullclaw agent -m <prompt>` and return the agent's stdout.
 
+    The agent call is usually a skill's single longest stage. To make that
+    stage non-opaque, this sets NULLCLAW_AGENT_TIMING_TRACE=1 and re-emits
+    nullclaw's own per-stage timing lines (config_loaded, provider_ready,
+    provider_stream_start/done, ...) through `log`, so each lands in the
+    trace with an elapsed-time prefix. A slow agent call then shows WHICH
+    sub-stage was slow (provider streaming vs config vs tools) instead of
+    being a multi-minute black box.
+
     If body_marker is set (e.g., ("BEGIN_ISSUE_BODY", "END_ISSUE_BODY")),
     extract the substring between the markers. Use this when the agent is
     prompted to wrap its real output in markers so it can speak freely
     before/after the body without polluting downstream consumers.
 
-    Raises RuntimeError if the agent returns empty body (post-extraction).
+    Raises RuntimeError on non-zero exit or empty body (post-extraction).
     """
-    output = run_cmd(["nullclaw", "agent", "-m", prompt], timeout=timeout)
+    log("$ " + _display_args(["nullclaw", "agent", "-m", prompt]))
+    env = {**os.environ, "NULLCLAW_AGENT_TIMING_TRACE": "1"}
+    proc = subprocess.run(
+        ["nullclaw", "agent", "-m", prompt],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+    )
+    # Surface nullclaw's per-stage timing breakdown into the trace.
+    for line in (proc.stderr or "").splitlines():
+        if "timing " in line and "stage=" in line and "elapsed_ms=" in line:
+            log("agent " + line.strip())
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise RuntimeError(f"nullclaw agent failed: {detail}")
+    output = proc.stdout
     if body_marker is not None:
         start, end = body_marker
         pattern = re.escape(start) + r"\s*(.*?)\s*" + re.escape(end)
@@ -159,24 +223,6 @@ def call_agent(
     if not body:
         raise RuntimeError("agent returned an empty body")
     return body
-
-
-# ── persona-core stdout parsing ──────────────────────────────────────
-
-
-def parse_labels(text: str) -> dict[str, str]:
-    """Parse persona-core's `key: value` plain-text output into a dict.
-
-    Lines without a colon are skipped. Repeated keys keep the last value.
-    Used for `streams issues prepare`, `validate-body`, `personas get` etc.
-    where persona-core's stable contract is label-formatted text.
-    """
-    result: dict[str, str] = {}
-    for line in text.splitlines():
-        if ":" in line:
-            key, _, value = line.partition(":")
-            result[key.strip()] = value.strip()
-    return result
 
 
 # ── tempfile ─────────────────────────────────────────────────────────
