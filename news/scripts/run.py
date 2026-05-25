@@ -66,16 +66,6 @@ DEFAULT_TOPICS = {
     "main": None,  # None means use the hardcoded AI/tech/general feeds
 }
 
-_PRIMARY_SOURCE_NAMES = {
-    "openai", "anthropic", "google deepmind", "deepmind", "meta ai",
-    "hugging face", "huggingface", "arxiv", "github", "microsoft research",
-    "google ai", "blog.google", "stability ai", "mistral ai", "x.ai",
-    "nvidia", "apple machine learning", "amazon science", "aws",
-}
-_FREE_SOURCE_NAMES = {
-    "cnyes", "technews", "yahoo新聞", "moneydj", "工商時報", "reuters", "ap",
-    "sciencedaily", "techcrunch", "自由財經", "中央社",
-}
 _TOPIC_STOPWORDS = {
     "the", "a", "an", "and", "or", "to", "of", "for", "in", "on", "with",
     "new", "ai", "is", "are", "be", "at", "from", "your", "you", "our",
@@ -393,16 +383,6 @@ def _topic_words(title: str) -> set[str]:
     return words
 
 
-def _is_primary(item: dict) -> bool:
-    source = item.get("source_name", "").lower()
-    return any(name in source for name in _PRIMARY_SOURCE_NAMES)
-
-
-def _is_free(item: dict) -> bool:
-    source = item.get("source_name", "").lower()
-    return any(name in source for name in _FREE_SOURCE_NAMES)
-
-
 def cluster(items: list[dict]) -> list[list[dict]]:
     """Group headlines that cover the same event by token overlap."""
     clusters: list[dict] = []
@@ -419,13 +399,11 @@ def cluster(items: list[dict]) -> list[list[dict]]:
     return [group["items"] for group in clusters]
 
 
-def pick_representatives(items: list[dict], *, per_cluster: int = 1) -> list[dict]:
-    """Rank clusters by coverage, then choose the best outlet per event."""
+def pick_representatives(clusters: list[list[dict]], *, per_cluster: int = 1) -> list[dict]:
+    """Choose representatives from already-ranked clusters."""
     ranked: list[dict] = []
-    for group in cluster(items):
-        group_sorted = sorted(group, key=lambda item: (not _is_primary(item), not _is_free(item)))
-        # Daily digest surfaces each event once; weekly ainews keeps two outlets for citation breadth.
-        ranked.extend(group_sorted[:per_cluster])
+    for group in clusters:
+        ranked.extend(group[:per_cluster])
     return ranked
 
 
@@ -1119,7 +1097,7 @@ def _summarize_default_ai_substaged(
 
     before_cluster = len(items)
     clusters = cluster(items)
-    items = pick_representatives(items, per_cluster=1)
+    items = pick_representatives(clusters, per_cluster=1)
     log_trace(
         "cluster_dedup",
         before=before_cluster,

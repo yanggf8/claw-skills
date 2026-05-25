@@ -175,17 +175,17 @@ class NewsClusteringTests(unittest.TestCase):
         ])
         self.assertEqual(len(groups[0]), 2)
 
-    def test_pick_representatives_prefers_primary_then_free(self):
+    def test_pick_representatives_uses_cluster_order_without_source_labels(self):
         items = [
             _item("Nvidia China AI market access restored - WSJ", "WSJ"),
             _item("Nvidia China AI market access restored - cnyes", "cnyes"),
             _item("Nvidia China AI market access restored - NVIDIA Blog", "NVIDIA Blog"),
+            _item("Anthropic launches Claude update - TechCrunch", "TechCrunch"),
         ]
-        picked = run.pick_representatives(items, per_cluster=1)
-        self.assertEqual(picked[0]["source_name"], "NVIDIA Blog")
+        clusters = run.cluster(items)
+        picked = run.pick_representatives(clusters, per_cluster=1)
 
-        picked_without_primary = run.pick_representatives(items[:2], per_cluster=1)
-        self.assertEqual(picked_without_primary[0]["source_name"], "cnyes")
+        self.assertEqual([item["source_name"] for item in picked], ["WSJ", "TechCrunch"])
 
     def test_summarize_default_ai_no_cross_half_duplicates(self):
         items = [

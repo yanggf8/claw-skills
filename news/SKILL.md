@@ -83,7 +83,7 @@ Summarize in Traditional Chinese with this exact format:
 
 AI 預設新聞去重：
 
-AI 區塊在切半前先做確定性群集。標題會移除 Google News 的尾端 ` - Source`，再抽出 Latin token 與 CJK 字元 bigram；兩則新聞的 token 重疊數達 `_CLUSTER_OVERLAP = 2` 就歸入同一事件群集。群集按來源數排序，代表越多來源報導越重要。每日摘要每個群集只保留 1 則；群集內代表來源排序為 primary > free > paid，其中 primary 包含官方或研究來源，free 包含 cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、Reuters、AP、ScienceDaily、TechCrunch 等。
+AI 區塊在切半前先做確定性群集。標題會移除 Google News 的尾端 ` - Source`，再抽出 Latin token 與 CJK 字元 bigram；兩則新聞的 token 重疊數達 `_CLUSTER_OVERLAP = 2` 就歸入同一事件群集。群集按來源數排序，代表越多來源報導越重要。每日摘要每個群集只保留 1 則，直接採用該群集中的第一則候選新聞，不再依來源名稱做分類或分支。
 
 這個去重在 LLM 分段前完成，所以同一事件不會分散到兩個 half。執行時會寫入 `cluster_dedup` trace，欄位包含 `before`、`after`、`clusters_total`、`clusters_kept`。
 
