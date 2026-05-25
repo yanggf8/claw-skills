@@ -72,52 +72,27 @@ Summarize in Traditional Chinese with this exact format:
 
 今日重點一句話：（一句話總結今日最重要的事）
 
-## Resilience
+## 韌性
 
-The script splits long LLM work into small substages so a host crash mid-run
-does not have to start over. Each completed substage is cached on disk; the
-next attempt picks up where the last one died.
+腳本會把較長的 LLM 工作切成小階段，避免主機在中途中斷後必須整段重跑。每個完成的子階段會寫入磁碟快取；下一次執行會從已完成的範圍接續。
 
-Substaging policy:
+分段策略：
 
-- **Default-feed mode (`summarize_llm`)**: the AI section's items are split into
-  two halves (Level 2). Each half is one LLM call (~14-30s). On per-half
-  failure (timeout / non-zero exit / empty stdout), only that half is split
-  one more time into quarters (Level 3). If a quarter still fails, the run
-  is aborted with an alert (no recursion past Level 3). Tech and general
-  remain single calls.
-- **Custom-topics mode (`summarize_llm_custom`, used by `--account-topics`)**:
-  one LLM call per topic, sequential. On per-topic failure that topic falls
-  back to a raw bullet listing of recent titles (still useful), and an alert
-  fires for the degraded topic. Other topics continue normally.
+- **預設新聞模式（`summarize_llm`）**：AI 區塊先做確定性的事件群集去重，再切成兩半（Level 2）。每半是一個 LLM 呼叫（約 14-30 秒）。若某半失敗（逾時、非 0 exit、空 stdout），只把失敗的半段再切成兩個 quarter（Level 3）。若 quarter 仍失敗，整次執行會告警並中止（不再遞迴）。科技與一般新聞維持單次 LLM 呼叫。
+- **自訂主題模式（`summarize_llm_custom`，由 `--account-topics` 使用）**：每個主題各跑一次 LLM，依序執行。單一主題失敗時，該主題退回原始標題列表並告警；其他主題繼續送出。
 
-Cross-source dedup (default-feed AI section, 2026-05-19):
+AI 預設新聞去重：
 
-Each per-section / per-substage prompt asks the LLM to prefer free-source
-coverage (cnyes, TechNews, Yahoo新聞, MoneyDJ, 工商時報, Reuters, AP,
-ScienceDaily, TechCrunch) over paid outlets (WSJ, Bloomberg, FT, Nikkei,
-Barron's) when multiple sources cover the same story (same company-quarter
-financials, same policy announcement, same product launch, same research
-breakthrough). Paid-only stories are kept. After the two AI halves are
-merged, `_crosshalf_dedup` runs one more LLM pass over the joined bullets
-to catch stories that landed in both halves with different sources. Fails
-open: any timeout/parse error returns the unfiltered input — a redundant
-digest beats a missing one. Trace events: `ai_substage_crosshalf_dedup`,
-`crosshalf_dedup_{exception,nonzero_exit,empty_stdout,no_ids_parsed,kept_nothing}`.
+AI 區塊在切半前先做確定性群集。標題會移除 Google News 的尾端 ` - Source`，再抽出 Latin token 與 CJK 字元 bigram；兩則新聞的 token 重疊數達 `_CLUSTER_OVERLAP = 2` 就歸入同一事件群集。群集按來源數排序，代表越多來源報導越重要。每日摘要每個群集只保留 1 則；群集內代表來源排序為 primary > free > paid，其中 primary 包含官方或研究來源，free 包含 cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、Reuters、AP、ScienceDaily、TechCrunch 等。
 
-Cache: `~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`. Keyed by
-`(date, variant, range)`. Swept on script start: subdirectories older than 7
-days are deleted. Safe to wipe manually.
+這個去重在 LLM 分段前完成，所以同一事件不會分散到兩個 half。執行時會寫入 `cluster_dedup` trace，欄位包含 `before`、`after`、`clusters_total`、`clusters_kept`。
 
-Delivery length handling:
+快取：`~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`。鍵為 `(date, variant, range)`。腳本啟動時會清除 7 天以前的子目錄；需要時可手動刪除。
 
-- Telegram message length is checked by visible Markdown text, not raw URL
-  bytes. This prevents long Google News RSS URLs from causing links to be
-  stripped while the user-visible digest still fits.
-- When raw Markdown is too large for one safe Telegram POST, the script splits
-  the digest on line boundaries and sends numbered chunks. The trace event
-  `digest_delivery_split` records the chunk count plus raw/visible character
-  counts.
+送出長度處理：
+
+- Telegram 長度以 Markdown 可見文字估算，不用原始 URL byte 數。這可避免 Google News RSS 長 URL 讓實際可讀摘要被誤判過長。
+- 若原始 Markdown 太長，腳本會依行切成多段 Telegram 訊息。`digest_delivery_split` trace 會記錄段數與原始/可見字元數。
 
 ## Failure alerts (hard rule)
 
@@ -142,11 +117,12 @@ Coverage matrix (every path that ends without the full intended news):
 | Telegram send failed | Alert via the on-disk log (Telegram itself is down); exit 1. |
 | Uncaught exception in main() | Alert with truncated traceback; exit 1. |
 
-To inspect what happened on a given run, use:
+檢查單次執行狀態：
 
 ```bash
 cat ~/.nullclaw/news-failures.log
 nullclaw cron trace <job_id_prefix> --event news_failure
+nullclaw cron trace <job_id_prefix> --event cluster_dedup
 nullclaw cron trace <job_id_prefix> --event ai_substage
 ```
 

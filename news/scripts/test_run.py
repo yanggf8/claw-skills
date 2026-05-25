@@ -131,68 +131,99 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
-class CrosshalfDedupParserTests(unittest.TestCase):
-    def test_parse_extracts_id_per_line(self):
-        stdout = "#3\n#7\n#12\n"
-        self.assertEqual(run._parse_crosshalf_keep_ids(stdout), {3, 7, 12})
+def _item(title, source="Reuters", link="https://example.com/news"):
+    return {
+        "title": title,
+        "source_name": source,
+        "link": link,
+        "pub_date": "",
+    }
 
-    def test_parse_tolerates_whitespace_and_blank_lines(self):
-        stdout = "  #1\n\n   #5   \n\n#9\n"
-        self.assertEqual(run._parse_crosshalf_keep_ids(stdout), {1, 5, 9})
 
-    def test_parse_ignores_chatty_preamble(self):
-        # If the LLM ignores the "no preamble" instruction, the parser must
-        # still pick out the bare #N lines and drop the prose lines silently.
-        stdout = (
-            "好的，以下是保留的編號：\n"
-            "#2\n"
-            "#4\n"
-            "(共 2 則)\n"
-        )
-        self.assertEqual(run._parse_crosshalf_keep_ids(stdout), {2, 4})
+class NewsClusteringTests(unittest.TestCase):
+    def test_topic_words_latin(self):
+        words = run._topic_words("The new Gemini app at Google I/O - blog.google")
+        self.assertNotIn("the", words)
+        self.assertNotIn("new", words)
+        self.assertNotIn("blog.google", words)
+        self.assertIn("gemini", words)
+        self.assertIn("google", words)
 
-    def test_parse_returns_empty_set_on_unparseable_reply(self):
-        self.assertEqual(run._parse_crosshalf_keep_ids("no IDs here at all"), set())
-        self.assertEqual(run._parse_crosshalf_keep_ids(""), set())
+    def test_topic_words_cjk_bigrams(self):
+        words = run._topic_words("輝達黃仁勳發表新晶片 - 自由財經")
+        self.assertIn("輝達", words)
+        self.assertIn("黃仁", words)
+        self.assertIn("仁勳", words)
+        groups = run.cluster([
+            _item("輝達黃仁勳發表新晶片 - 自由財經", "自由財經"),
+            _item("黃仁勳談輝達晶片需求 - 中央社", "中央社"),
+        ])
+        self.assertEqual(len(groups[0]), 2)
 
-    def test_parse_rejects_inline_id_in_prose(self):
-        # `^\s*#N\s*$` is strict on purpose: a stray "#3" inside a sentence
-        # must not be mistaken for a keep decision.
-        stdout = "保留 #3 與 #7\n"
-        self.assertEqual(run._parse_crosshalf_keep_ids(stdout), set())
+    def test_topic_words_mixed(self):
+        words = run._topic_words("Nvidia 輝達股價飆漲 - Reuters")
+        self.assertIn("nvidia", words)
+        self.assertIn("輝達", words)
+        self.assertIn("股價", words)
+        self.assertNotIn("reuters", words)
 
-    def test_apply_filters_bullets_by_id(self):
-        bullets = [
-            "- #1 first bullet",
-            "- #2 second bullet",
-            "- #3 third bullet",
+    def test_cluster_groups_cross_language_coverage_with_shared_tokens(self):
+        groups = run.cluster([
+            _item("Nvidia regains China AI market access - Reuters", "Reuters"),
+            _item("Nvidia 輝達重新取得 China AI 市場准入 - 自由財經", "自由財經"),
+            _item("Anthropic launches Claude update - TechCrunch", "TechCrunch"),
+        ])
+        self.assertEqual(len(groups[0]), 2)
+
+    def test_pick_representatives_prefers_primary_then_free(self):
+        items = [
+            _item("Nvidia China AI market access restored - WSJ", "WSJ"),
+            _item("Nvidia China AI market access restored - cnyes", "cnyes"),
+            _item("Nvidia China AI market access restored - NVIDIA Blog", "NVIDIA Blog"),
         ]
-        result = run._apply_crosshalf_keep_ids(bullets, {1, 3})
-        self.assertEqual(result, ["- #1 first bullet", "- #3 third bullet"])
+        picked = run.pick_representatives(items, per_cluster=1)
+        self.assertEqual(picked[0]["source_name"], "NVIDIA Blog")
 
-    def test_apply_empty_keep_ids_returns_input_unchanged(self):
-        # Sentinel: caller treats this as "LLM produced nothing usable, keep all."
-        bullets = ["- #1 a", "- #2 b"]
-        result = run._apply_crosshalf_keep_ids(bullets, set())
-        self.assertIs(result, bullets)
+        picked_without_primary = run.pick_representatives(items[:2], per_cluster=1)
+        self.assertEqual(picked_without_primary[0]["source_name"], "cnyes")
 
-    def test_apply_preserves_unmarked_bullets(self):
-        # A formatting glitch (no leading `- #N`) must not silently drop the
-        # bullet; this is the "fail open, prefer redundant over missing" rule.
-        bullets = [
-            "- #1 normal",
-            "- glitched bullet missing marker",
-            "- #2 also normal",
+    def test_summarize_default_ai_no_cross_half_duplicates(self):
+        items = [
+            _item("DeepSeek discount cuts API prices in China - Reuters", "Reuters", "https://example.com/1"),
+            _item("DeepSeek discount cuts API prices for developers - TechCrunch", "TechCrunch", "https://example.com/2"),
+            _item("OpenAI 發布新模型測試 - OpenAI", "OpenAI", "https://example.com/3"),
+            _item("Anthropic 發布 Claude 安全報告 - Anthropic", "Anthropic", "https://example.com/4"),
         ]
-        result = run._apply_crosshalf_keep_ids(bullets, {1})
-        self.assertEqual(result, ["- #1 normal", "- glitched bullet missing marker"])
+        calls = []
 
-    def test_apply_handles_id_not_in_input(self):
-        # LLM hallucinates a #99 that was never in the input. The applier must
-        # not insert it (we only filter, never synthesize).
-        bullets = ["- #1 a", "- #2 b"]
-        result = run._apply_crosshalf_keep_ids(bullets, {1, 99})
-        self.assertEqual(result, ["- #1 a"])
+        def fake_run_agent(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append((variant, list(numbered.values())))
+            lines = []
+            for num, item in numbered.items():
+                title = item["title"]
+                if "DeepSeek discount" in title:
+                    title = "DeepSeek 降低 API 價格"
+                elif "OpenAI" in title:
+                    title = "OpenAI 發布新模型測試"
+                elif "Anthropic" in title:
+                    title = "Anthropic 發布 Claude 安全報告"
+                lines.append(f"- #{num} {title}")
+            stdout = "\n".join(lines)
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout=stdout, stderr="")
+
+        with patch.object(run, "_run_nullclaw_agent", fake_run_agent), \
+             patch.object(run, "_news_cache_get", lambda *args, **kwargs: None), \
+             patch.object(run, "_news_cache_put", lambda *args, **kwargs: None), \
+             patch.object(run, "log_trace", lambda *args, **kwargs: None):
+            lines = run._summarize_default_ai_substaged(
+                items,
+                "2026/05/24 (Sun)",
+                run.AlertContext(None, "main", "test"),
+            )
+
+        body = "\n".join(lines)
+        self.assertEqual(body.count("DeepSeek 降低 API 價格"), 1)
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":

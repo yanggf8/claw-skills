@@ -66,6 +66,26 @@ DEFAULT_TOPICS = {
     "main": None,  # None means use the hardcoded AI/tech/general feeds
 }
 
+_PRIMARY_SOURCE_NAMES = {
+    "openai", "anthropic", "google deepmind", "deepmind", "meta ai",
+    "hugging face", "huggingface", "arxiv", "github", "microsoft research",
+    "google ai", "blog.google", "stability ai", "mistral ai", "x.ai",
+    "nvidia", "apple machine learning", "amazon science", "aws",
+}
+_FREE_SOURCE_NAMES = {
+    "cnyes", "technews", "yahoo新聞", "moneydj", "工商時報", "reuters", "ap",
+    "sciencedaily", "techcrunch", "自由財經", "中央社",
+}
+_TOPIC_STOPWORDS = {
+    "the", "a", "an", "and", "or", "to", "of", "for", "in", "on", "with",
+    "new", "ai", "is", "are", "be", "at", "from", "your", "you", "our",
+    "its", "it", "more", "all", "how", "why", "what", "as", "by", "this",
+    "的", "是", "了", "在", "和", "與", "及", "也", "都", "就", "而", "對",
+    "為", "以", "從", "把", "被", "將", "這", "那", "有", "沒",
+}
+_CJK_STOP_CHARS = {word for word in _TOPIC_STOPWORDS if len(word) == 1 and "\u3400" <= word <= "\ufaff"}
+_CLUSTER_OVERLAP = 2
+
 
 def log_trace(event: str, **fields) -> None:
     """Append structured skill diagnostics without logging secrets."""
@@ -304,7 +324,7 @@ FEEDS = {
 
 
 def fetch_feed(url: str, max_items: int = 15) -> list[dict]:
-    """Fetch RSS feed and return list of {title, link, pub_date}."""
+    """Fetch RSS feed and return list of {title, link, pub_date, source_name}."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "nullclaw-news/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -321,10 +341,21 @@ def fetch_feed(url: str, max_items: int = 15) -> list[dict]:
             link = item.findtext("link", "").strip()
             pub = item.findtext("pubDate", "").strip()
             if title:
-                items.append({"title": title, "link": link, "pub_date": pub})
+                items.append({
+                    "title": title,
+                    "link": link,
+                    "pub_date": pub,
+                    "source_name": _extract_source_name(title),
+                })
     except ET.ParseError:
         pass
     return items
+
+
+def _extract_source_name(title: str) -> str:
+    if " - " in title:
+        return title.rsplit(" - ", 1)[-1].strip()
+    return ""
 
 
 def dedup(items: list[dict]) -> list[dict]:
@@ -337,6 +368,65 @@ def dedup(items: list[dict]) -> list[dict]:
             seen.add(key)
             result.append(item)
     return result
+
+
+def _title_without_source(title: str) -> str:
+    if " - " in title:
+        return title.rsplit(" - ", 1)[0]
+    return title
+
+
+def _topic_words(title: str) -> set[str]:
+    """Significant headline tokens used for deterministic topic clustering."""
+    text = _title_without_source(title).lower()
+    words = {
+        word
+        for word in re.findall(r"[a-z0-9.]+", text)
+        if len(word) > 2 and word not in _TOPIC_STOPWORDS
+    }
+    for run in re.findall(r"[\u3400-\u9fff\uf900-\ufaff]+", text):
+        for i in range(len(run) - 1):
+            pair = run[i:i + 2]
+            if pair[0] in _CJK_STOP_CHARS or pair[1] in _CJK_STOP_CHARS:
+                continue
+            words.add(pair)
+    return words
+
+
+def _is_primary(item: dict) -> bool:
+    source = item.get("source_name", "").lower()
+    return any(name in source for name in _PRIMARY_SOURCE_NAMES)
+
+
+def _is_free(item: dict) -> bool:
+    source = item.get("source_name", "").lower()
+    return any(name in source for name in _FREE_SOURCE_NAMES)
+
+
+def cluster(items: list[dict]) -> list[list[dict]]:
+    """Group headlines that cover the same event by token overlap."""
+    clusters: list[dict] = []
+    for item in items:
+        words = _topic_words(item.get("title", ""))
+        for group in clusters:
+            if len(words & group["words"]) >= _CLUSTER_OVERLAP:
+                group["items"].append(item)
+                group["words"] |= words
+                break
+        else:
+            clusters.append({"words": set(words), "items": [item]})
+    clusters.sort(key=lambda group: len(group["items"]), reverse=True)
+    return [group["items"] for group in clusters]
+
+
+def pick_representatives(items: list[dict], *, per_cluster: int = 1) -> list[dict]:
+    """Rank clusters by coverage, then choose the best outlet per event."""
+    ranked: list[dict] = []
+    for group in cluster(items):
+        group_sorted = sorted(group, key=lambda item: (not _is_primary(item), not _is_free(item)))
+        # Daily digest surfaces each event once; weekly ainews keeps two outlets for citation breadth.
+        ranked.extend(group_sorted[:per_cluster])
+    return ranked
 
 
 def _build_link_map(all_items: dict[str, list[dict]]) -> dict[str, str]:
@@ -1027,6 +1117,19 @@ def _summarize_default_ai_substaged(
     if not items:
         return ["- 今日無相關新聞"]
 
+    before_cluster = len(items)
+    clusters = cluster(items)
+    items = pick_representatives(items, per_cluster=1)
+    log_trace(
+        "cluster_dedup",
+        before=before_cluster,
+        after=len(items),
+        clusters_total=len(clusters),
+        clusters_kept=len(items),
+    )
+    if not items:
+        return ["- 今日無相關新聞"]
+
     n = len(items)
     mid = n // 2
 
@@ -1083,10 +1186,6 @@ def _summarize_default_ai_substaged(
 
         half_results[i] = merged
 
-    # Concatenate the two halves' bullets in input order. Disjoint by construction
-    # of the per-half input ranges, but the SAME real-world story may show up in
-    # both halves with different sources (e.g., Baidu Q1 financials covered by
-    # WSJ in half A and cnyes in half B). Run a cross-half dedup pass.
     final: list[str] = []
     for lines in half_results:
         final.extend(lines or [])
@@ -1095,115 +1194,8 @@ def _summarize_default_ai_substaged(
         log_trace("ai_substage_empty_after_merge", total_items=n)
         return ["- 今日無相關新聞"]
 
-    before_dedup = len(final)
-    final = _crosshalf_dedup(final, date_str)
-    if len(final) != before_dedup:
-        log_trace(
-            "ai_substage_crosshalf_dedup",
-            before=before_dedup,
-            after=len(final),
-            removed=before_dedup - len(final),
-        )
-
     log_trace("ai_substage_complete", total_items=n, total_bullets=len(final))
     return final
-
-
-def _parse_crosshalf_keep_ids(stdout: str) -> set[int]:
-    """Extract the set of bullet IDs to keep from the LLM crosshalf-dedup reply.
-
-    The expected reply is one `#<id>` token per line. Tolerant of leading/trailing
-    whitespace; any line that does not match `^\\s*#\\d+\\s*$` is ignored so a
-    chatty LLM does not poison the result.
-    """
-    keep_ids: set[int] = set()
-    for line in stdout.splitlines():
-        m = re.match(r"^\s*#(\d+)\s*$", line.strip())
-        if m:
-            keep_ids.add(int(m.group(1)))
-    return keep_ids
-
-
-def _apply_crosshalf_keep_ids(bullets: list[str], keep_ids: set[int]) -> list[str]:
-    """Filter bullets to those whose leading `- #N` ID is in `keep_ids`.
-
-    Bullets without a parseable leading `- #N` marker are kept unchanged so a
-    formatting glitch never silently drops content. Returns the same `bullets`
-    object on the no-op path (`keep_ids` empty) so callers can detect "LLM
-    returned nothing useful, fall back to input."
-    """
-    if not keep_ids:
-        return bullets
-    kept: list[str] = []
-    for bullet in bullets:
-        m = re.match(r"^-\s*#(\d+)\b", bullet)
-        if not m:
-            kept.append(bullet)
-            continue
-        if int(m.group(1)) in keep_ids:
-            kept.append(bullet)
-    return kept
-
-
-def _crosshalf_dedup(bullets: list[str], date_str: str) -> list[str]:
-    """Drop cross-half duplicates by asking the LLM to keep one per story.
-
-    Each bullet is `- #N <title>` already validated by the per-half pass.
-    The LLM gets the bullet list verbatim and returns the bullet IDs to KEEP.
-    On any failure (timeout, exit, parse) the input is returned unchanged —
-    a redundant but accurate digest beats a missing one.
-    """
-    if len(bullets) < 2:
-        return bullets
-
-    numbered_text = "\n".join(bullets)
-    prompt = (
-        f"以下是 {date_str} AI 新聞摘要，每行格式為「- #N 標題」。\n"
-        f"請找出講同一件事但被列了多次的新聞（同公司同季財報、同一政策、同一產品發布、同一研究突破都算重複），"
-        f"每組重複只保留一則：\n"
-        f"- 優先保留免費來源（cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、Reuters、AP、ScienceDaily、TechCrunch 等）\n"
-        f"- 避開付費牆來源（WSJ、Bloomberg、FT、Nikkei、Barron's 等）\n"
-        f"- 只有付費來源報導時才保留付費來源\n\n"
-        f"{numbered_text}\n\n"
-        f"只輸出要保留的 #N 編號，每行一個，例如：\n"
-        f"#3\n"
-        f"#7\n"
-        f"#12\n"
-        f"不要輸出標題、開場白或結語，不要保留全部編號（如果沒有重複也要逐一列出每個編號）。"
-    )
-
-    try:
-        result = _run_nullclaw_agent(
-            prompt,
-            LLM_SECTION_TIMEOUT_SECS,
-            "crosshalf_dedup",
-            {"ai": []},
-            {},
-        )
-    except Exception as e:
-        log_trace("crosshalf_dedup_exception", error=f"{type(e).__name__}: {e}")
-        return bullets
-
-    if result.returncode != 0:
-        log_trace("crosshalf_dedup_nonzero_exit", returncode=result.returncode)
-        return bullets
-
-    summary = (result.stdout or "").strip()
-    if not summary:
-        log_trace("crosshalf_dedup_empty_stdout")
-        return bullets
-
-    keep_ids = _parse_crosshalf_keep_ids(summary)
-    if not keep_ids:
-        log_trace("crosshalf_dedup_no_ids_parsed", stdout_sample=summary[:400])
-        return bullets
-
-    kept = _apply_crosshalf_keep_ids(bullets, keep_ids)
-    if not kept:
-        log_trace("crosshalf_dedup_kept_nothing", input_bullets=len(bullets), keep_ids=len(keep_ids))
-        return bullets
-
-    return kept
 
 
 def summarize_llm(all_items: dict[str, list[dict]], ctx: "AlertContext") -> str:
