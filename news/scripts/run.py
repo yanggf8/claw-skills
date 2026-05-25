@@ -34,6 +34,7 @@ LLM_CUSTOM_TIMEOUT_SECS = 180
 LLM_SECTION_TIMEOUT_SECS = 90
 LLM_TRANSLATION_TIMEOUT_SECS = 60
 TELEGRAM_RAW_CHUNK_LIMIT = 3800
+AI_SUBSTAGE_CACHE_VARIANT = "default_ai_clustered_v2"
 # Substaging: each Level-2 half (or Level-3 quarter) gets a smaller timeout
 # than the original 90s monolithic call — half-size prompts should not need it.
 AI_SUBSTAGE_TIMEOUT_SECS = 60
@@ -74,6 +75,9 @@ _TOPIC_STOPWORDS = {
     "為", "以", "從", "把", "被", "將", "這", "那", "有", "沒",
 }
 _CJK_STOP_CHARS = {word for word in _TOPIC_STOPWORDS if len(word) == 1 and "\u3400" <= word <= "\ufaff"}
+_CJK_STOP_BIGRAMS = {
+    "公司", "發布", "布新", "新產", "產品", "股價", "上漲", "下跌",
+}
 _CLUSTER_OVERLAP = 2
 
 
@@ -379,6 +383,8 @@ def _topic_words(title: str) -> set[str]:
             pair = run[i:i + 2]
             if pair[0] in _CJK_STOP_CHARS or pair[1] in _CJK_STOP_CHARS:
                 continue
+            if pair in _CJK_STOP_BIGRAMS:
+                continue
             words.add(pair)
     return words
 
@@ -389,12 +395,14 @@ def cluster(items: list[dict]) -> list[list[dict]]:
     for item in items:
         words = _topic_words(item.get("title", ""))
         for group in clusters:
-            if len(words & group["words"]) >= _CLUSTER_OVERLAP:
+            if len(words & group["seed_words"]) >= _CLUSTER_OVERLAP:
                 group["items"].append(item)
-                group["words"] |= words
                 break
         else:
-            clusters.append({"words": set(words), "items": [item]})
+            # A seed with fewer than _CLUSTER_OVERLAP tokens cannot grow; that
+            # is intentional because one-token headlines are too weak to anchor
+            # a deterministic event cluster.
+            clusters.append({"seed_words": set(words), "items": [item]})
     clusters.sort(key=lambda group: len(group["items"]), reverse=True)
     return [group["items"] for group in clusters]
 
@@ -994,9 +1002,9 @@ def _run_ai_substage(
                 (timeout / non-zero exit / empty stdout / marker validation).
 
     A successful run is cached and returned from cache on the next attempt
-    of the same range on the same date.
+    of the same clustered range on the same date.
     """
-    variant = "default_ai_substage"
+    variant = AI_SUBSTAGE_CACHE_VARIANT
     cached = _news_cache_get(date_str, variant, start, end)
     if cached is not None:
         return True, cached.splitlines(), ""
@@ -1151,7 +1159,7 @@ def _summarize_default_ai_substaged(
                 cached_ok = [
                     [qqs, qqe]
                     for qqs, qqe in quarters
-                    if _news_cache_get(date_str, "default_ai_substage", qqs, qqe) is not None
+                    if _news_cache_get(date_str, AI_SUBSTAGE_CACHE_VARIANT, qqs, qqe) is not None
                 ]
                 detail = (
                     f"default_ai Level 3 quarter items[{qs}..{qe}] failed: {err}; "

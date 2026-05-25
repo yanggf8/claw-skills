@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -84,11 +85,11 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(err, "")
-        self.assertEqual(self.calls, ["default_ai_substage_0_2", "default_ai_translate"])
+        self.assertEqual(self.calls, [f"{run.AI_SUBSTAGE_CACHE_VARIANT}_0_2", "default_ai_translate"])
         body = "\n".join(lines)
         self.assertIn("參議院民主黨提出 AI 監管法案", body)
         self.assertNotIn("Senate Democrats", body)
-        cached = self.cache[("2026/05/15 (Fri)", "default_ai_substage", 0, 2)]
+        cached = self.cache[("2026/05/15 (Fri)", run.AI_SUBSTAGE_CACHE_VARIANT, 0, 2)]
         self.assertIn("參議院民主黨提出 AI 監管法案", cached)
         self.assertNotIn("Senate Democrats", cached)
 
@@ -101,9 +102,9 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(err, "")
-        self.assertEqual(self.calls, ["default_ai_substage_0_2"])
+        self.assertEqual(self.calls, [f"{run.AI_SUBSTAGE_CACHE_VARIANT}_0_2"])
         self.assertIn("參議院民主黨提出 AI 監管法案", "\n".join(lines))
-        self.assertIn(("2026/05/15 (Fri)", "default_ai_substage", 0, 2), self.cache)
+        self.assertIn(("2026/05/15 (Fri)", run.AI_SUBSTAGE_CACHE_VARIANT, 0, 2), self.cache)
 
     def test_translation_failure_returns_false_and_does_not_cache(self):
         self.set_agent_outputs([
@@ -120,7 +121,7 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
 
     def test_cache_hit_short_circuits_language_gate(self):
         cached = "- #1 English cache remains until operator clears it"
-        self.cache[("2026/05/15 (Fri)", "default_ai_substage", 0, 2)] = cached
+        self.cache[("2026/05/15 (Fri)", run.AI_SUBSTAGE_CACHE_VARIANT, 0, 2)] = cached
         self.set_agent_outputs([])
 
         ok, lines, err = run._run_ai_substage(self.items, 0, 2, "2026/05/15 (Fri)")
@@ -129,6 +130,16 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
         self.assertEqual(lines, [cached])
         self.assertEqual(err, "")
         self.assertEqual(self.calls, [])
+
+    def test_clustered_cache_variant_does_not_reuse_legacy_substage_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(run, "NEWS_CACHE_DIR", tmp):
+                old_path = run._news_cache_path("2026/05/15 (Fri)", "default_ai_substage", 0, 2)
+                new_path = run._news_cache_path("2026/05/15 (Fri)", run.AI_SUBSTAGE_CACHE_VARIANT, 0, 2)
+
+        self.assertNotEqual(old_path, new_path)
+        self.assertIn("default_ai_substage-000-002.txt", old_path)
+        self.assertIn("default_ai_clustered_v2-000-002.txt", new_path)
 
 
 def _item(title, source="Reuters", link="https://example.com/news"):
@@ -164,7 +175,8 @@ class NewsClusteringTests(unittest.TestCase):
         words = run._topic_words("Nvidia 輝達股價飆漲 - Reuters")
         self.assertIn("nvidia", words)
         self.assertIn("輝達", words)
-        self.assertIn("股價", words)
+        self.assertIn("飆漲", words)
+        self.assertNotIn("股價", words)
         self.assertNotIn("reuters", words)
 
     def test_cluster_groups_cross_language_coverage_with_shared_tokens(self):
@@ -174,6 +186,22 @@ class NewsClusteringTests(unittest.TestCase):
             _item("Anthropic launches Claude update - TechCrunch", "TechCrunch"),
         ])
         self.assertEqual(len(groups[0]), 2)
+
+    def test_cluster_does_not_chain_merge_through_accumulated_words(self):
+        groups = run.cluster([
+            _item("Apple unveils iPhone 17 launch event - Reuters", "Reuters"),
+            _item("iPhone 17 launch breaks preorder records - TechCrunch", "TechCrunch"),
+            _item("Tesla breaks records with quarterly delivery launch - CNBC", "CNBC"),
+        ])
+        self.assertEqual([len(group) for group in groups], [2, 1])
+        self.assertIn("Tesla", groups[1][0]["title"])
+
+    def test_cluster_keeps_generic_cjk_product_phrases_separate(self):
+        groups = run.cluster([
+            _item("甲公司發布新產品 - cnyes", "cnyes"),
+            _item("乙公司發布新產品 - TechCrunch", "TechCrunch"),
+        ])
+        self.assertEqual(len(groups), 2)
 
     def test_pick_representatives_uses_cluster_order_without_source_labels(self):
         items = [
@@ -211,10 +239,15 @@ class NewsClusteringTests(unittest.TestCase):
             stdout = "\n".join(lines)
             return subprocess.CompletedProcess(["nullclaw"], 0, stdout=stdout, stderr="")
 
+        trace_events = []
+
+        def fake_log_trace(event, **fields):
+            trace_events.append((event, fields))
+
         with patch.object(run, "_run_nullclaw_agent", fake_run_agent), \
              patch.object(run, "_news_cache_get", lambda *args, **kwargs: None), \
              patch.object(run, "_news_cache_put", lambda *args, **kwargs: None), \
-             patch.object(run, "log_trace", lambda *args, **kwargs: None):
+             patch.object(run, "log_trace", fake_log_trace):
             lines = run._summarize_default_ai_substaged(
                 items,
                 "2026/05/24 (Sun)",
@@ -224,6 +257,13 @@ class NewsClusteringTests(unittest.TestCase):
         body = "\n".join(lines)
         self.assertEqual(body.count("DeepSeek 降低 API 價格"), 1)
         self.assertEqual(len(calls), 2)
+        cluster_events = [fields for event, fields in trace_events if event == "cluster_dedup"]
+        self.assertEqual(cluster_events, [{
+            "before": 4,
+            "after": 3,
+            "clusters_total": 3,
+            "clusters_kept": 3,
+        }])
 
 
 if __name__ == "__main__":
