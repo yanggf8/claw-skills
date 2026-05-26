@@ -8,6 +8,89 @@ import run
 
 
 class NewsDeliveryFormattingTests(unittest.TestCase):
+    def test_neutralize_markdown_specials_basic(self):
+        self.assertEqual(
+            run._neutralize_markdown_specials("長科*成關鍵受惠股"),
+            "長科＊成關鍵受惠股",
+        )
+        self.assertEqual(
+            run._neutralize_markdown_specials("foo_bar baseline_v2"),
+            "foo＿bar baseline＿v2",
+        )
+        self.assertEqual(run._neutralize_markdown_specials("一般新聞標題"), "一般新聞標題")
+
+    def test_attach_numbered_links_sanitizes_headline_asterisk(self):
+        summary = "- #1 長科*成關鍵受惠股"
+        numbered = {
+            1: {
+                "title": "長科*成關鍵受惠股",
+                "link": "http://example.com/1",
+            },
+        }
+
+        body, attached = run._attach_numbered_links(summary, numbered)
+
+        self.assertEqual(attached, 1)
+        self.assertEqual(body, "- 長科＊成關鍵受惠股 [🔗](http://example.com/1)")
+
+    def test_section_headers_preserved(self):
+        self.assertEqual(
+            run._neutralize_markdown_specials("**🤖 AI 人工智慧**"),
+            "＊＊🤖 AI 人工智慧＊＊",
+        )
+        summary = "**🤖 AI 人工智慧**\n- #1 長科*成關鍵受惠股"
+        numbered = {
+            1: {
+                "title": "長科*成關鍵受惠股",
+                "link": "http://example.com/1",
+            },
+        }
+
+        body, attached = run._attach_numbered_links(summary, numbered)
+
+        self.assertEqual(attached, 1)
+        self.assertIn("**🤖 AI 人工智慧**", body)
+        self.assertIn("- 長科＊成關鍵受惠股 [🔗](http://example.com/1)", body)
+
+    def test_attach_links_sanitizes_title_in_fallback_match(self):
+        summary = "- 長科*成關鍵受惠股"
+        link_map = {"長科*成關鍵受惠股": "http://example.com/1"}
+
+        body = run._attach_links(summary, link_map)
+
+        self.assertEqual(body, "- 長科＊成關鍵受惠股 [🔗](http://example.com/1)")
+
+    def test_full_digest_no_unescaped_asterisks_in_bullets(self):
+        items = [{
+            "title": "長科*成關鍵受惠股｜產業熱話",
+            "link": "http://example.com/1",
+            "pub_date": "",
+            "source_name": "cnyes",
+        }]
+
+        def fake_run_agent(prompt, timeout_secs, variant, all_items, numbered):
+            return subprocess.CompletedProcess(
+                ["nullclaw"],
+                0,
+                stdout="- #1 長科*成關鍵受惠股｜產業熱話",
+                stderr="",
+            )
+
+        with patch.object(run, "_run_nullclaw_agent", fake_run_agent), \
+             patch.object(run, "log_trace", lambda *args, **kwargs: None):
+            lines, used_fallback = run._summarize_default_section(
+                "tech",
+                items,
+                "2026/05/26 (Tue)",
+                {"長科*成關鍵受惠股｜產業熱話": "http://example.com/1"},
+            )
+
+        self.assertFalse(used_fallback)
+        for line in lines:
+            if line.startswith("- "):
+                self.assertNotIn("*", line)
+        self.assertIn("- 長科＊成關鍵受惠股｜產業熱話 [🔗](http://example.com/1)", lines)
+
     def test_trim_digest_keeps_markdown_links_when_visible_text_fits(self):
         long_link = "https://news.google.com/rss/articles/" + ("a" * 500)
         lines = [

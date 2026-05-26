@@ -441,13 +441,29 @@ def _attach_links(summary: str, link_map: dict[str, str]) -> str:
                     if orig_title in title_text or title_text in orig_title:
                         link = orig_link
                         break
+            safe_title = _neutralize_markdown_specials(title_text)
             if link:
-                result.append(f"{line} [🔗]({link})")
+                result.append(f"- {safe_title} [🔗]({link})")
             else:
-                result.append(line)
+                result.append(f"- {safe_title}")
         else:
             result.append(line)
     return "\n".join(result)
+
+
+def _neutralize_markdown_specials(text: str) -> str:
+    """Replace Markdown special chars with full-width visual equivalents.
+
+    Telegram's legacy Markdown parser rejects messages with unmatched *, _,
+    backtick, or [. Headlines occasionally contain these literally (e.g.
+    Taiwanese stock notation "長科*成關鍵受惠股"). Substituting full-width
+    forms keeps the headline visually identical while removing the
+    Markdown-control meaning.
+
+    Only call on headline body text, not on scaffolding (section headers,
+    link markup, chunk prefixes).
+    """
+    return text.replace("*", "＊").replace("_", "＿")
 
 
 def _news_bullet_lines(summary: str) -> list[str]:
@@ -665,6 +681,7 @@ def _fallback_section_lines(key: str, items: list[dict], limit: int, link_map: d
         link = link_map.get(title, item.get("link", ""))
         if key == "ai" and _count_cjk(title) < 2:
             title = f"AI 新聞來源 {idx}（摘要翻譯暫時失敗）"
+        title = _neutralize_markdown_specials(title)
         if link:
             lines.append(f"- {title} [🔗]({link})")
         else:
@@ -685,7 +702,7 @@ def _attach_numbered_links(summary: str, numbered: dict[int, dict]) -> tuple[str
             return line
         num = int(match.group(1))
         item = numbered.get(num)
-        body = line[match.end():].lstrip()
+        body = _neutralize_markdown_specials(line[match.end():].lstrip())
         if item and item["link"]:
             attached["count"] += 1
             return f"- {body} [🔗]({item['link']})"
@@ -1260,8 +1277,9 @@ def fallback_summary(all_items: dict[str, list[dict]], date_str: str, link_map: 
         lines.append(header)
         if items:
             for item in items[:limit]:
-                title = item["title"]
-                link = (link_map or {}).get(title, item.get("link", ""))
+                raw_title = item["title"]
+                title = _neutralize_markdown_specials(raw_title)
+                link = (link_map or {}).get(raw_title, item.get("link", ""))
                 if link:
                     lines.append(f"- {title} [🔗]({link})")
                 else:
@@ -1385,8 +1403,9 @@ def _custom_topic_raw_listing(topic: str, items: list[dict], link_map: dict[str,
         return ["- 今日無相關新聞"]
     lines: list[str] = []
     for item in items[:5]:
-        title = item["title"]
-        link = link_map.get(title, item.get("link", ""))
+        raw_title = item["title"]
+        title = _neutralize_markdown_specials(raw_title)
+        link = link_map.get(raw_title, item.get("link", ""))
         if link:
             lines.append(f"- {title} [🔗]({link})")
         else:
