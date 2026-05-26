@@ -91,6 +91,88 @@ class NewsDeliveryFormattingTests(unittest.TestCase):
                 self.assertNotIn("*", line)
         self.assertIn("- 長科＊成關鍵受惠股｜產業熱話 [🔗](http://example.com/1)", lines)
 
+    def test_markdown_chunk_is_safe_accepts_clean_chunk(self):
+        self.assertEqual(
+            run._markdown_chunk_is_safe("- 標題 [🔗](http://x.com)"),
+            (True, ""),
+        )
+
+    def test_markdown_chunk_is_safe_rejects_unmatched_asterisk(self):
+        ok, reason = run._markdown_chunk_is_safe("- 長科*成關鍵 [🔗](http://x.com)")
+        self.assertFalse(ok)
+        self.assertIn("asterisk", reason)
+
+    def test_markdown_chunk_is_safe_rejects_unmatched_underscore(self):
+        ok, reason = run._markdown_chunk_is_safe("- foo_bar [🔗](http://x.com)")
+        self.assertFalse(ok)
+        self.assertIn("underscore", reason)
+
+    def test_markdown_chunk_is_safe_accepts_balanced_bold(self):
+        self.assertEqual(run._markdown_chunk_is_safe("**🤖 AI**"), (True, ""))
+
+    def test_markdown_chunk_is_safe_rejects_unclosed_link_bracket(self):
+        ok, reason = run._markdown_chunk_is_safe("- title [🔗](http://x.com/very-long-id")
+        self.assertFalse(ok)
+        self.assertIn("link url", reason)
+
+    def test_deliver_news_or_fail_uses_plaintext_fallback_when_chunk_unsafe(self):
+        body = "- " + ("安全" * 1895) + "\n- foo*bar [🔗](http://x.com)"
+        calls = []
+        traces = []
+
+        def fake_deliver(chat_id, body, *, account="main", parse_mode="Markdown", **kwargs):
+            calls.append((chat_id, body, account, parse_mode))
+            return True
+
+        with patch.object(run, "deliver_or_fail", fake_deliver), \
+             patch.object(run, "log_trace", lambda event, **fields: traces.append((event, fields))):
+            run._deliver_news_or_fail("chat", body, "main")
+
+        self.assertGreater(len(calls), 1)
+        self.assertTrue(all(call[3] is None for call in calls))
+        fallback = [fields for event, fields in traces if event == "digest_markdown_unsafe_fallback"]
+        self.assertEqual(fallback[0]["unsafe_chunks"], [2])
+
+    def test_deliver_news_or_fail_uses_markdown_when_all_chunks_safe(self):
+        body = "- " + ("安全" * 1895) + "\n- clean [🔗](http://x.com)"
+        calls = []
+
+        def fake_deliver(chat_id, body, *, account="main", parse_mode="Markdown", **kwargs):
+            calls.append(parse_mode)
+            return True
+
+        with patch.object(run, "deliver_or_fail", fake_deliver), \
+             patch.object(run, "log_trace", lambda *args, **kwargs: None):
+            run._deliver_news_or_fail("chat", body, "main")
+
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(calls, ["Markdown"] * len(calls))
+
+    def test_deliver_news_or_fail_single_chunk_safe_uses_markdown(self):
+        calls = []
+
+        def fake_deliver(chat_id, body, *, account="main", parse_mode="Markdown", **kwargs):
+            calls.append(parse_mode)
+            return True
+
+        with patch.object(run, "deliver_or_fail", fake_deliver):
+            run._deliver_news_or_fail("chat", "- clean [🔗](http://x.com)", "main")
+
+        self.assertEqual(calls, ["Markdown"])
+
+    def test_deliver_news_or_fail_single_chunk_unsafe_uses_plaintext(self):
+        calls = []
+
+        def fake_deliver(chat_id, body, *, account="main", parse_mode="Markdown", **kwargs):
+            calls.append(parse_mode)
+            return True
+
+        with patch.object(run, "deliver_or_fail", fake_deliver), \
+             patch.object(run, "log_trace", lambda *args, **kwargs: None):
+            run._deliver_news_or_fail("chat", "- foo*bar", "main")
+
+        self.assertEqual(calls, [None])
+
     def test_trim_digest_keeps_markdown_links_when_visible_text_fits(self):
         long_link = "https://news.google.com/rss/articles/" + ("a" * 500)
         lines = [

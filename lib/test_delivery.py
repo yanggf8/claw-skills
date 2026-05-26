@@ -54,6 +54,14 @@ class DeliveryTests(unittest.TestCase):
         m.assert_called_once()
         # account passthrough
         self.assertEqual(m.call_args.kwargs["account"], "alt")
+        self.assertEqual(m.call_args.kwargs["parse_mode"], "Markdown")
+
+    def test_parse_mode_passthrough(self):
+        with mock.patch.object(telegram, "send", return_value=True) as m:
+            self._capture(
+                lambda: delivery.deliver_or_fail("chat-1", "body", parse_mode=None)
+            )
+        self.assertIsNone(m.call_args.kwargs["parse_mode"])
 
     def test_send_failure_default_exits(self):
         with mock.patch.object(telegram, "send", return_value=False):
@@ -82,7 +90,7 @@ class DeliveryTests(unittest.TestCase):
     def test_deadline_resolved_from_env(self):
         captured = {}
 
-        def fake_send(chat_id, text, account="main", *, deadline_s=None):
+        def fake_send(chat_id, text, account="main", *, deadline_s=None, parse_mode="Markdown"):
             captured["deadline_s"] = deadline_s
             return True
 
@@ -95,7 +103,7 @@ class DeliveryTests(unittest.TestCase):
     def test_no_env_passes_none_deadline(self):
         captured = {}
 
-        def fake_send(chat_id, text, account="main", *, deadline_s=None):
+        def fake_send(chat_id, text, account="main", *, deadline_s=None, parse_mode="Markdown"):
             captured["deadline_s"] = deadline_s
             return True
 
@@ -109,7 +117,7 @@ class DeliveryTests(unittest.TestCase):
     def test_invalid_timeout_env_falls_back(self):
         captured = {}
 
-        def fake_send(chat_id, text, account="main", *, deadline_s=None):
+        def fake_send(chat_id, text, account="main", *, deadline_s=None, parse_mode="Markdown"):
             captured["deadline_s"] = deadline_s
             return True
 

@@ -21,6 +21,7 @@ def deliver_or_fail(
     *,
     account: str = "main",
     fail_on_delivery_error: bool = True,
+    parse_mode: str | None = "Markdown",
 ) -> bool:
     """Send body to telegram chat_id; exit(1) on failure unless opted out.
 
@@ -49,7 +50,13 @@ def deliver_or_fail(
         return True
 
     deadline_s = _resolve_delivery_deadline()
-    ok = telegram.send(chat_id, body, account=account, deadline_s=deadline_s)
+    ok = telegram.send(
+        chat_id,
+        body,
+        account=account,
+        deadline_s=deadline_s,
+        parse_mode=parse_mode,
+    )
     if ok:
         return True
 

@@ -96,6 +96,7 @@ CJK bigram 通用詞過濾：常見的中文填充詞（`公司`、`發布`、`�
 - Telegram 長度以 Markdown 可見文字估算，不用原始 URL byte 數。這可避免 Google News RSS 長 URL 讓實際可讀摘要被誤判過長。
 - 若原始 Markdown 太長，腳本會依行切成多段 Telegram 訊息。`digest_delivery_split` trace 會記錄段數與原始/可見字元數。
 - Markdown 字元中和：標題中的 `*` 與 `_` 在送至 Telegram 前會換成全形 `＊` / `＿`，避免 Markdown 解析失敗（例如「長科*成關鍵受惠股」這類台股除權息標示）。僅針對新聞條目本文，不影響區段標題與連結語法。
+- Markdown 預檢 + 純文字降級：送出前會檢查每個分塊是否能通過 Telegram Markdown 解析（檢查未配對的 `*` / `_` / `` ` ``、跨塊未閉合的連結括號等）。若任一分塊不安全，整份摘要會降級為純文字送出（`parse_mode=None`），確保整體交付的原子性：要嘛全部以 Markdown 送出，要嘛全部純文字，避免「分塊 1 送出成功，分塊 2 失敗導致 cron 重試又重送分塊 1」。`digest_markdown_unsafe_fallback` trace 會記錄發生降級時的不安全分塊編號。
 
 ## Failure alerts (hard rule)
 
@@ -117,6 +118,7 @@ Coverage matrix (every path that ends without the full intended news):
 | AI Level 3 quarter still fails | Alert + exit 1, no digest sent. |
 | Tech / general fell back to non-LLM bullets | Alert; digest still ships with degraded section. |
 | Custom-topic fell back to raw listing | Alert (`custom_topics_fell_back` or `all_custom_topics_failed`); digest still ships. |
+| 任一分塊 Markdown 不安全 | 整份降級為純文字送出，正常交付（`digest_markdown_unsafe_fallback` trace）。 |
 | Telegram send failed | Alert via the on-disk log (Telegram itself is down); exit 1. |
 | Uncaught exception in main() | Alert with truncated traceback; exit 1. |
 

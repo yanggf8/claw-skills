@@ -867,24 +867,103 @@ def _split_message_preserving_lines(body: str, limit: int = TELEGRAM_RAW_CHUNK_L
     return [chunk for chunk in chunks if chunk]
 
 
+def _markdown_chunk_is_safe(chunk: str) -> tuple[bool, str]:
+    """Heuristic safety check for Telegram legacy Markdown chunks."""
+    probe_chars: list[str] = []
+    i = 0
+    while i < len(chunk):
+        ch = chunk[i]
+        if ch == "[":
+            close_label = chunk.find("]", i + 1)
+            if close_label == -1:
+                return False, "unclosed link bracket"
+            if close_label + 1 < len(chunk) and chunk[close_label + 1] == "(":
+                close_url = chunk.find(")", close_label + 2)
+                if close_url == -1:
+                    return False, "unclosed link url"
+                i = close_url + 1
+                continue
+        probe_chars.append(ch)
+        i += 1
+
+    if chunk.endswith("\\") and not chunk.endswith("\\\\"):
+        return False, "trailing backslash"
+
+    probe = "".join(probe_chars)
+    for marker, name in (("*", "asterisk"), ("_", "underscore"), ("`", "backtick")):
+        count = 0
+        escaped = False
+        for ch in probe:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == marker:
+                count += 1
+        if count % 2 != 0:
+            return False, f"unmatched {name}"
+    return True, ""
+
+
+def _deliver_news_chunks(
+    chat_id: str,
+    chunks: list[str],
+    account: str,
+    *,
+    parse_mode: str | None,
+) -> None:
+    if len(chunks) == 1:
+        deliver_or_fail(chat_id, chunks[0], account=account, parse_mode=parse_mode)
+        return
+
+    for idx, chunk in enumerate(chunks, start=1):
+        deliver_or_fail(
+            chat_id,
+            f"({idx}/{len(chunks)})\n{chunk}",
+            account=account,
+            parse_mode=parse_mode,
+        )
+
+
 def _deliver_news_or_fail(chat_id: str | None, body: str, account: str) -> None:
     if not chat_id:
         deliver_or_fail(chat_id, body, account=account)
         return
 
     chunks = _split_message_preserving_lines(body)
-    if len(chunks) == 1:
-        deliver_or_fail(chat_id, body, account=account)
+    unsafe_chunks: list[tuple[int, str]] = []
+    for idx, chunk in enumerate(chunks, start=1):
+        ok, reason = _markdown_chunk_is_safe(chunk)
+        if not ok:
+            unsafe_chunks.append((idx, reason))
+
+    if unsafe_chunks:
+        log_trace(
+            "digest_markdown_unsafe_fallback",
+            total_chunks=len(chunks),
+            unsafe_chunks=[idx for idx, _ in unsafe_chunks],
+            reasons=[reason for _, reason in unsafe_chunks[:3]],
+        )
+        if len(chunks) > 1:
+            log_trace(
+                "digest_delivery_split",
+                chunks=len(chunks),
+                raw_chars=len(body),
+                visible_chars=len(_markdown_visible_text(body)),
+            )
+        _deliver_news_chunks(chat_id, chunks, account, parse_mode=None)
         return
 
-    log_trace(
-        "digest_delivery_split",
-        chunks=len(chunks),
-        raw_chars=len(body),
-        visible_chars=len(_markdown_visible_text(body)),
-    )
-    for idx, chunk in enumerate(chunks, start=1):
-        deliver_or_fail(chat_id, f"({idx}/{len(chunks)})\n{chunk}", account=account)
+    if len(chunks) > 1:
+        log_trace(
+            "digest_delivery_split",
+            chunks=len(chunks),
+            raw_chars=len(body),
+            visible_chars=len(_markdown_visible_text(body)),
+        )
+    _deliver_news_chunks(chat_id, chunks, account, parse_mode="Markdown")
 
 
 def _summarize_default_section(key: str, items: list[dict], date_str: str, link_map: dict[str, str]) -> tuple[list[str], bool]:

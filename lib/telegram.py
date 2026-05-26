@@ -64,6 +64,7 @@ def send(
     config_path: str | None = None,
     *,
     deadline_s: float | None = None,
+    parse_mode: str | None = "Markdown",
 ) -> bool:
     """Send a message to a Telegram chat. Returns True on success.
 
@@ -83,12 +84,14 @@ def send(
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({
+    payload_obj = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown",
         "disable_web_page_preview": True,
-    }).encode()
+    }
+    if parse_mode is not None:
+        payload_obj["parse_mode"] = parse_mode
+    payload = json.dumps(payload_obj).encode()
 
     budget = float(deadline_s) if deadline_s is not None else DEFAULT_DEADLINE_S
     if budget <= 0:

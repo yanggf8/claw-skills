@@ -3,6 +3,7 @@
 Run: python3 ~/.nullclaw/skills/lib/test_telegram_retry.py
 """
 import io
+import json
 import os
 import sys
 import time
@@ -55,6 +56,20 @@ class TelegramRetryTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=FakeResponse(200)) as op:
             self.assertTrue(telegram.send("chat", "hi"))
         self.assertEqual(op.call_count, 1)
+
+    def test_parse_mode_default_included_and_none_omitted(self):
+        payloads = []
+
+        def fake(req, timeout):
+            payloads.append(json.loads(req.data.decode()))
+            return FakeResponse(200)
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            self.assertTrue(telegram.send("chat", "hi"))
+            self.assertTrue(telegram.send("chat", "hi", parse_mode=None))
+
+        self.assertEqual(payloads[0]["parse_mode"], "Markdown")
+        self.assertNotIn("parse_mode", payloads[1])
 
     def test_502_502_200(self):
         responses = [_http_error(502), _http_error(502), FakeResponse(200)]
