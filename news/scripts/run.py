@@ -80,6 +80,16 @@ _CJK_STOP_BIGRAMS = {
 }
 _CLUSTER_OVERLAP = 2
 
+TRANSLATION_RULES_STRICT = (
+    "英文標題必須完整翻譯成繁體中文。"
+    "只有以下類別可以保留英文原文：公司名（例如 OpenAI、Google、Microsoft）、"
+    "人名（例如 Sam Altman）、產品名（例如 ChatGPT、Gemini）、"
+    "既定技術術語（例如 AGI、GPU、API、LLM）。"
+    "所有普通英文詞彙必須翻譯，包括但不限於副詞（increasingly、significantly、rapidly、notably、effectively）、"
+    "動詞、形容詞、連接詞。"
+    "輸出中不得保留任何非上述四類的英文單字。"
+)
+
 
 def log_trace(event: str, **fields) -> None:
     """Append structured skill diagnostics without logging secrets."""
@@ -523,6 +533,15 @@ def _strip_marker_prefix(line: str) -> str:
     return re.sub(r"^\s*(?:-\s*)?#\d+\b(?!,)\s*", "", line).strip()
 
 
+FORBIDDEN_NON_PROPER_ENGLISH = frozenset({
+    "increasingly", "significantly", "rapidly", "notably", "effectively",
+    "essentially", "generally", "particularly", "specifically", "primarily",
+    "ultimately", "eventually", "additionally", "furthermore", "moreover",
+    "however", "therefore", "consequently", "meanwhile", "subsequently",
+    "previously", "currently", "recently", "approximately", "potentially",
+})
+
+
 def _language_validation_stats(summary: str) -> tuple[int, int]:
     """Return (Chinese-looking bullets, total news bullets)."""
     chinese = 0
@@ -539,7 +558,21 @@ def _language_validation_passed(summary: str) -> bool:
     chinese, total = _language_validation_stats(summary)
     if total == 0:
         return False
-    return chinese * 5 >= total * 4
+    if not (chinese * 5 >= total * 4):
+        return False
+    # Reject any bullet containing common English adverbs that are never proper nouns
+    import re
+    import string
+    bullet_lines = _news_bullet_lines(summary)
+    for line in bullet_lines:
+        body = _strip_marker_prefix(line)
+        # Split on whitespace, strip punctuation, lowercase
+        for token in body.split():
+            # Strip leading/trailing punctuation
+            cleaned = token.strip(string.punctuation)
+            if cleaned.lower() in FORBIDDEN_NON_PROPER_ENGLISH:
+                return False
+    return True
 
 
 def _number_items_for_prompt(
@@ -772,7 +805,7 @@ def _translate_selected_section(
     prompt = (
         f"你是新聞標題翻譯編輯。以下是今天({date_str})已選出的新聞標題，每則有編號 #N。\n\n"
         f"{raw}\n\n"
-        f"請只把每則標題翻譯成繁體中文，保留公司名、人名、產品名英文，且不要改變編號或順序。\n"
+        f"{TRANSLATION_RULES_STRICT}\n"
         f"輸出格式必須只有 dash bullets：\n"
         f"- #N 繁體中文標題\n"
         f"- #N ...\n\n"
@@ -990,7 +1023,7 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
         f"- #N ...\n\n"
         f"規則：\n"
         f"- 每則新聞前面必須保留原始編號 #N\n"
-        f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞（公司名、人名）的英文\n"
+        f"- {TRANSLATION_RULES_STRICT}\n"
         f"- 每行必須以繁體中文新聞句子開始，不要輸出英文原標題或「英文（中文）」格式\n"
         f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n"
         f"- 同一則新聞如果有多個來源（標題講同一件事，例如「百度Q1財報」三個版本），只挑一則：\n"
@@ -1128,7 +1161,7 @@ def _run_ai_substage(
         f"- #N ...\n\n"
         f"規則：\n"
         f"- 每則新聞前面必須保留原始編號 #N\n"
-        f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞（公司名、人名）的英文\n"
+        f"- {TRANSLATION_RULES_STRICT}\n"
         f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n"
         f"- 同一則新聞如果有多個來源（標題講同一件事），只挑一則：\n"
         f"  優先選免費來源（cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、Reuters、AP、ScienceDaily、TechCrunch 等）\n"
@@ -1435,7 +1468,7 @@ def _run_custom_topic(
         f"- #N ...\n\n"
         f"規則：\n"
         f"- 每則新聞前面必須保留原始編號 #N\n"
-        f"- 英文標題翻譯成繁體中文，但保留關鍵專有名詞（公司名、人名）的英文\n"
+        f"- {TRANSLATION_RULES_STRICT}\n"
         f"- 如果今日無相關新聞，輸出「- 今日無相關新聞」"
     )
 
