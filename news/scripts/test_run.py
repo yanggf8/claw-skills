@@ -430,6 +430,28 @@ class NewsClusteringTests(unittest.TestCase):
             "clusters_kept": 3,
         }])
 
+class ForbiddenEnglishAdverbTests(unittest.TestCase):
+    """Tests for the FORBIDDEN_NON_PROPER_ENGLISH check in language validation."""
+
+    def test_forbidden_adverb_in_bullet_fails_validation(self):
+        """A bullet with 'increasingly' (not a proper noun) must fail validation."""
+        summary = "- 中國 increasingly 將最優秀的AI人才留在國內"
+        self.assertFalse(run._language_validation_passed(summary))
+
+    def test_clean_bullet_with_proper_nouns_passes_validation(self):
+        """A clean bullet with only proper nouns (OpenAI, GPT-5) passes validation."""
+        summary = "- OpenAI 發布新版 GPT-5"
+        self.assertTrue(run._language_validation_passed(summary))
+
+    def test_existing_80_percent_cjk_rule_still_enforced(self):
+        """The original 80% CJK-start + ≥2 CJK char rule still applies."""
+        # This summary has bullets that don't start with CJK within first 18 chars
+        # and would fail the 80% threshold
+        summary = "- abcdefghijklmnop English only title without Chinese\n- 這是第二則中文新聞標題"
+        # With 2 bullets, need at least 2 to pass 80% (chinese * 5 >= total * 4)
+        # Only 1 has CJK starting early enough, so this should fail
+        self.assertFalse(run._language_validation_passed(summary))
+
 
 if __name__ == "__main__":
     unittest.main()
