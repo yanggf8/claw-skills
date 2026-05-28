@@ -56,7 +56,7 @@ IMPORTANT rules for summarizing:
 - The AI section should ALWAYS have content — if feeds 1+2 return results, there IS AI news today.
 - Do NOT say "今日無相關新聞" unless a feed literally returns zero items.
 
-Summarize in Traditional Chinese with this exact format:
+Summarize in Traditional Chinese. Output is validated to ensure ≥80% CJK characters per bullet and reject common English adverbs (e.g., "increasingly", "significantly"). Only proper nouns may remain in English.
 
 📰 早安新聞摘要
 
