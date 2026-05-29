@@ -208,8 +208,8 @@ def main(argv: list[str] | None = None) -> int:
         status = issue_status(issue_id)
         sr.log(f"issue_id={issue_id} target_date={target_date} status={status}")
 
-        if status == "delivered":
-            sr.log("issue already delivered; no-op")
+        if status in {"published", "delivered"}:
+            sr.log("issue already published or delivered; no-op")
             sr.emit_status("ok")
             sr.emit_trace()
             return 0
