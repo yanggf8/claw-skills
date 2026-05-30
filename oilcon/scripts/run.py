@@ -18,6 +18,9 @@ from trace_marker import emit_skill_status, emit_trace
 HISTORY_LOG = os.path.expanduser("~/.nullclaw/oilcon-history.log")
 WINDOW_SIZE = 252
 MIN_HISTORY_ROWS = 20
+JETS_OFF_LOW_PCT = 10.0
+JETS_MIN_DAYS_SINCE_LOW = 30
+JETS_RISING_WINDOW = 5
 SYMBOLS = {
     "WTI": "CL=F",
     "Brent": "BZ=F",
@@ -91,6 +94,22 @@ def compute_extremes(rows: list[tuple[str, float]]) -> dict[str, float | str | i
     }
 
 
+def is_rising(rows: list[tuple[str, float]], window: int = JETS_RISING_WINDOW) -> bool:
+    if len(rows) < 2:
+        return False
+    tail = rows[-window:] if len(rows) >= window else rows
+    mean_close = sum(r[1] for r in tail) / len(tail)
+    return rows[-1][1] > mean_close
+
+
+def jets_oil_signal(extremes: dict, rows: list[tuple[str, float]]) -> bool:
+    return (
+        extremes["distance_off_low_pct"] >= JETS_OFF_LOW_PCT
+        and extremes["days_since_low"] >= JETS_MIN_DAYS_SINCE_LOW
+        and is_rising(rows)
+    )
+
+
 def confirmation_mark(confirm_change: float, wti_change: float) -> str:
     if confirm_change == 0 or wti_change == 0:
         return "–"
@@ -153,6 +172,12 @@ def format_message(snapshot: Snapshot) -> tuple[str, str]:
             f"更新：{cst_now()}",
         ]
     )
+
+    if jets_oil_signal(wti, wti_snapshot.rows):
+        lines.append(
+            f"⚠ JETS: oil in sustained uptrend (WTI {fmt_pct(wti['distance_off_low_pct'])} off low, low {wti['days_since_low']}d ago, rising) — review entry-exit-rules.md JETS Reduce Rule"
+        )
+
     return "\n".join(lines), status
 
 
