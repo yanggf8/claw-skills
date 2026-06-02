@@ -115,7 +115,7 @@ def pct_below_60d_high(rows: list[tuple[str, float]]) -> float:
 
 
 def classify_oil_trend(rows: list[tuple[str, float]]) -> str:
-    if len(rows) < 50:
+    if len(rows) < 70:
         return "insufficient-history"
     try:
         ma50 = moving_average(rows, 50)
@@ -125,7 +125,7 @@ def classify_oil_trend(rows: list[tuple[str, float]]) -> str:
     ma_rising_flag = ma_rising(rows, 50, 20)
     pct_below = pct_below_60d_high(rows)
 
-    if current >= ma50:
+    if current > ma50:
         if ma_rising_flag:
             if pct_below <= 10.0:
                 return "uptrend"

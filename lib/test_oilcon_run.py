@@ -208,6 +208,44 @@ class OilconRunTests(unittest.TestCase):
         state = oilcon_run.classify_oil_trend(rows)
         self.assertIn("insufficient", state.lower())
 
+    def test_classify_oil_trend_price_exactly_equal_ma_not_uptrend(self):
+        # Price exactly == 50MA with rising MA → NOT "uptrend" (strict > required)
+        rows = [(f"d{i}", float(50 + i * 0.5)) for i in range(70)]
+        # Force last price to equal the 50MA
+        ma50 = oilcon_run.moving_average(rows, 50)
+        rows[-1] = (rows[-1][0], ma50)
+        state = oilcon_run.classify_oil_trend(rows)
+        self.assertNotEqual(state, "uptrend")
+
+    def test_classify_oil_trend_69_rows_insufficient_70_rows_sufficient(self):
+        # 69 rows (steadily rising) → insufficient-history
+        rows_69 = [(f"d{i}", float(30 + i * 0.5)) for i in range(69)]
+        state_69 = oilcon_run.classify_oil_trend(rows_69)
+        self.assertIn("insufficient", state_69.lower())
+        # 70 rows (steadily rising) → uptrend
+        rows_70 = [(f"d{i}", float(30 + i * 0.5)) for i in range(70)]
+        state_70 = oilcon_run.classify_oil_trend(rows_70)
+        self.assertEqual(state_70, "uptrend")
+
+    def test_format_message_emits_oil_trend_no_jets_verdict(self):
+        rows = [(f"d{i}", float(30 + i * 0.9)) for i in range(75)]
+        rows.append(("d75", 85.0))
+        snapshot = oilcon_run.Snapshot(
+            symbols={
+                "WTI": oilcon_run.SymbolSnapshot(rows=rows),
+                "Brent": oilcon_run.SymbolSnapshot(
+                    rows=[("2026-04-14", 80.0), ("2026-04-15", 80.5)]
+                ),
+                "HO": oilcon_run.SymbolSnapshot(
+                    rows=[("2026-04-14", 2.40), ("2026-04-15", 2.45)]
+                ),
+            }
+        )
+        message, status = oilcon_run.format_message(snapshot)
+        self.assertIn("OIL-TREND:", message)
+        self.assertNotIn("JETS", message)
+        self.assertNotIn("review reduce", message.lower())
+
     def test_build_snapshot_marks_latest_fetch_failure_as_stale(self):
         class FakeConn:
             def close(self):
