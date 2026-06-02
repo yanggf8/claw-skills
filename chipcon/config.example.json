@@ -1,10 +1,11 @@
 {
-  "ticker": "SMH",
-  "enabled": true,
-  "entry_price": 600.0,
-  "position_usd": 3000.0,
-  "chat_id": "7972814626",
-  "price_command": "/home/yanggf/b/gwebcdb/target/debug/price",
+  "symbols": {
+    "SMH": "SMH",
+    "QQQ": "QQQ",
+    "SOXX": "SOXX"
+  },
+  "state_path": "~/.nullclaw/chipcon-history.json",
+  "position_label": "SMH tactical semiconductor satellite",
   "manual_events": [
     "NVDA / AVGO / AMD / MU guidance",
     "TSMC monthly revenue",
