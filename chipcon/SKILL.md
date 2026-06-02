@@ -12,13 +12,13 @@ edits portfolio state.
 
 ## Script
 
-```bash
+```
 ~/.nullclaw/skills/chipcon/scripts/run.py
 ```
 
 ## Usage
 
-```bash
+```
 python3 ~/.nullclaw/skills/chipcon/scripts/run.py
 python3 ~/.nullclaw/skills/chipcon/scripts/run.py --mode record
 python3 ~/.nullclaw/skills/chipcon/scripts/run.py --deliver-to 7972814626
@@ -58,7 +58,7 @@ Manual event checks remain outside the algorithm:
 
 Daily after the US close, Tuesday-Saturday Taiwan time:
 
-```bash
+```
 nullclaw cron add-skill "30 5 * * 2-6" chipcon --deliver-to 7972814626 --timeout 180 --tz +08:00 --verify skill_contract --repair retry_once
 ```
 
