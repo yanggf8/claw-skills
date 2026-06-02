@@ -29,6 +29,9 @@ STREAM = "weekly-intl-wealth-signals"
 PERSONA = "liko-finance"
 SKILL = "liko-finance-weekly"
 SOURCE_DOC = REPO / "docs/superpowers/specs/2026-04-29-liko-finance-weekly-design/sources.md"
+SECTION_HEADINGS = {"本週訊號", "對應檢視面向", "本週檢視動作"}
+SAFE_STANCE = "本週無顯著訊號，維持保守檢視。"
+MAX_STANCE_CHARS = 280
 
 sr.init(SKILL)
 
@@ -180,6 +183,58 @@ def validate_body_file(path: Path) -> tuple[bool, str]:
     return passed, report
 
 
+def clean_stance_line(line: str) -> str:
+    """Strip accidental markdown decoration from a candidate stance line."""
+    return line.strip().lstrip("#*-").strip()
+
+
+def truncate_stance(value: str) -> str:
+    value = " ".join(value.split())
+    if len(value) <= MAX_STANCE_CHARS:
+        return value
+    return value[:MAX_STANCE_CHARS].rstrip() + "..."
+
+
+def extract_liko_stance(body: str) -> str:
+    """Derive a non-heading stance from the first block under 本週訊號."""
+    lines = body.splitlines()
+    signal_idx = None
+    for idx, line in enumerate(lines):
+        if clean_stance_line(line) == "本週訊號":
+            signal_idx = idx
+            break
+
+    if signal_idx is None:
+        sr.log("warning: 本週訊號 heading missing; falling back to first non-heading line")
+        return fallback_liko_stance(lines)
+
+    block: list[str] = []
+    for raw_line in lines[signal_idx + 1:]:
+        line = clean_stance_line(raw_line)
+        if not line:
+            if block:
+                break
+            continue
+        if line in SECTION_HEADINGS:
+            break
+        block.append(line)
+
+    if block:
+        return truncate_stance(" ".join(block))
+
+    sr.log("warning: no substantive content under 本週訊號; falling back to first non-heading line")
+    return fallback_liko_stance(lines)
+
+
+def fallback_liko_stance(lines: list[str]) -> str:
+    for raw_line in lines:
+        line = clean_stance_line(raw_line)
+        if line and line not in SECTION_HEADINGS:
+            return truncate_stance(line)
+    sr.log("warning: empty issue body; using safe fallback stance")
+    return SAFE_STANCE
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Draft and validate, but do not write or publish")
@@ -254,11 +309,15 @@ def main(argv: list[str] | None = None) -> int:
             sr.emit_trace()
             return 2
 
+        stance = extract_liko_stance(body)
+        sr.log(f"stage: derived stance ({len(stance)} chars)")
+
         if args.dry_run:
             print("dry_run: yes")
             print(f"issue_id: {issue_id}")
             print(f"target_date: {target_date}")
             print(f"body_path: {body_path}")
+            print(f"stance: {stance}")
             print("validation: passed")
             print("would_update_body: yes")
             print("would_publish: yes")
@@ -273,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--body", f"@{body_path}",
                 "--validation-ok",
                 "--validation-summary", "R1/R2/R3 validation passed",
+                "--stance", stance,
                 "--status", "validated",
             ],
             timeout=120,
