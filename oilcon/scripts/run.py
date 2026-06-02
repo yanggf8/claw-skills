@@ -18,9 +18,6 @@ from trace_marker import emit_skill_status, emit_trace
 HISTORY_LOG = os.path.expanduser("~/.nullclaw/oilcon-history.log")
 WINDOW_SIZE = 252
 MIN_HISTORY_ROWS = 20
-JETS_OFF_LOW_PCT = 10.0
-JETS_MIN_DAYS_SINCE_LOW = 30
-JETS_RISING_WINDOW = 5
 SYMBOLS = {
     "WTI": "CL=F",
     "Brent": "BZ=F",
@@ -94,20 +91,53 @@ def compute_extremes(rows: list[tuple[str, float]]) -> dict[str, float | str | i
     }
 
 
-def is_rising(rows: list[tuple[str, float]], window: int = JETS_RISING_WINDOW) -> bool:
-    if len(rows) < 2:
+def moving_average(rows: list[tuple[str, float]], n: int) -> float:
+    if len(rows) < n:
+        raise ValueError(f"need at least {n} rows")
+    return sum(r[1] for r in rows[-n:]) / n
+
+
+def ma_rising(rows: list[tuple[str, float]], n: int, lookback: int) -> bool:
+    if len(rows) < n + lookback:
         return False
-    tail = rows[-window:] if len(rows) >= window else rows
-    mean_close = sum(r[1] for r in tail) / len(tail)
-    return rows[-1][1] > mean_close
+    ma_today = moving_average(rows, n)
+    ma_then = moving_average(rows[:-lookback], n)
+    return ma_today > ma_then
 
 
-def jets_oil_signal(extremes: dict, rows: list[tuple[str, float]]) -> bool:
-    return (
-        extremes["distance_off_low_pct"] >= JETS_OFF_LOW_PCT
-        and extremes["days_since_low"] >= JETS_MIN_DAYS_SINCE_LOW
-        and is_rising(rows)
-    )
+def pct_below_60d_high(rows: list[tuple[str, float]]) -> float:
+    if len(rows) < 1:
+        raise ValueError("need at least 1 row")
+    window = rows[-60:] if len(rows) >= 60 else rows
+    high = max(r[1] for r in window)
+    current = rows[-1][1]
+    return (high - current) / high * 100.0
+
+
+def classify_oil_trend(rows: list[tuple[str, float]]) -> str:
+    if len(rows) < 50:
+        return "insufficient-history"
+    try:
+        ma50 = moving_average(rows, 50)
+    except ValueError:
+        return "insufficient-history"
+    current = rows[-1][1]
+    ma_rising_flag = ma_rising(rows, 50, 20)
+    pct_below = pct_below_60d_high(rows)
+
+    if current >= ma50:
+        if ma_rising_flag:
+            if pct_below <= 10.0:
+                return "uptrend"
+            else:
+                return "weakening-uptrend"
+        else:
+            return "rollover"
+    else:
+        if ma_rising_flag:
+            return "rollover"
+        else:
+            return "no-uptrend"
 
 
 def confirmation_mark(confirm_change: float, wti_change: float) -> str:
@@ -173,9 +203,16 @@ def format_message(snapshot: Snapshot) -> tuple[str, str]:
         ]
     )
 
-    if jets_oil_signal(wti, wti_snapshot.rows):
+    # OIL-TREND line (4-state signal, no JETS verdict)
+    if wti_snapshot.rows is not None and len(wti_snapshot.rows) >= 50:
+        state = classify_oil_trend(wti_snapshot.rows)
+        ma50 = moving_average(wti_snapshot.rows, 50)
+        current_price = wti["current_close"]
+        above_below = "above" if current_price >= ma50 else "below"
+        ma_dir = "rising" if ma_rising(wti_snapshot.rows, 50, 20) else "flat/down"
+        pct = pct_below_60d_high(wti_snapshot.rows)
         lines.append(
-            f"⚠ JETS: oil in sustained uptrend (WTI {fmt_pct(wti['distance_off_low_pct'])} off low, low {wti['days_since_low']}d ago, rising) — review entry-exit-rules.md JETS Reduce Rule"
+            f"OIL-TREND: {state} (WTI {current_price:.2f}, {above_below} 50MA {ma50:.2f}, 50MA {ma_dir}, {pct:.1f}% vs 60d-high)"
         )
 
     return "\n".join(lines), status
