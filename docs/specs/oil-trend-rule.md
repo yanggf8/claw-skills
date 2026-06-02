@@ -30,6 +30,8 @@ Inputs (all from oilcon's daily WTI closes):
 
 **Important:** Distance from the 1-year low is context only. It is NOT proof of an uptrend.
 
+**History requirement:** the rule needs enough daily closes to compute both the 50-day MA and its direction (50-day MA + a ~20-day direction lookback ≈ 70 closes). With fewer than ~70 closes the state is reported as `insufficient-history` — the rule never asserts a trend on data too thin to judge MA direction. "Above the 50-day MA" means strictly above (price equal to the MA is not "above").
+
 ## Quick human check (weekly)
 
 Three questions: (1) WTI above 50MA? (2) 50MA rising? (3) WTI more than 10% below the 60-day high?
