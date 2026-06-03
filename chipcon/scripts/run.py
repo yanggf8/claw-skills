@@ -5,10 +5,10 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
@@ -26,8 +26,7 @@ except Exception:
 
 
 DEFAULT_CONFIG = Path.home() / ".nullclaw" / "skills" / "chipcon" / "config.json"
-DEFAULT_STATE = Path.home() / ".nullclaw" / "chipcon-history.json"
-YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1={period1}&period2={period2}&interval=1d&events=history"
+LOCAL_DEV_PRICE_CLI = Path.home() / "b" / "gwebcdb" / "target" / "debug" / "price"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -53,64 +52,48 @@ def load_config(path: Path) -> dict:
     if not path.exists():
         return {
             "symbols": {"SMH": "SMH", "QQQ": "QQQ", "SOXX": "SOXX"},
-            "state_path": str(DEFAULT_STATE),
             "manual_events": default_events(),
         }
     with path.open("r", encoding="utf-8") as f:
         cfg = json.load(f)
     cfg.setdefault("symbols", {"SMH": "SMH", "QQQ": "QQQ", "SOXX": "SOXX"})
-    cfg.setdefault("state_path", str(DEFAULT_STATE))
     cfg.setdefault("manual_events", default_events())
     return cfg
 
 
-def state_path(cfg: dict) -> Path:
-    return Path(str(cfg.get("state_path", DEFAULT_STATE))).expanduser()
+def price_cli_path(cfg: dict) -> str:
+    if os.environ.get("CHIPCON_PRICE_CLI"):
+        return str(Path(os.environ["CHIPCON_PRICE_CLI"]).expanduser())
+    configured = str(cfg.get("price_cli_path", "")).strip()
+    if configured:
+        return str(Path(configured).expanduser())
+    found = shutil.which("price")
+    if found:
+        return found
+    return str(LOCAL_DEV_PRICE_CLI)
 
 
-def load_state(path: Path) -> dict[str, list[list]]:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    return {str(k): list(v) for k, v in data.items()}
+def run_price_cli(cfg: dict, args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [price_cli_path(cfg), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
 
 
-def save_state(path: Path, state: dict[str, list[list]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
-
-
-def fetch_history(symbol: str, days: int = 120) -> list[tuple[str, float]]:
-    end = datetime.now(timezone.utc) + timedelta(days=1)
-    start = end - timedelta(days=days)
-    url = YAHOO_URL.format(symbol=symbol, period1=int(start.timestamp()), period2=int(end.timestamp()))
-    req = Request(url, headers={"User-Agent": "chipcon/1.0"})
-    with urlopen(req, timeout=20) as resp:
-        payload = json.load(resp)
-    result = payload["chart"]["result"][0]
-    timestamps = result.get("timestamp") or []
-    closes = result["indicators"]["quote"][0].get("close") or []
-    rows: list[tuple[str, float]] = []
-    for ts, close in zip(timestamps, closes):
-        if close is None:
+def parse_price_history_tsv(output: str) -> dict[str, list[list]]:
+    state: dict[str, list[list]] = {}
+    for line in output.splitlines():
+        if not line.strip():
             continue
-        day = datetime.fromtimestamp(ts, timezone.utc).date().isoformat()
-        rows.append((day, float(close)))
-    if not rows:
-        raise ValueError(f"no history rows for {symbol}")
-    return rows
-
-
-def merge_rows(old: list[list], new: list[tuple[str, float]]) -> list[list]:
-    merged: dict[str, float] = {}
-    for day, close in old:
-        merged[str(day)] = float(close)
-    for day, close in new:
-        merged[str(day)] = float(close)
-    rows = [[day, merged[day]] for day in sorted(merged)]
-    return rows[-252:]
+        parts = line.split("\t")
+        if len(parts) < 3:
+            raise ValueError(f"bad price history row: {line}")
+        ticker, day, close_raw = parts[0].strip().upper(), parts[1].strip(), parts[2].strip()
+        state.setdefault(ticker, []).append([day, float(close_raw)])
+    return state
 
 
 def as_rows(state: dict[str, list[list]], key: str) -> list[tuple[str, float]]:
@@ -279,17 +262,26 @@ def format_message(status: str, details: dict, cfg: dict, warning: str | None = 
 
 
 def update_state(cfg: dict) -> tuple[dict[str, list[list]], str | None]:
-    path = state_path(cfg)
-    state = load_state(path)
     warnings: list[str] = []
     symbols = cfg.get("symbols", {"SMH": "SMH", "QQQ": "QQQ", "SOXX": "SOXX"})
+    tickers = [str(symbol).upper() for symbol in symbols.values()]
+
+    fetch = run_price_cli(cfg, ["fetch", *tickers])
+    if fetch.returncode == 2:
+        warnings.append(fetch.stderr.strip() or "price fetch returned partial failures")
+    elif fetch.returncode != 0:
+        raise RuntimeError((fetch.stderr.strip() or fetch.stdout.strip() or f"price fetch failed with exit {fetch.returncode}"))
+
+    history = run_price_cli(cfg, ["history", *tickers])
+    if history.returncode == 2:
+        warnings.append(history.stderr.strip() or "price history returned missing tickers")
+    elif history.returncode != 0:
+        raise RuntimeError((history.stderr.strip() or history.stdout.strip() or f"price history failed with exit {history.returncode}"))
+
+    by_ticker = parse_price_history_tsv(history.stdout)
+    state = {}
     for key, symbol in symbols.items():
-        try:
-            rows = fetch_history(str(symbol))
-            state[str(key)] = merge_rows(state.get(str(key), []), rows)
-        except (HTTPError, URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            warnings.append(f"{key} fetch failed: {exc}")
-    save_state(path, state)
+        state[str(key)] = by_ticker.get(str(symbol).upper(), [])
     return state, "; ".join(warnings) if warnings else None
 
 

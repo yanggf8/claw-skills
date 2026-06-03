@@ -10,6 +10,11 @@ Monitor the SMH semiconductor satellite position using trend signals, not
 entry-price stop levels. This skill is signal-only: it never trades and never
 edits portfolio state.
 
+Data input comes through the shared `price` CLI. Each daily run calls
+`price fetch` for the configured tickers, then calls `price history` to read
+accumulated closes from the shared `price-registry` for the trend calculation.
+No broker state is read or changed.
+
 ## Script
 
 ```
@@ -53,6 +58,15 @@ Manual event checks remain outside the algorithm:
 - Microsoft / Amazon / Google / Meta capex guidance
 - Export-control escalation
 - SpaceX IPO / index-flow liquidity drain
+
+## Data Store
+
+- CLI substrate: `price fetch <ticker...>` and `price history <ticker...>`
+- Source and storage are owned by `price`: Stooq CSV latest-close quotes into
+  Turso `price-registry`, table `prices(ticker,date,close,source)`
+- Output contract consumed by this skill: TSV `ticker date close source`
+- CLI resolution order: `CHIPCON_PRICE_CLI`, `price_cli_path` in config,
+  `price` from `PATH`, then local-dev fallback `~/b/gwebcdb/target/debug/price`
 
 ## Cron
 

@@ -4,7 +4,6 @@
     "QQQ": "QQQ",
     "SOXX": "SOXX"
   },
-  "state_path": "~/.nullclaw/chipcon-history.json",
   "position_label": "SMH tactical semiconductor satellite",
   "manual_events": [
     "NVDA / AVGO / AMD / MU guidance",
