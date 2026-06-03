@@ -7,6 +7,14 @@ import sys
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
+try:
+    from zoneinfo import ZoneInfo
+    _NY = ZoneInfo("America/New_York")
+    _TPE = ZoneInfo("Asia/Taipei")
+except Exception:  # pragma: no cover - zoneinfo missing
+    _NY = None
+    _TPE = None
+
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
 from delivery import deliver_or_fail
@@ -31,6 +39,37 @@ def cst_now() -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S CST")
 
 
+def _parse_api_ts(raw):
+    """Parse PizzINT's ISO-8601 UTC timestamp (e.g. '2026-06-03T03:23:38.739Z')."""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def format_updated(data: dict) -> str:
+    """Return the data's real timestamp in Taiwan + US-East time.
+
+    Uses the API's own ``timestamp`` (when the snapshot was taken) rather than
+    the moment this script ran — the API has no ``updated_at`` field, so the old
+    ``cst_now()`` fallback always showed the cron fire time, not the data time.
+    US-East line auto-switches EDT/EST via zoneinfo so it tracks daylight-saving
+    without a hardcoded offset. Falls back to the run time only when the API
+    gives no usable timestamp.
+    """
+    dt = _parse_api_ts(data.get("timestamp"))
+    if dt is None:
+        return cst_now()
+    if _TPE is not None and _NY is not None:
+        cst = dt.astimezone(_TPE).strftime("%Y-%m-%d %H:%M CST")
+        et = dt.astimezone(_NY)
+        return f"{cst}（美東 {et.strftime('%m-%d %H:%M')} {et.tzname()}）"
+    cst = dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M CST")
+    return cst
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch PizzINT DOUGHCON data")
     parser.add_argument(
@@ -42,7 +81,33 @@ def main():
     parser.add_argument("--deliver-to", dest="deliver_to", default=None, metavar="CHAT_ID",
                         help="Telegram chat ID to deliver output to directly")
     parser.add_argument("--account", default="main", help="Telegram bot account name")
+    parser.add_argument(
+        "--et-hour", dest="et_hour", type=int, default=None, metavar="H",
+        help="Only run when the current US-Eastern hour equals H (0-23). "
+             "Lets a UTC cron auto-track DST: schedule 00:00 and 01:00 UTC and "
+             "set --et-hour 20 so exactly one firing passes (summer EDT vs winter EST). "
+             "Omit to run unconditionally.",
+    )
     args = parser.parse_args()
+
+    # DST gate: a fixed-offset cron can't follow US-Eastern across DST, so we run
+    # on both candidate UTC hours and let the script keep only the one that lands
+    # on the target Eastern hour. Skipping is a no-op success (exit 0).
+    if args.et_hour is not None:
+        if _NY is None:
+            print("[WARN: --et-hour requires zoneinfo; running unconditionally]",
+                  file=sys.stderr)
+        else:
+            now_et = datetime.now(_NY)
+            if now_et.hour != args.et_hour:
+                print(f"[skip: US-Eastern hour {now_et.hour:02d} != target "
+                      f"{args.et_hour:02d} ({now_et.tzname()})]", file=sys.stderr)
+                # A deliberate DST-gate skip is a successful no-op. Emit the
+                # skill_contract markers so the scheduler records 'ok' instead
+                # of flagging empty stdout as content_invalid and burning a retry.
+                emit_skill_status("ok")
+                emit_trace()
+                sys.exit(0)
 
     try:
         data = fetch_doughcon()
@@ -72,7 +137,7 @@ def main():
         index = -1  # no data available
     else:
         index = raw_index
-    updated = data.get("updated_at", "") or cst_now()
+    updated = format_updated(data)
 
     if args.mode == "deliver":
         output = f"🍕 DOUGHCON 情報\n目前等級：DOUGHCON {level}\n指數：{index}\n更新：{updated}"

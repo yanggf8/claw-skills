@@ -186,7 +186,7 @@ Prior design context lives in `docs/specs/` (e.g. `2026-04-15-oilcon-skill-desig
 | `weather` | `--location NAME` (repeatable) | CWA (Taiwan), HKO (HK) |
 | `traffic` | `--from`, `--to`, `--via` | TomTom Routing API |
 | `commute` | wraps traffic | TomTom |
-| `doughcon` | `--mode deliver\|record` | PizzINT API |
+| `doughcon` | `--mode deliver\|record`, `--et-hour H` (DST gate) | PizzINT API |
 | `oilcon` | `--mode deliver\|record` | Yahoo Finance, Turso |
 | `agent-reach` | agent-only, see SKILL.md | 13+ platforms |
 | `mindfulness-spirit` | `write`, `fix-signature DEVTO_ID`, `--dry-run` | Google News RSS, dev.to, Turso (via `persona-core` CLI) |
