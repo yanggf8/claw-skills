@@ -41,16 +41,15 @@ python3 ~/.nullclaw/skills/liko-finance-weekly/scripts/run.py
    `docs/superpowers/specs/2026-04-29-liko-finance-weekly-design/sources.md`
 5. Ask the nullclaw agent to draft exactly one issue body in liko's voice.
 6. `persona-core streams issues validate-body @<draft>`
-7. Derive a concise stance from the first substantive block under
-   `本週訊號`; fall back to a conservative stance if the body is empty or
-   lacks that section.
-8. If valid, write back with `streams issues update-body --stance <stance>`.
+7. The drafting context already includes the default style prompt block
+   (`persona-core style show default --as-prompt-block`).
+8. If valid, write back with `streams issues update-body`.
 9. Publish with `streams issues publish <id> --target both`.
 
 ## Safety
 
 - `--dry-run` drafts and validates only; it does not write the issue body
-  and does not publish. It prints the derived stance for inspection.
+  and does not publish.
 - The publish step is entirely handled by `persona-core`, which loads the
   dev.to API key and Telegram bot token internally.
 - Failed-run body snapshots under `liko-finance-weekly/failed/` are local
