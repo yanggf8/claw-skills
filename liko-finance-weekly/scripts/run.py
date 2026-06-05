@@ -78,14 +78,11 @@ def load_context(issue_id: str, target_date: str) -> str:
         )
     except Exception as exc:
         history = f"(history unavailable: {exc})"
-    try:
-        style_block = sr.run_cmd(
-            ["persona-core", "style", "show", "default", "--as-prompt-block"],
-            timeout=60,
-            cwd=REPO,
-        )
-    except Exception as exc:
-        style_block = f"(style unavailable: {exc})"
+    style_block = sr.run_cmd(
+        ["persona-core", "style", "show", "default", "--as-prompt-block"],
+        timeout=60,
+        cwd=REPO,
+    )
     source_policy = SOURCE_DOC.read_text(encoding="utf-8")
     return "\n\n".join(
         [

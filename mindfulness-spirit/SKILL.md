@@ -11,8 +11,8 @@ requires_env: ["PERSONA_REGISTRY_DB_URL", "PERSONA_REGISTRY_DB_TOKEN"]
 # mindfulness-spirit
 
 「身心靈 × AI」系列文章 skill。這裡只保留素材選擇與 prompt 模板；persona、
-history、editorial plan、LLM draft/checklist、citation restore、stance/key-link
-derivation、dev.to / Telegram delivery、failure dump、plan mark-published 全部由
+history、editorial plan、LLM draft/checklist、citation restore、key-link
+persistence、dev.to / Telegram delivery、failure dump、plan mark-published 全部由
 `persona-core` CLI 負責。
 
 ## Commands
@@ -56,7 +56,7 @@ column row.
 5. Run writer → checklist with `nullclaw agent --isolated` inside the skill.
 6. `columns installments prepare mindfulness-spirit --print-id`.
 7. `columns installments update-body <id>` stores the body, restores
-   `[來源 #N]`, derives stance/key_links, and records validation status.
+   `[來源 #N]`, and records validation status.
 8. `columns installments publish <id>` handles title/signature/secrets,
    delivery, failure dump/alert, history, and plan mark-published.
 
