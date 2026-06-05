@@ -15,6 +15,10 @@ history、editorial plan、LLM draft/checklist、citation restore、key-link
 persistence、dev.to / Telegram delivery、failure dump、plan mark-published 全部由
 `persona-core` CLI 負責。
 
+## Script
+
+`~/a/claw-skills/mindfulness-spirit/scripts/run.py`
+
 ## Commands
 
 ```bash
