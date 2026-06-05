@@ -77,3 +77,14 @@ partial-success state worth reviewing.
 Prompt text lives in `prompts/writer.md.tmpl` and `prompts/checklist.md.tmpl`.
 Do not reintroduce `claw-skills/lib/persona_*.py` or `heartbeat.py` imports;
 `ainews` still owns those Python helpers until its absorption step.
+
+## Schedule
+
+Weekly Friday 07:00 Asia/Taipei cron entry for the `inner-algorithm` series:
+
+- expression `0 7 * * 5`, timezone `+08:00`
+- job id `skill-a1c95bb5-d369-4c86-a6d0-8a03a2e92b19`
+- timeout 1800s, `verify=skill_contract`, `repair=retry_once`
+
+The matching seed row is in `~/.nullclaw/cron-seed.json`; do not add a second
+concurrent cadence without retiring this one.
