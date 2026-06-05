@@ -33,9 +33,9 @@ def load_config():
 
 def load_skill_settings():
     raw = load_config().get("skills", {}).get("mindfulness_spirit", {})
-    raw = raw if isinstance(raw, dict) else {}
+    raw = raw if type(raw) is dict else {}
     slug = raw.get("persona_slug")
-    if not isinstance(slug, str) or not slug.strip():
+    if type(slug) is not str or not slug.strip():
         raise ValueError("missing skills.mindfulness_spirit.persona_slug in ~/.nullclaw/config.json")
     return {"persona_slug": slug.strip(), "publish": raw.get("publish", True), "main_image_url": raw.get("main_image_url")}
 
@@ -115,6 +115,7 @@ def render_writer_prompt(settings, items):
     slug = settings["persona_slug"]
     return (PROMPTS_DIR / "writer.md.tmpl").read_text(encoding="utf-8").format(
         persona_voice_block=pc("personas", "show", slug, "--as-prompt-block"),
+        style_block=pc("style", "show", "default", "--as-prompt-block"),
         signature_block=pc("personas", "show", slug, "--as-signature"),
         history_block=pc("history", "list", "--persona", slug, "--as-prompt-block", "--limit", str(HISTORY_LIMIT)),
         topic_block=pc("plans", "next", SKILL_NAME, SERIES_SLUG, "--as-prompt-block"),
@@ -182,7 +183,7 @@ def cmd_write(args):
         "columns", "installments", "update-body", installment_id,
         "--body", "@" + str(paths["body"]),
         "--material", "@" + str(paths["material"]),
-        "--restore-source-links", "--derive-stance", "--derive-key-links",
+        "--restore-source-links", "--derive-key-links",
         "--validation-ok",
         "--validation-summary", validation_summary,
         echo=True,
