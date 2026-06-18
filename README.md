@@ -65,17 +65,21 @@ Config schema auto-detected:
 
 | Skill | Description |
 |-------|-------------|
-| agent-reach | Check if the agent (nullclaw or openclaw) is reachable |
+| agent-reach | Give the agent internet eyes — search/read 17 platforms (Twitter/X, Reddit, YouTube, GitHub, Bilibili, etc.) and any web page |
 | cct | Fetch CCT 4-moment trading intelligence and deliver to Telegram |
-| cct2 | Dual-LLM market sentiment analysis for configured tickers |
+| cct2 | Dual-LLM market sentiment analysis for configured tickers — pre-market and EOD reports |
+| chipcon | Monitor SMH semiconductor momentum via trend/relative-strength signals; signal-only exit-review report |
 | commute | Fetch route travel time via traffic sub-skill |
 | doughcon | Fetch PizzINT DOUGHCON level and deliver or record |
-| lib | Shared Python helpers (telegram delivery) — not a skill itself |
+| liko-finance-weekly | Draft, validate, and publish the weekly liko-finance cross-border wealth signal stream |
+| mindfulness-spirit | 身心靈 × AI series — auto-draft, check, and publish columns via persona-core |
 | news | Fetch and summarize Taiwan news from Google RSS feeds |
-| oilcon | Fetch oil futures levels and deliver or record a daily snapshot |
+| oilcon | Fetch oil futures levels and deliver or record a daily regime snapshot |
 | stock | Fetch TWSE/HSI market indices and individual stock quotes |
 | traffic | Fetch TomTom route travel time between waypoints |
 | weather | Fetch weather forecast for Taiwan (CWA) and Hong Kong (HKO) |
+
+`lib/` is a shared Python package (delivery, telegram, trace_marker, oil helpers), not a skill — OpenClaw's loader ignores it since it has no `SKILL.md`.
 
 ## Gotchas
 

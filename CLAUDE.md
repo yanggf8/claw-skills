@@ -49,11 +49,14 @@ Every skill directory contains:
 - `SKILL.md` — frontmatter (`name`, `description`, `always: true`) + usage docs. Both agents read this.
 - `scripts/run.py` — the executable. Always exits 0 (prints `[WARN: ...]` on failure instead of raising).
 
-The `lib/` directory is a shared Python package, not a skill. All scripts import it via:
+The `lib/` directory is a shared Python package, not a skill. All scripts add it to
+`sys.path` via the same relative pattern, then import what they need. The canonical
+delivery import is `deliver_or_fail` from `delivery` (`telegram` is also importable
+for direct use):
 ```python
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
-import telegram
+from delivery import deliver_or_fail   # canonical delivery path
 ```
 
 ## Config / env resolution
@@ -135,7 +138,7 @@ Note: existing `## Script` paths reference `~/.nullclaw/skills/...` — that's d
 ## Adding a new skill
 
 1. Create `<skill>/SKILL.md` and `<skill>/scripts/run.py`
-2. Script must: accept `--deliver-to` and `--account`, import `telegram` from lib, exit 0 on API errors
+2. Script must: accept `--deliver-to` and `--account`; deliver via `deliver_or_fail` from `lib/delivery.py` (echoes body to stdout when `--deliver-to` is omitted, and on send failure echoes the body + `exit(1)` so cron capture keeps the data); exit 0 on upstream API/fetch errors (print `[WARN: ...]` instead of raising)
 3. For nullclaw: `ln -s ~/claw/claw-skills/<skill> ~/.nullclaw/skills/<skill>`
 4. For openclaw: already discovered if the repo is at `<workspace>/skills/`
 5. For nanoclaw: `ln -s ~/claw/claw-skills/<skill> ~/claw/nanoclaw/container/skills/<skill>`
@@ -173,7 +176,7 @@ python3 lib/test_oil_store.py
 
 ## Design notes
 
-Prior design context lives in `docs/specs/` (e.g. `2026-04-15-oilcon-skill-design.md`, `2026-04-16-turso-consolidation.md`). Check there before redesigning a skill from scratch.
+Prior design context lives in `docs/specs/` (`2026-04-15-oilcon-skill-design.md`, `2026-04-16-turso-consolidation.md`, `2026-04-18-persona-webapp-reconciliation.md`, `oil-trend-rule.md`). Check there before redesigning a skill from scratch.
 
 ## Skills reference
 
@@ -183,6 +186,7 @@ Prior design context lives in `docs/specs/` (e.g. `2026-04-15-oilcon-skill-desig
 | `cct` | `--mode <pre-market\|eod\|...>` | CCT internal |
 | `cct2` | `--mode pre-market\|eod` | Yahoo Finance + dual LLM |
 | `stock` | `--market tw\|hk\|all`, `--symbol CODE` | TWSE, Yahoo Finance |
+| `chipcon` | `--mode record`, `--deliver-to` | Stooq via shared `price` CLI → Turso `price-registry` |
 | `weather` | `--location NAME` (repeatable) | CWA (Taiwan), HKO (HK) |
 | `traffic` | `--from`, `--to`, `--via` | TomTom Routing API |
 | `commute` | wraps traffic | TomTom |
@@ -211,7 +215,11 @@ persona-core plans list
 | `skill_runner` | Shared agent-first skill runtime helpers (subprocess wrappers, persona-core CLI shortcut, nullclaw agent invocation, cron skill-contract markers) |
 | `cover_image` | CogView-4 image generation + dev.to cover update CLI |
 | `telegram` | Telegram message delivery (auto-detects nullclaw/openclaw config) |
+| `delivery` | **Canonical** delivery helper: `deliver_or_fail(chat_id, body, ...)`. Replaces ad-hoc `if args.deliver_to: telegram.send(...)`. On send failure, echoes body to stdout (so cron capture keeps the data) and `exit(1)`; on empty `chat_id`, prints body to stdout. New skills should use this, not `telegram.send` directly. |
+| `trace_marker` | Scheduler verification markers: `emit_skill_status()`, `emit_trace()`, `emit_fallback()`. Used by skills with `--verify skill_contract`/`content_has_trace` cron jobs. No-op when `NULLCLAW_JOB_ID` is unset (so manual runs stay clean). Call only *after* delivery confirmation. |
 | `heartbeat` | Wall-clock heartbeat for long-running subprocesses |
+| `oil_fetch` | Yahoo Finance chart fetch/parse helpers (oilcon) |
+| `oil_store` | Turso/libsql time-series storage for `oil_daily` (oilcon) |
 
 `persona_registry` and `persona_history` were retired alongside
 `persona-skill`. All persona/history access goes through `persona-core`
