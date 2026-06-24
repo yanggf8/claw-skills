@@ -16,6 +16,7 @@ SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
 from delivery import deliver_or_fail
 from trace_marker import emit_skill_status, emit_trace
+import news_quality
 
 TOPICS_FILE = os.path.expanduser("~/.nullclaw/news-topics.json")
 TRACE_FILE = os.path.expanduser("~/.nullclaw/skill-traces.jsonl")
@@ -34,7 +35,16 @@ LLM_CUSTOM_TIMEOUT_SECS = 180
 LLM_SECTION_TIMEOUT_SECS = 90
 LLM_TRANSLATION_TIMEOUT_SECS = 60
 TELEGRAM_RAW_CHUNK_LIMIT = 3800
-AI_SUBSTAGE_CACHE_VARIANT = "default_ai_clustered_v2"
+AI_SUBSTAGE_CACHE_VARIANT = "default_ai_clustered_v3_precheck"
+
+# Content prechecking (lib/news_quality). Tier 1 = deterministic, no network,
+# pre-LLM. Tier 2 = body precheck of LLM-picked items, before link attach.
+# Off-by-env so cron can disable without code edits: NEWS_PRECHECK=0
+PRECHECK_ENABLED = os.environ.get("NEWS_PRECHECK", "1") != "0"
+PRECHECK_DECODE_TIMEOUT = float(os.environ.get("NEWS_PRECHECK_DECODE_TIMEOUT", "5"))
+PRECHECK_FETCH_TIMEOUT = float(os.environ.get("NEWS_PRECHECK_FETCH_TIMEOUT", "5"))
+PRECHECK_TOTAL_DEADLINE = float(os.environ.get("NEWS_PRECHECK_DEADLINE", "25"))
+PRECHECK_MAX_WORKERS = int(os.environ.get("NEWS_PRECHECK_WORKERS", "6"))
 # Substaging: each Level-2 half (or Level-3 quarter) gets a smaller timeout
 # than the original 90s monolithic call — half-size prompts should not need it.
 AI_SUBSTAGE_TIMEOUT_SECS = 60
@@ -125,6 +135,11 @@ class AlertContext:
 def _news_cache_sweep() -> None:
     """Delete cache subdirectories older than NEWS_CACHE_TTL_DAYS. Best-effort."""
     import shutil
+    # Also prune the precheck decode cache (separate dir) so it doesn't grow forever.
+    try:
+        news_quality.sweep_decode_cache(NEWS_CACHE_TTL_DAYS)
+    except Exception:
+        pass
     if not os.path.isdir(NEWS_CACHE_DIR):
         return
     cutoff = time.time() - NEWS_CACHE_TTL_DAYS * 86400
@@ -592,7 +607,11 @@ def _number_items_for_prompt(
         limit = (limits or {}).get(label, len(items))
         lines = []
         for it in items[:limit]:
-            numbered[idx] = {"title": it["title"], "link": it.get("link", "")}
+            numbered[idx] = {
+                "title": it["title"],
+                "link": it.get("link", ""),
+                "source_name": it.get("source_name", ""),
+            }
             lines.append(f"  #{idx} {it['title']}")
             idx += 1
         sections.append(f"[{label}]\n" + "\n".join(lines))
@@ -720,6 +739,111 @@ def _fallback_section_lines(key: str, items: list[dict], limit: int, link_map: d
         else:
             lines.append(f"- {title}")
     return lines
+
+
+# Per-run memo shared across all precheck calls so AI Level-3 re-subdivision
+# (which re-covers the same items) does not re-decode/re-fetch. Keyed by link.
+_PRECHECK_FETCH_CACHE: dict = {}
+
+_MARKER_RE = re.compile(r"^\s*(?:-\s*)?#(\d+)\b(?!,)")
+
+
+def _tier1_filter_items(items: list[dict]) -> list[dict]:
+    """Deterministic, no-network pre-LLM filter: drop deny-listed SOURCES only.
+
+    Promo/listicle judgement is left to the LLM prompt + Tier 2's title-only promo
+    check; we do not gate titles here (and never match promo against body text —
+    bare substrings like 限時 over-match real news such as 限時降息). Defensive."""
+    if not PRECHECK_ENABLED or not items:
+        return items
+    try:
+        deny = news_quality.active_config()["deny"]
+        kept = [it for it in items if str(it.get("source_name") or "") not in deny]
+        log_trace("quality_tier1", before=len(items), after=len(kept),
+                  dropped=len(items) - len(kept))
+        return kept
+    except Exception as e:
+        print(f"[WARN: tier1 filter failed: {e}]", file=sys.stderr)
+        return items
+
+
+def _precheck_apply(
+    summary: str,
+    numbered: dict[int, dict],
+    section: str,
+) -> str:
+    """Tier 2: body-precheck the LLM-picked items BEFORE link attach (while #N
+    identity still exists). For each selected #N:
+      - drop       → remove the bullet line (deny source/domain, or promo/PR/listicle).
+      - title_only → KEEP the LLM's bullet verbatim (paywalled but reputable; the
+                     LLM's Chinese headline-summary stays, we just don't drop it).
+                     Counted separately for the trace.
+      - keep       → leave the bullet as the LLM wrote it.
+
+    The digest is Traditional-Chinese (a downstream language gate enforces it), so
+    we never rewrite a bullet to the raw RSS headline — that would inject English/
+    Japanese past the gate. Result collection is bounded by PRECHECK_TOTAL_DEADLINE;
+    a worker already inside urlopen still runs to its socket timeout
+    (PRECHECK_FETCH_TIMEOUT) since cancel_futures cannot interrupt it — keep that
+    timeout small so the worst-case straggler is the real wall-clock bound.
+    Defensive: on any error returns summary unchanged."""
+    if not PRECHECK_ENABLED or not summary.strip():
+        return summary
+    try:
+        import concurrent.futures
+
+        selected = _extract_leading_marker_ids(summary, numbered)
+        if not selected:
+            return summary
+
+        def _check(num: int) -> tuple[int, dict]:
+            item = numbered.get(num) or {}
+            verdict = news_quality.precheck_action(
+                {"title": item.get("title", ""), "link": item.get("link", ""),
+                 "source_name": item.get("source_name", "")},
+                decode_timeout=PRECHECK_DECODE_TIMEOUT,
+                fetch_timeout=PRECHECK_FETCH_TIMEOUT,
+                fetch_cache=_PRECHECK_FETCH_CACHE,
+            )
+            return num, verdict
+
+        actions: dict[int, str] = {}
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(PRECHECK_MAX_WORKERS, len(selected))
+        )
+        try:
+            futs = {pool.submit(_check, n): n for n in selected}
+            try:
+                for fut in concurrent.futures.as_completed(futs, timeout=PRECHECK_TOTAL_DEADLINE):
+                    num, verdict = fut.result()
+                    actions[num] = verdict.get("action") or "keep"
+            except concurrent.futures.TimeoutError:
+                # Undecided items default to keep (fail-open on timeout).
+                print(f"[WARN: tier2 precheck deadline hit: section={section}]", file=sys.stderr)
+        finally:
+            # Do not wait for stragglers — the deadline must bound wall-clock.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        n_drop = sum(1 for a in actions.values() if a == "drop")
+        n_title = sum(1 for a in actions.values() if a == "title_only")
+        log_trace("quality_tier2", section=section, checked=len(selected),
+                  dropped=n_drop, paywalled_kept=n_title)
+        if not n_drop:
+            # title_only items keep the LLM's already-Chinese bullet verbatim — we
+            # only DROP here (deny/promo). Rewriting to the raw RSS headline would
+            # inject English/Japanese past the Chinese-only language gate.
+            return summary
+
+        out_lines = []
+        for line in summary.splitlines():
+            m = _MARKER_RE.match(line)
+            if m and actions.get(int(m.group(1))) == "drop":
+                continue
+            out_lines.append(line)
+        return "\n".join(out_lines)
+    except Exception as e:
+        print(f"[WARN: tier2 precheck failed: section={section} {e}]", file=sys.stderr)
+        return summary
 
 
 def _attach_numbered_links(summary: str, numbered: dict[int, dict]) -> tuple[str, int]:
@@ -1059,6 +1183,12 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
                             "language_total": language_total,
                         },
                     )
+                    summary = _precheck_apply(summary, numbered, key)
+                    if not _news_bullet_lines(summary):
+                        # Every pick was deny/promo — a filter success, not an LLM
+                        # failure: used_fallback=False so no operator alert fires.
+                        log_trace("quality_all_dropped", section=key)
+                        return ["- 今日無相關新聞"], False
                     translated = _translate_selected_section(
                         key,
                         _extract_leading_marker_ids(summary, numbered),
@@ -1068,6 +1198,10 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
                     if translated is not None:
                         return translated, False
                 else:
+                    summary = _precheck_apply(summary, numbered, key)
+                    if not _news_bullet_lines(summary):
+                        log_trace("quality_all_dropped", section=key)
+                        return ["- 今日無相關新聞"], False
                     with_links, links_attached = _attach_numbered_links(summary, numbered)
                     if links_attached > 0:
                         return with_links.splitlines(), False
@@ -1188,6 +1322,17 @@ def _run_ai_substage(
     marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
     if total_bullets == 0 or marked_bullets != total_bullets:
         return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
+
+    # Tier 2 body precheck, before any cache write or link attach (while #N identity exists).
+    summary = _precheck_apply(summary, numbered, "ai")
+    if not _news_bullet_lines(summary):
+        # Every picked item was low-quality and dropped. This is a SUCCESS of the
+        # filter, not an LLM failure — return ok=True with empty lines so the
+        # Level-2/3 driver does NOT escalate to _AiSubstageExhausted. Do NOT cache
+        # the empty result: a transient mis-drop must not stick for the whole day —
+        # a later same-day run should re-evaluate from a fresh LLM call.
+        log_trace("ai_substage_all_dropped", range=[start, end])
+        return True, [], ""
 
     if not _language_validation_passed(summary):
         translated = _translate_selected_section(
@@ -1412,7 +1557,9 @@ def _topic_feed_url(topic: str) -> str:
 
 
 def _fetch_custom_topics(topics: list[str]) -> dict[str, list[dict]]:
-    """Fetch feeds for custom topic list, keyed by topic name."""
+    """Fetch feeds for custom topic list, keyed by topic name. Returns RAW deduped
+    items — Tier-1 filtering is applied by the caller AFTER the feed-emptiness
+    check, so a deny-list emptying every topic is not misread as a feed outage."""
     all_items: dict[str, list[dict]] = {}
     for topic in topics:
         items = fetch_feed(_topic_feed_url(topic), max_items=10)
@@ -1433,13 +1580,16 @@ def _run_custom_topic(
     Per-topic granularity is the resumability unit: each call covers up to
     LLM_CUSTOM_TOPIC_LIMIT items (~8) and finishes in ~10s on a healthy host,
     well within typical kill windows. A successful call is cached at
-    ~/.nullclaw/.news-cache/<date>/custom-<safe_topic>.txt and reused on the
-    next attempt of the same (date, topic).
+    ~/.nullclaw/.news-cache/<date>/custom-<variant>-<safe_topic>.txt (the variant
+    is embedded so a precheck-logic bump invalidates same-day caches) and reused
+    on the next attempt of the same (date, topic).
     """
-    variant = "custom_topic"
+    variant = "custom_topic_v2_precheck"
     safe_date = date_str.split()[0].replace("/", "-")
     safe_topic = "".join(ch if ch.isalnum() else "_" for ch in topic)[:40]
-    cache_path = os.path.join(NEWS_CACHE_DIR, safe_date, f"custom-{safe_topic}.txt")
+    # Embed the variant in the filename so a bump actually invalidates same-day
+    # caches (otherwise the rename is a no-op and stale pre-precheck bodies serve).
+    cache_path = os.path.join(NEWS_CACHE_DIR, safe_date, f"custom-{variant}-{safe_topic}.txt")
     try:
         with open(cache_path, encoding="utf-8") as f:
             cached = f.read()
@@ -1491,6 +1641,16 @@ def _run_custom_topic(
     marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
     if total_bullets == 0 or marked_bullets != total_bullets:
         return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
+
+    # Tier 2 body precheck, before cache write / link attach (while #N identity exists).
+    summary = _precheck_apply(summary, numbered, f"custom:{topic}")
+    if not _news_bullet_lines(summary):
+        # All picks were low-quality — a filter SUCCESS, not a failure. Return
+        # ok=True with the placeholder so the caller does NOT re-dump raw RSS items
+        # via _custom_topic_raw_listing. Returns BEFORE the cache write below, so
+        # the empty result is not persisted (no sticky same-day suppression).
+        log_trace("quality_all_dropped", section=f"custom:{topic}")
+        return True, ["- 今日無相關新聞"], ""
 
     with_links, links_attached = _attach_numbered_links(summary, numbered)
     if links_attached == 0:
@@ -1677,7 +1837,11 @@ def main():
                 "general": dedup(general),
             }
 
+        # Decide "feed outage" on the RAW deduped feeds, BEFORE Tier-1 filtering —
+        # a deny-list that empties every section is a filter outcome, not a feed
+        # outage, and must not trigger the all_feeds_empty alert / exit 1.
         has_items = any(items for items in all_items.values())
+        all_items = {k: _tier1_filter_items(v) for k, v in all_items.items()}
         if not has_items:
             # Every RSS feed returned 0 items. There is no news to send.
             # Per the hard rule, alert and exit non-zero.

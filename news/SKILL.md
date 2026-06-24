@@ -131,6 +131,42 @@ nullclaw cron trace <job_id_prefix> --event cluster_dedup
 nullclaw cron trace <job_id_prefix> --event ai_substage
 ```
 
+## Content prechecking
+
+The skill sees only RSS titles, so a strong title on paywalled/thin/promo content used
+to slip through. Two-tier prechecking (`lib/news_quality.py`) handles it with a **three-way
+verdict** per item — `keep`, `drop`, or `title_only`:
+
+- **Tier 1 (every run, no network):** at the dedup site, drops deny-listed **sources** only.
+  Promo/listicle judgement is left to the LLM + Tier 2 (the body-tuned patterns over-match
+  short legitimate titles like `限時降息`, so they must not hard-gate titles).
+- **Tier 2 (only the LLM-picked items, before link attach):** decodes each picked Google
+  News link to its real publisher URL (headless `batchexecute`, no browser), then:
+  - **drop** — deny source/domain (e.g. `chinatimes.com`) or marketing/PR/listicle body.
+  - **title_only** — paywalled/truncated reputable source (e.g. Nikkei/FT). The item is
+    **kept**; the LLM's already-Chinese bullet stays as-is (we don't drop it, and we don't
+    overwrite it with the raw RSS headline — that would inject English/Japanese past the
+    Traditional-Chinese language gate). Counted separately in the trace.
+  - **keep** — everything else (LLM bullet retained).
+  Runs inside each section function while the `#N` identity still exists, so links stay correct.
+
+**Deterministic** — a paywalled source is always `title_only` whether the body fetch
+succeeds or fails (no network-timing nondeterminism). Decode/fetch failure for an unknown
+source is `keep` (fail-open). An all-paywalled batch renders headlines, never an empty
+section or a false failure.
+
+**Source policy lives in config, not code** — the module ships EMPTY deny/paywall seeds
+(no hardcoded publishers). Policy is read from `~/.nullclaw/news-quality-sources.json`
+`{"trusted":[...],"deny":[...],"deny_domains":[...],"paywall_domains":[...]}`:
+`deny`/`deny_domains` → drop; `paywall_domains` → title_only (keep LLM bullet). Host matching
+is suffix-aware (`ft.com` matches `www.ft.com`, not `craft.com`). The repo's working policy
+(e.g. `chinatimes.com` deny; Nikkei/FT paywall) lives in that file, so it is operator-owned
+and removable without editing source.
+Env knobs: `NEWS_PRECHECK=0` disables both tiers; `NEWS_PRECHECK_DECODE_TIMEOUT`,
+`NEWS_PRECHECK_FETCH_TIMEOUT`, `NEWS_PRECHECK_DEADLINE`, `NEWS_PRECHECK_WORKERS` bound latency
+(the deadline force-cancels stragglers so wall-clock is capped). Trace events
+`quality_tier1` / `quality_tier2` record counts, drops, and title_only conversions.
+
 ## Notes
 
 - Delivery: Telegram `7972814626`
