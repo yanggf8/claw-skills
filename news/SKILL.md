@@ -80,6 +80,7 @@ Summarize in Traditional Chinese. Output is validated to ensure ≥80% CJK chara
 
 - **預設新聞模式（`summarize_llm`）**：AI 區塊先做確定性的事件群集去重，再切成兩半（Level 2）。每半是一個 LLM 呼叫（約 14-30 秒）。若某半失敗（逾時、非 0 exit、空 stdout），只把失敗的半段再切成兩個 quarter（Level 3）。若 quarter 仍失敗，整次執行會告警並中止（不再遞迴）。科技與一般新聞維持單次 LLM 呼叫。
 - **自訂主題模式（`summarize_llm_custom`，由 `--account-topics` 使用）**：每個主題各跑一次 LLM，依序執行。單一主題失敗時，該主題退回原始標題列表並告警；其他主題繼續送出。
+- **逾時自動重試（一次）**：任何 LLM 呼叫若是 *逾時*（rc=124，供應商在 stream 開始後卡住、無輸出）會自動重試一次，再退回降級。只重試逾時——驗證失敗、空 stdout、其他非 0 exit 屬確定性失敗，不重試。重試使用較短的 `LLM_RETRY_TIMEOUT_SECS`（預設 30 秒，可用 `NEWS_LLM_RETRY_TIMEOUT` 覆寫），且當 cron 剩餘 wall-clock（`NULLCLAW_SKILL_TIMEOUT` / `NULLCLAW_SKILL_STARTED`）不足以容納重試時直接跳過，避免拖過 cron kill window。trace：`llm_agent_retry`、`llm_agent_retry_skipped_budget`。
 
 AI 預設新聞去重：
 
@@ -89,7 +90,7 @@ CJK bigram 通用詞過濾：常見的中文填充詞（`公司`、`發布`、`�
 
 這個去重在 LLM 分段前完成，所以同一事件不會分散到兩個 half。執行時會寫入 `cluster_dedup` trace，欄位包含 `before`、`after`、`clusters_total`、`clusters_kept`。
 
-快取：`~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`。AI 預設新聞分段使用 `default_ai_clustered_v2` variant，避免重用舊版未群集分段快取。鍵為 `(date, variant, range)`。腳本啟動時會清除 7 天以前的子目錄；需要時可手動刪除。
+快取：`~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`。AI 預設新聞分段使用 `AI_SUBSTAGE_CACHE_VARIANT`（目前為 `default_ai_clustered_v3_precheck`）variant，避免重用舊版（未群集 / 未做 precheck）分段快取——precheck 邏輯變更時 bump variant 即可讓當日舊快取失效。鍵為 `(date, variant, range)`。腳本啟動時會清除 7 天以前的子目錄；需要時可手動刪除。
 
 送出長度處理：
 
@@ -109,6 +110,11 @@ attempted on every failure:
    outages.
 2. Best-effort Telegram message to the same chat the news would have gone
    to (`fail_on_delivery_error=False`, never raises).
+
+每則告警的 `detail` 會附上同一 `(reason, account)` 在過去 30 天的累計次數
+（`_recent_failure_count`，例如「此告警近30天已出現 5 次」），讓慢性問題
+（例如某模型反覆 thinking-stall 逾時）在告警本身就能被看見，而不是看起來像
+一次性事件。資料來源就是上面的 `news-failures.log`，不需額外的 metrics 系統。
 
 Coverage matrix (every path that ends without the full intended news):
 
