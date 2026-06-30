@@ -303,8 +303,12 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
                 new_path = run._news_cache_path("2026/05/15 (Fri)", run.AI_SUBSTAGE_CACHE_VARIANT, 0, 2)
 
         self.assertNotEqual(old_path, new_path)
+        # The legacy substage name is frozen on purpose: a cache built under it
+        # must never be reused after a variant bump, so this literal stays hardcoded.
         self.assertIn("default_ai_substage-000-002.txt", old_path)
-        self.assertIn("default_ai_clustered_v2-000-002.txt", new_path)
+        # The new name tracks AI_SUBSTAGE_CACHE_VARIANT — derive it from the constant
+        # so a future variant bump (e.g. v3_precheck -> v4) does not re-stale this test.
+        self.assertIn(f"{run.AI_SUBSTAGE_CACHE_VARIANT}-000-002.txt", new_path)
 
 
 def _item(title, source="Reuters", link="https://example.com/news"):
