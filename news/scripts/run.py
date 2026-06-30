@@ -48,6 +48,12 @@ PRECHECK_MAX_WORKERS = int(os.environ.get("NEWS_PRECHECK_WORKERS", "6"))
 # Substaging: each Level-2 half (or Level-3 quarter) gets a smaller timeout
 # than the original 90s monolithic call — half-size prompts should not need it.
 AI_SUBSTAGE_TIMEOUT_SECS = 60
+# On a synthetic-timeout (rc=124) the provider stalled after stream-start. A
+# single retry recovers a transient stall (the next attempt almost always lands
+# in seconds on a healthy provider). The retry uses a SHORTER budget so a wedged
+# provider cannot push the whole multi-topic run past the cron kill window: a
+# stalled call already cost AI_SUBSTAGE_TIMEOUT_SECS, so the retry caps the extra.
+LLM_RETRY_TIMEOUT_SECS = int(os.environ.get("NEWS_LLM_RETRY_TIMEOUT", "30"))
 DEFAULT_SECTION_SPECS = {
     "ai": {
         "header": "**🤖 AI 人工智慧**",
@@ -187,6 +193,42 @@ def _news_cache_put(date_str: str, variant: str, start: int, end: int, body: str
         log_trace("news_cache_write_error", variant=variant, error=str(e))
 
 
+def _recent_failure_count(reason: str, account: str, days: int) -> int:
+    """Count prior NEWS_FAILURE_LOG blocks for this (reason, account) in the
+    trailing `days` window. Best-effort: any parse/IO error returns 0.
+
+    Purpose: a single degraded run looks benign, but the same alert firing N
+    times over weeks is a chronic problem (e.g. an LLM that thinking-stalls)
+    that nobody notices unless the count is surfaced. This count is folded into
+    the alert detail so the trend rides along with the alert itself — no metrics
+    system, just the durable text log we already write.
+    """
+    cutoff = datetime.now(timezone(timedelta(hours=8))) - timedelta(days=days)
+    count = 0
+    for path in (NEWS_FAILURE_LOG, NEWS_FAILURE_LOG + ".1"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+        # Blocks are "=== <ts> CST ===\n...reason: <r>\naccount: <a>...".
+        for block in text.split("=== "):
+            head, _, body = block.partition(" CST ===")
+            if not body:
+                continue
+            try:
+                when = datetime.strptime(head.strip(), "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone(timedelta(hours=8))
+                )
+            except ValueError:
+                continue
+            if when < cutoff:
+                continue
+            if f"reason: {reason}\n" in body and f"account: {account}\n" in body:
+                count += 1
+    return count
+
+
 def _alert_failure(ctx: "AlertContext", reason: str, detail: str) -> None:
     """Notify the operator that the news skill could not deliver news.
 
@@ -197,6 +239,12 @@ def _alert_failure(ctx: "AlertContext", reason: str, detail: str) -> None:
     Order matters: file log first so the failure record survives even if
     Telegram itself is the failure mode.
     """
+    # Count prior occurrences BEFORE writing this block, so the trend reads as
+    # "this happened N times in the last 30d" (excluding the current alert).
+    prior_30d = _recent_failure_count(reason, ctx.account, days=30)
+    if prior_30d:
+        detail = f"{detail} [此告警近30天已出現 {prior_30d} 次]"
+
     ts = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
     block = (
         f"=== {ts} CST ===\n"
@@ -670,7 +718,70 @@ def _llm_source_item_counts(all_items: dict[str, list[dict]]) -> dict[str, int]:
     return {label: len(items) for label, items in all_items.items()}
 
 
+def _llm_retry_budget_secs() -> float | None:
+    """Remaining wall-clock budget for an LLM retry, from the cron env vars.
+
+    Mirrors lib/delivery._resolve_delivery_deadline. The scheduler sets:
+      NULLCLAW_SKILL_TIMEOUT  — the skill's overall timeout, seconds
+      NULLCLAW_SKILL_STARTED  — monotonic time the skill started, seconds (optional)
+
+    Returns None when no budget is configured (manual runs / no cron env) — the
+    caller then treats the retry as always permitted. Reserves 2s headroom so the
+    retry cannot itself overrun the skill's hard kill.
+    """
+    raw_timeout = os.environ.get("NULLCLAW_SKILL_TIMEOUT")
+    if not raw_timeout:
+        return None
+    try:
+        timeout = float(raw_timeout)
+    except ValueError:
+        return None
+    if timeout <= 0:
+        return None
+    raw_started = os.environ.get("NULLCLAW_SKILL_STARTED")
+    if raw_started:
+        try:
+            started = float(raw_started)
+            elapsed = max(0.0, time.monotonic() - started)
+            return max(0.0, timeout - elapsed - 2.0)
+        except ValueError:
+            pass
+    return max(0.0, timeout - 2.0)
+
+
 def _run_nullclaw_agent(prompt: str, timeout_secs: int, variant: str, all_items: dict[str, list[dict]], numbered: dict[int, dict]):
+    """Run one agent call; on a synthetic timeout (rc=124) retry ONCE with a
+    shorter budget. Only rc=124 is retried — validation failures, empty stdout,
+    and other nonzero exits are deterministic and not worth a re-run. The retry
+    is skipped when the remaining cron wall-clock budget is too small to fit it,
+    so a wedged provider cannot push the whole multi-topic run past its kill window.
+    """
+    result = _run_nullclaw_agent_once(prompt, timeout_secs, variant, all_items, numbered)
+    if result.returncode != 124:
+        return result
+
+    retry_timeout = min(LLM_RETRY_TIMEOUT_SECS, timeout_secs)
+    budget = _llm_retry_budget_secs()
+    if budget is not None and budget < retry_timeout:
+        log_trace(
+            "llm_agent_retry_skipped_budget",
+            variant=variant,
+            budget_secs=round(budget, 1),
+            retry_timeout=retry_timeout,
+        )
+        return result
+
+    log_trace(
+        "llm_agent_retry",
+        variant=variant,
+        attempt=2,
+        first_timeout=timeout_secs,
+        retry_timeout=retry_timeout,
+    )
+    return _run_nullclaw_agent_once(prompt, retry_timeout, variant, all_items, numbered)
+
+
+def _run_nullclaw_agent_once(prompt: str, timeout_secs: int, variant: str, all_items: dict[str, list[dict]], numbered: dict[int, dict]):
     import subprocess
 
     argv = [os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw"), "agent", "--isolated", "-m", prompt]

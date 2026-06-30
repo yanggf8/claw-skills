@@ -453,5 +453,118 @@ class ForbiddenEnglishAdverbTests(unittest.TestCase):
         self.assertFalse(run._language_validation_passed(summary))
 
 
+class LLMRetryOnTimeoutTests(unittest.TestCase):
+    """Change 1: _run_nullclaw_agent retries ONCE on rc=124, with a budget guard."""
+
+    def _cp(self, rc, stdout=""):
+        return subprocess.CompletedProcess(["nullclaw"], rc, stdout=stdout, stderr="")
+
+    def test_timeout_then_success_retries_and_returns_ok(self):
+        calls = []
+
+        def fake_once(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append(timeout_secs)
+            return self._cp(124) if len(calls) == 1 else self._cp(0, stdout="- #1 ok")
+
+        with patch.object(run, "_run_nullclaw_agent_once", fake_once), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            # ensure no cron budget set so retry is always permitted
+            for var in ("NULLCLAW_SKILL_TIMEOUT", "NULLCLAW_SKILL_STARTED"):
+                run.os.environ.pop(var, None)
+            res = run._run_nullclaw_agent("p", 60, "v", {}, {})
+
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(len(calls), 2, "should attempt exactly twice")
+        self.assertEqual(calls[0], 60, "first attempt uses full timeout")
+        self.assertEqual(calls[1], run.LLM_RETRY_TIMEOUT_SECS, "retry uses shorter timeout")
+
+    def test_nonzero_nontimeout_is_not_retried(self):
+        calls = []
+
+        def fake_once(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append(timeout_secs)
+            return self._cp(1)  # generic failure, deterministic — no retry
+
+        with patch.object(run, "_run_nullclaw_agent_once", fake_once), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            res = run._run_nullclaw_agent("p", 60, "v", {}, {})
+
+        self.assertEqual(res.returncode, 1)
+        self.assertEqual(len(calls), 1, "non-124 exit must not retry")
+
+    def test_success_first_try_does_not_retry(self):
+        calls = []
+
+        def fake_once(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append(timeout_secs)
+            return self._cp(0, stdout="- #1 ok")
+
+        with patch.object(run, "_run_nullclaw_agent_once", fake_once), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            res = run._run_nullclaw_agent("p", 60, "v", {}, {})
+
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(len(calls), 1)
+
+    def test_retry_skipped_when_budget_too_small(self):
+        calls = []
+
+        def fake_once(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append(timeout_secs)
+            return self._cp(124)
+
+        traces = []
+        with patch.object(run, "_run_nullclaw_agent_once", fake_once), \
+             patch.object(run, "log_trace", lambda ev, **k: traces.append(ev)):
+            # only 5s of wall-clock left, retry wants 30s -> skip
+            run.os.environ["NULLCLAW_SKILL_TIMEOUT"] = "5"
+            run.os.environ.pop("NULLCLAW_SKILL_STARTED", None)
+            try:
+                res = run._run_nullclaw_agent("p", 60, "v", {}, {})
+            finally:
+                run.os.environ.pop("NULLCLAW_SKILL_TIMEOUT", None)
+
+        self.assertEqual(res.returncode, 124)
+        self.assertEqual(len(calls), 1, "retry must be skipped under tight budget")
+        self.assertIn("llm_agent_retry_skipped_budget", traces)
+
+
+class RecentFailureCountTests(unittest.TestCase):
+    """Change 2: _recent_failure_count surfaces chronic-alert trends."""
+
+    def _write_log(self, blocks):
+        f = tempfile.NamedTemporaryFile("w", suffix=".log", delete=False, encoding="utf-8")
+        f.write("".join(blocks))
+        f.close()
+        return f.name
+
+    def _block(self, ts, reason, account):
+        return (
+            f"=== {ts} CST ===\n"
+            f"job_id: x\ndeliver_to: y\naccount: {account}\n"
+            f"reason: {reason}\ndetail: whatever\n\n"
+        )
+
+    def test_counts_matching_reason_and_account_in_window(self):
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone(timedelta(hours=8)))
+        recent = (now - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (now - timedelta(days=40)).strftime("%Y-%m-%d %H:%M:%S")
+        log = self._write_log([
+            self._block(recent, "custom_topics_fell_back", "nunu"),
+            self._block(recent, "custom_topics_fell_back", "nunu"),
+            self._block(old, "custom_topics_fell_back", "nunu"),          # outside 30d
+            self._block(recent, "custom_topics_fell_back", "main"),        # other account
+            self._block(recent, "telegram_delivery_failed", "nunu"),       # other reason
+        ])
+        with patch.object(run, "NEWS_FAILURE_LOG", log):
+            n = run._recent_failure_count("custom_topics_fell_back", "nunu", days=30)
+        self.assertEqual(n, 2)
+
+    def test_missing_log_returns_zero(self):
+        with patch.object(run, "NEWS_FAILURE_LOG", "/nonexistent/path.log"):
+            self.assertEqual(run._recent_failure_count("r", "a", days=30), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
