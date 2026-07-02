@@ -167,7 +167,32 @@ section or a false failure.
 `deny`/`deny_domains` → drop; `paywall_domains` → title_only (keep LLM bullet). Host matching
 is suffix-aware (`ft.com` matches `www.ft.com`, not `craft.com`). The repo's working policy
 (e.g. `chinatimes.com` deny; Nikkei/FT paywall) lives in that file, so it is operator-owned
-and removable without editing source.
+and removable without editing source. Because config is union-only (it cannot *remove* a code
+seed), keeping seeds empty is what makes any entry removable.
+
+**Starter `paywall_domains`** (add to the config file per host — NOT seeded in code):
+```json
+{"paywall_domains": ["nytimes.com","cn.nytimes.com","wsj.com","cn.wsj.com","ft.com",
+  "ftchinese.com","bloomberg.com","economist.com","nikkei.com","asia.nikkei.com",
+  "barrons.com","washingtonpost.com","newyorker.com","wired.com"]}
+```
+
+**Paywall free-replacement (double bullet)** — when a `title_only` (paywalled) item
+survives selection (i.e. it was the only coverage of its story), the skill searches Google
+News RSS and Bing News RSS (keyless) by the headline keywords for a FREE same-story article
+from a *different* host, dedupes exact-title hits across sources, translates the winner's
+title to Traditional Chinese, and renders a **double bullet**: the free replacement on top,
+then a continuation line carrying the original paywalled headline + a
+`⚠️ 付費牆（原文需訂閱）` note. If no free replacement is found (or the lookup times out /
+errors), it degrades to a single paywalled bullet + the same note — never a hard failure.
+A footer `ℹ️ 本次含 N 則付費牆新聞（原文需訂閱）` counts paywalled *stories* (once each). The
+lookup is bounded and defensive (any exception → no replacement), preserving the exit-0
+contract. Trace: `paywall_replacement_found`, `paywall_replace_deadline`, `paywall_notice`.
+Env knobs: `NEWS_PAYWALL_REPLACE=0` disables the lookup (note-only);
+`NEWS_PAYWALL_REPLACE_DEADLINE` (default 20s), `NEWS_PAYWALL_REPLACE_MAX` (default 4) bound it;
+`NEWS_PAYWALL_REPLACE_SOURCES` (default `google,bing`) selects which RSS indexes to query;
+`NEWS_PAYWALL_REPLACE_BING_MKT` (default `en-US`) sets Bing's market parameter.
+
 Env knobs: `NEWS_PRECHECK=0` disables both tiers; `NEWS_PRECHECK_DECODE_TIMEOUT`,
 `NEWS_PRECHECK_FETCH_TIMEOUT`, `NEWS_PRECHECK_DEADLINE`, `NEWS_PRECHECK_WORKERS` bound latency
 (the deadline force-cancels stragglers so wall-clock is capped). Trace events

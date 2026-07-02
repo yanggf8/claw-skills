@@ -45,6 +45,18 @@ PRECHECK_DECODE_TIMEOUT = float(os.environ.get("NEWS_PRECHECK_DECODE_TIMEOUT", "
 PRECHECK_FETCH_TIMEOUT = float(os.environ.get("NEWS_PRECHECK_FETCH_TIMEOUT", "5"))
 PRECHECK_TOTAL_DEADLINE = float(os.environ.get("NEWS_PRECHECK_DEADLINE", "25"))
 PRECHECK_MAX_WORKERS = int(os.environ.get("NEWS_PRECHECK_WORKERS", "6"))
+# Paywall free-replacement lookup: enabled by default, bounded so it can never
+# push a cron run past its kill window. Set NEWS_PAYWALL_REPLACE=0 to disable
+# (falls back to the single-bullet 付費牆 note).
+PAYWALL_REPLACE_ENABLED = os.environ.get("NEWS_PAYWALL_REPLACE", "1") != "0"
+PAYWALL_REPLACE_DEADLINE = float(os.environ.get("NEWS_PAYWALL_REPLACE_DEADLINE", "20"))
+PAYWALL_REPLACE_MAX = int(os.environ.get("NEWS_PAYWALL_REPLACE_MAX", "4"))
+PAYWALL_REPLACE_SOURCES = tuple(
+    s.strip().lower()
+    for s in os.environ.get("NEWS_PAYWALL_REPLACE_SOURCES", "google,bing").split(",")
+    if s.strip()
+)
+PAYWALL_REPLACE_BING_MKT = os.environ.get("NEWS_PAYWALL_REPLACE_BING_MKT", "en-US")
 # Substaging: each Level-2 half (or Level-3 quarter) gets a smaller timeout
 # than the original 90s monolithic call — half-size prompts should not need it.
 AI_SUBSTAGE_TIMEOUT_SECS = 60
@@ -390,11 +402,11 @@ FEEDS = {
 }
 
 
-def fetch_feed(url: str, max_items: int = 15) -> list[dict]:
+def fetch_feed(url: str, max_items: int = 15, timeout: float = 15.0) -> list[dict]:
     """Fetch RSS feed and return list of {title, link, pub_date, source_name}."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "nullclaw-news/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read()
     except Exception as e:
         print(f"[WARN] fetch failed: {url[:60]}... {e}", file=sys.stderr)
@@ -882,14 +894,19 @@ def _precheck_apply(
     summary: str,
     numbered: dict[int, dict],
     section: str,
-) -> str:
+) -> tuple[str, dict[int, dict]]:
     """Tier 2: body-precheck the LLM-picked items BEFORE link attach (while #N
     identity still exists). For each selected #N:
       - drop       → remove the bullet line (deny source/domain, or promo/PR/listicle).
       - title_only → KEEP the LLM's bullet verbatim (paywalled but reputable; the
                      LLM's Chinese headline-summary stays, we just don't drop it).
-                     Counted separately for the trace.
+                     Recorded in the returned paywall map so the render stage can
+                     add a free-replacement bullet + a 付費牆 note.
       - keep       → leave the bullet as the LLM wrote it.
+
+    Returns ``(summary, paywall)`` where ``paywall`` maps each surviving
+    ``title_only`` marker id to ``{"decoded_url", "reason", "title",
+    "source_name"}``. The map is empty when nothing is paywalled.
 
     The digest is Traditional-Chinese (a downstream language gate enforces it), so
     we never rewrite a bullet to the raw RSS headline — that would inject English/
@@ -897,15 +914,15 @@ def _precheck_apply(
     a worker already inside urlopen still runs to its socket timeout
     (PRECHECK_FETCH_TIMEOUT) since cancel_futures cannot interrupt it — keep that
     timeout small so the worst-case straggler is the real wall-clock bound.
-    Defensive: on any error returns summary unchanged."""
+    Defensive: on any error returns (summary, {}) unchanged."""
     if not PRECHECK_ENABLED or not summary.strip():
-        return summary
+        return summary, {}
     try:
         import concurrent.futures
 
         selected = _extract_leading_marker_ids(summary, numbered)
         if not selected:
-            return summary
+            return summary, {}
 
         def _check(num: int) -> tuple[int, dict]:
             item = numbered.get(num) or {}
@@ -919,6 +936,7 @@ def _precheck_apply(
             return num, verdict
 
         actions: dict[int, str] = {}
+        verdicts: dict[int, dict] = {}
         pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=min(PRECHECK_MAX_WORKERS, len(selected))
         )
@@ -928,6 +946,7 @@ def _precheck_apply(
                 for fut in concurrent.futures.as_completed(futs, timeout=PRECHECK_TOTAL_DEADLINE):
                     num, verdict = fut.result()
                     actions[num] = verdict.get("action") or "keep"
+                    verdicts[num] = verdict
             except concurrent.futures.TimeoutError:
                 # Undecided items default to keep (fail-open on timeout).
                 print(f"[WARN: tier2 precheck deadline hit: section={section}]", file=sys.stderr)
@@ -939,11 +958,26 @@ def _precheck_apply(
         n_title = sum(1 for a in actions.values() if a == "title_only")
         log_trace("quality_tier2", section=section, checked=len(selected),
                   dropped=n_drop, paywalled_kept=n_title)
+
+        # Build the paywall map for every surviving (non-dropped) title_only item.
+        paywall: dict[int, dict] = {}
+        for num, action in actions.items():
+            if action != "title_only":
+                continue
+            item = numbered.get(num) or {}
+            v = verdicts.get(num) or {}
+            paywall[num] = {
+                "decoded_url": v.get("decoded_url"),
+                "reason": v.get("reason"),
+                "title": item.get("title", ""),
+                "source_name": item.get("source_name", ""),
+            }
+
         if not n_drop:
             # title_only items keep the LLM's already-Chinese bullet verbatim — we
             # only DROP here (deny/promo). Rewriting to the raw RSS headline would
             # inject English/Japanese past the Chinese-only language gate.
-            return summary
+            return summary, paywall
 
         out_lines = []
         for line in summary.splitlines():
@@ -951,18 +985,38 @@ def _precheck_apply(
             if m and actions.get(int(m.group(1))) == "drop":
                 continue
             out_lines.append(line)
-        return "\n".join(out_lines)
+        return "\n".join(out_lines), paywall
     except Exception as e:
         print(f"[WARN: tier2 precheck failed: section={section} {e}]", file=sys.stderr)
-        return summary
+        return summary, {}
 
 
-def _attach_numbered_links(summary: str, numbered: dict[int, dict]) -> tuple[str, int]:
+# A paywall pair renders as two adjacent lines: the free-replacement bullet on
+# top, then a continuation line (this prefix, NOT a "- " bullet) carrying the
+# original paywalled headline + a 付費牆 note. The prefix lets the trim/split
+# helpers keep the pair atomic and keeps _news_bullet_lines from counting the
+# continuation as a separate news bullet.
+PAYWALL_CONT_PREFIX = "　↳ "
+PAYWALL_NOTE = "⚠️ 付費牆（原文需訂閱）"
+
+
+def _attach_numbered_links(
+    summary: str,
+    numbered: dict[int, dict],
+    paywall: dict[int, dict] | None = None,
+) -> tuple[str, int]:
     import re
 
+    paywall = paywall or {}
     attached = {"count": 0}
 
     marker_line = re.compile(r"^\s*(?:-\s*)?#(\d+)\b(?!,)\s*")
+
+    def _linked(body: str, link: str) -> str:
+        if link:
+            attached["count"] += 1
+            return f"- {body} [🔗]({link})"
+        return f"- {body}" if body else "-"
 
     def replace_line(line: str) -> str:
         match = marker_line.match(line)
@@ -971,12 +1025,191 @@ def _attach_numbered_links(summary: str, numbered: dict[int, dict]) -> tuple[str
         num = int(match.group(1))
         item = numbered.get(num)
         body = _neutralize_markdown_specials(line[match.end():].lstrip())
-        if item and item["link"]:
-            attached["count"] += 1
-            return f"- {body} [🔗]({item['link']})"
-        return f"- {body}" if body else "-"
+        link = item["link"] if item else ""
+
+        pw = paywall.get(num)
+        if pw:
+            replacement = pw.get("replacement") or {}
+            rep_title = _neutralize_markdown_specials(str(replacement.get("title_zh") or "").strip())
+            rep_link = str(replacement.get("link") or "").strip()
+            if rep_title and rep_link:
+                # Free replacement on top, original paywalled headline continues below.
+                # _linked(body, link) is evaluated exactly once per rendered line so
+                # the attach counter counts each link at most once.
+                orig_line = f"{PAYWALL_CONT_PREFIX}原文：{_linked(body, link)[2:]}  {PAYWALL_NOTE}"
+                return f"{_linked(rep_title, rep_link)}\n{orig_line}"
+            # No replacement found — single bullet + note (degraded form).
+            return f"{_linked(body, link)}  {PAYWALL_NOTE}"
+
+        return _linked(body, link)
 
     return "\n".join(replace_line(line) for line in summary.splitlines()), attached["count"]
+
+
+def _translate_single_title(title: str, date_str: str) -> str | None:
+    """Translate ONE headline to Traditional Chinese, reusing the section
+    translator via a throwaway single-entry numbered dict. Returns the Chinese
+    title (no marker/link) or None on any validation failure. Defensive: the
+    caller treats None as 'no usable replacement'."""
+    try:
+        # A NON-empty placeholder link is required: _translate_selected_section
+        # only reports success when _attach_numbered_links attaches >=1 link
+        # (links_attached>0). We strip the placeholder back out below.
+        placeholder = "https://paywall-rep.invalid/x"
+        temp_num = {1: {"title": title, "link": placeholder, "source_name": ""}}
+        lines = _translate_selected_section("paywall_rep", [1], temp_num, date_str)
+        if not lines:
+            return None
+        # Strip the leading "- " and the placeholder link from the single bullet.
+        body = _strip_links_keep_spacing(lines[0]).lstrip()
+        if body.startswith("-"):
+            body = body[1:].strip()
+        return body or None
+    except Exception:
+        return None
+
+
+def _same_registered_domain(host_a: str, host_b: str) -> bool:
+    """True when two hosts share the same registrable domain (last two labels),
+    so www.nytimes.com / cn.nytimes.com / nytimes.com all match. A deliberately
+    simple heuristic — good enough to reject same-publisher 'free' candidates
+    without pulling in a public-suffix list."""
+    def reg(host: str) -> str:
+        # Drop any :port and userinfo so nytimes.com:443 == nytimes.com.
+        h = str(host or "").lower().strip().rsplit("@", 1)[-1].split(":", 1)[0].strip(".")
+        parts = h.split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else ".".join(parts)
+    a, b = reg(host_a), reg(host_b)
+    return bool(a) and a == b
+
+
+def _resolve_paywall_replacements(paywall: dict[int, dict], date_str: str) -> None:
+    """For each paywalled entry, try to find a FREE same-story article from a
+    different host and translate its title. Mutates each entry in place, adding
+    ``replacement={"title_zh", "link"}`` when one is found. Absent replacement =
+    the render stage degrades to a single bullet + 付費牆 note.
+
+    Bounded by PAYWALL_REPLACE_DEADLINE and PAYWALL_REPLACE_MAX. Wrapped so ANY
+    exception leaves the entry without a replacement — never raises, because an
+    escape would hit main()'s alert-and-re-raise and break the exit-0 contract."""
+    if not paywall or not PAYWALL_REPLACE_ENABLED or not PRECHECK_ENABLED:
+        return
+    from urllib.parse import urlparse
+
+    # Isolated cache: the main precheck cache (_PRECHECK_FETCH_CACHE) is keyed by
+    # link only, but a candidate can share a link with a main-precheck item while
+    # carrying different title/source metadata. A private cache avoids inheriting
+    # a stale verdict, while still deduping repeated candidate links within this
+    # resolver pass.
+    rep_cache: dict = {}
+
+    deadline = None
+    try:
+        deadline = time.monotonic() + PAYWALL_REPLACE_DEADLINE
+    except Exception:
+        deadline = None
+
+    processed = 0
+    for num, entry in paywall.items():
+        if processed >= PAYWALL_REPLACE_MAX:
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            log_trace("paywall_replace_deadline", resolved=processed)
+            break
+        processed += 1
+        try:
+            orig_title = str(entry.get("title") or "")
+            if not orig_title.strip():
+                continue
+            orig_host = ""
+            decoded = entry.get("decoded_url")
+            if decoded:
+                orig_host = urlparse(str(decoded)).netloc.lower()
+
+            query = _title_without_source(orig_title).strip()
+            if not query:
+                continue
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+
+            def _fetch_timeout() -> float | None:
+                if deadline is None:
+                    return 15.0
+                if time.monotonic() >= deadline:
+                    return None
+                return min(15.0, max(0.5, deadline - time.monotonic()))
+
+            candidates: list[dict] = []
+            if "google" in PAYWALL_REPLACE_SOURCES:
+                timeout = _fetch_timeout()
+                if timeout is not None:
+                    candidates.extend(
+                        fetch_feed(_topic_feed_url(query), max_items=8, timeout=timeout)
+                    )
+            if "bing" in PAYWALL_REPLACE_SOURCES:
+                timeout = _fetch_timeout()
+                if timeout is not None:
+                    for item in fetch_feed(
+                        _bing_news_feed_url(query), max_items=8, timeout=timeout
+                    ):
+                        candidates.append(_normalize_replacement_candidate(item))
+            candidates = dedup(candidates)
+            orig_words = _topic_words(orig_title)
+
+            for cand in candidates:
+                # The deadline is checked before EACH network/LLM step (not just
+                # between entries) so one slow entry cannot blow the wall-clock.
+                if deadline is not None and time.monotonic() >= deadline:
+                    log_trace("paywall_replace_deadline", resolved=processed)
+                    break
+                cand_title = str(cand.get("title") or "")
+                cand_link = str(cand.get("link") or "")
+                if not cand_title or not cand_link:
+                    continue
+                # Same-story check: meaningful token overlap with the original.
+                overlap = orig_words & _topic_words(cand_title)
+                if len(overlap) < 2:
+                    continue
+                precheck_item = {
+                    "title": cand_title,
+                    "link": cand_link,
+                    "source_name": cand.get("source_name", ""),
+                }
+                if cand.get("decoded_url"):
+                    precheck_item["decoded_url"] = cand["decoded_url"]
+                verdict = news_quality.precheck_action(
+                    precheck_item,
+                    decode_timeout=PRECHECK_DECODE_TIMEOUT,
+                    fetch_timeout=PRECHECK_FETCH_TIMEOUT,
+                    fetch_cache=rep_cache,
+                )
+                if verdict.get("action") in ("title_only", "drop"):
+                    continue  # candidate is itself paywalled or junk
+                cand_decoded = verdict.get("decoded_url")
+                cand_host = urlparse(str(cand_decoded)).netloc.lower() if cand_decoded else ""
+                # Require a resolved, DIFFERENT publisher. An unresolved host
+                # (empty) cannot be confirmed distinct from the paywalled source,
+                # so it is skipped rather than risk a same-publisher "free" link.
+                if not cand_host:
+                    continue
+                if orig_host and _same_registered_domain(cand_host, orig_host):
+                    continue  # same publisher — not a free alternative
+                if deadline is not None and time.monotonic() >= deadline:
+                    log_trace("paywall_replace_deadline", resolved=processed)
+                    break
+                title_zh = _translate_single_title(cand_title, date_str)
+                if not title_zh:
+                    continue
+                entry["replacement"] = {
+                    "title_zh": title_zh,
+                    "link": verdict.get("decoded_url") or cand_link,
+                }
+                log_trace("paywall_replacement_found", marker=num,
+                          source=cand.get("source_name", ""))
+                break
+        except Exception as e:
+            print(f"[WARN: paywall replacement lookup failed: #{num} {e}]", file=sys.stderr)
+            continue
 
 
 def _strip_links_keep_spacing(value: str) -> str:
@@ -1016,7 +1249,12 @@ def _trim_lines_to_limit(text: str, limit: int = 4000) -> str:
     for idx in range(len(lines) - 1, -1, -1):
         if not lines[idx].lstrip().startswith("-"):
             continue
-        del lines[idx]
+        # Drop the bullet AND any paywall continuation line that follows it, so a
+        # paywall pair is never left as an orphaned 原文 note with no headline.
+        end = idx + 1
+        while end < len(lines) and lines[end].startswith(PAYWALL_CONT_PREFIX):
+            end += 1
+        del lines[idx:end]
         candidate = "\n".join(lines)
         if len(candidate) <= limit:
             return candidate
@@ -1031,6 +1269,7 @@ def _translate_selected_section(
     selected_ids: list[int],
     numbered: dict[int, dict],
     date_str: str,
+    paywall: dict[int, dict] | None = None,
 ) -> list[str] | None:
     if not selected_ids:
         return None
@@ -1062,7 +1301,7 @@ def _translate_selected_section(
         marked_bullets == total_bullets and
         _language_validation_passed(summary)
     ):
-        with_links, links_attached = _attach_numbered_links(summary, selected_numbered)
+        with_links, links_attached = _attach_numbered_links(summary, selected_numbered, paywall)
         if links_attached > 0:
             return with_links.splitlines()
 
@@ -1120,16 +1359,46 @@ def _split_message_preserving_lines(body: str, limit: int = TELEGRAM_RAW_CHUNK_L
             current = []
             current_len = 0
 
-    for line in body.splitlines(keepends=True):
+    raw_lines = body.splitlines(keepends=True)
+    for idx, line in enumerate(raw_lines):
+        this_is_cont = line.lstrip("\n").startswith(PAYWALL_CONT_PREFIX)
+        # A paywall continuation line must never start a new chunk without its
+        # parent bullet: only flush BEFORE the parent, never between the pair.
+        next_is_cont = (
+            idx + 1 < len(raw_lines)
+            and raw_lines[idx + 1].lstrip("\n").startswith(PAYWALL_CONT_PREFIX)
+        )
         if len(line) > limit:
+            # A single physical line longer than the limit must be hard-split. If
+            # it is a paywall PARENT (its next line is a continuation), keep the
+            # continuation glued to the final piece so it is never orphaned; the
+            # combined tail may exceed `limit` but a truncated pair is worse.
+            if this_is_cont and current:
+                # Over-limit continuation: keep it attached to the current chunk
+                # (which holds its parent) rather than starting a fresh chunk.
+                current.append(line)
+                current_len += len(line)
+                continue
             flush_current()
-            for start in range(0, len(line), limit):
-                chunks.append(line[start:start + limit].rstrip())
+            pieces = [line[s:s + limit].rstrip() for s in range(0, len(line), limit)]
+            if next_is_cont and pieces:
+                # Resume accumulation on the last piece so the continuation joins it.
+                for p in pieces[:-1]:
+                    chunks.append(p)
+                current = [pieces[-1] + "\n"]
+                current_len = len(current[0])
+                continue
+            chunks.extend(pieces)
             continue
-        if current and current_len + len(line) > limit:
+        if current and current_len + len(line) > limit and not this_is_cont:
             flush_current()
         current.append(line)
         current_len += len(line)
+        # If the next line is a continuation, keep accumulating so the pair
+        # stays together even if that pushes slightly toward the limit; the
+        # per-line >limit guard above still bounds any single physical line.
+        if next_is_cont:
+            continue
 
     flush_current()
     return [chunk for chunk in chunks if chunk]
@@ -1294,26 +1563,29 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
                             "language_total": language_total,
                         },
                     )
-                    summary = _precheck_apply(summary, numbered, key)
+                    summary, paywall = _precheck_apply(summary, numbered, key)
                     if not _news_bullet_lines(summary):
                         # Every pick was deny/promo — a filter success, not an LLM
                         # failure: used_fallback=False so no operator alert fires.
                         log_trace("quality_all_dropped", section=key)
                         return ["- 今日無相關新聞"], False
+                    _resolve_paywall_replacements(paywall, date_str)
                     translated = _translate_selected_section(
                         key,
                         _extract_leading_marker_ids(summary, numbered),
                         numbered,
                         date_str,
+                        paywall,
                     )
                     if translated is not None:
                         return translated, False
                 else:
-                    summary = _precheck_apply(summary, numbered, key)
+                    summary, paywall = _precheck_apply(summary, numbered, key)
                     if not _news_bullet_lines(summary):
                         log_trace("quality_all_dropped", section=key)
                         return ["- 今日無相關新聞"], False
-                    with_links, links_attached = _attach_numbered_links(summary, numbered)
+                    _resolve_paywall_replacements(paywall, date_str)
+                    with_links, links_attached = _attach_numbered_links(summary, numbered, paywall)
                     if links_attached > 0:
                         return with_links.splitlines(), False
                     log_trace(
@@ -1435,7 +1707,7 @@ def _run_ai_substage(
         return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
 
     # Tier 2 body precheck, before any cache write or link attach (while #N identity exists).
-    summary = _precheck_apply(summary, numbered, "ai")
+    summary, paywall = _precheck_apply(summary, numbered, "ai")
     if not _news_bullet_lines(summary):
         # Every picked item was low-quality and dropped. This is a SUCCESS of the
         # filter, not an LLM failure — return ok=True with empty lines so the
@@ -1445,19 +1717,22 @@ def _run_ai_substage(
         log_trace("ai_substage_all_dropped", range=[start, end])
         return True, [], ""
 
+    _resolve_paywall_replacements(paywall, date_str)
+
     if not _language_validation_passed(summary):
         translated = _translate_selected_section(
             "ai",
             _extract_leading_marker_ids(summary, numbered),
             numbered,
             date_str,
+            paywall,
         )
         if translated is None:
             return False, [], "language_validation"
         _news_cache_put(date_str, variant, start, end, "\n".join(translated))
         return True, translated, ""
 
-    with_links, links_attached = _attach_numbered_links(summary, numbered)
+    with_links, links_attached = _attach_numbered_links(summary, numbered, paywall)
     if links_attached == 0:
         return False, [], "no_links_attached"
 
@@ -1629,7 +1904,17 @@ def summarize_llm(all_items: dict[str, list[dict]], ctx: "AlertContext") -> str:
         lines.append(spec["header"])
         lines.extend(section_results[key])
         lines.append("")
-    return _trim_digest_links("\n".join(lines))
+
+    digest = "\n".join(lines)
+    # Footer: the PAYWALL_NOTE marker appears exactly once per paywalled STORY
+    # (both the replacement-pair and the degraded single-bullet forms carry one),
+    # so counting it counts stories, not rendered bullets. Not a failure — never
+    # routes through _alert_failure.
+    paywall_count = digest.count(PAYWALL_NOTE)
+    if paywall_count:
+        digest += f"\nℹ️ 本次含 {paywall_count} 則付費牆新聞（原文需訂閱）"
+        log_trace("paywall_notice", count=paywall_count)
+    return _trim_digest_links(digest)
 
 
 def fallback_summary(all_items: dict[str, list[dict]], date_str: str, link_map: dict[str, str] | None = None) -> str:
@@ -1665,6 +1950,27 @@ def _topic_feed_url(topic: str) -> str:
         f"https://news.google.com/rss/search?q={encoded}+when:1d"
         f"&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     )
+
+
+def _bing_news_feed_url(query: str) -> str:
+    encoded = urllib.parse.quote(query)
+    return (
+        f"https://www.bing.com/news/search?q={encoded}"
+        f"&mkt={PAYWALL_REPLACE_BING_MKT}&format=rss"
+    )
+
+
+def _normalize_replacement_candidate(item: dict) -> dict:
+    link = str(item.get("link") or "")
+    parsed = urllib.parse.urlparse(link)
+    if parsed.netloc.lower().endswith("bing.com") and parsed.path.endswith("/news/apiclick.aspx"):
+        qs = urllib.parse.parse_qs(parsed.query)
+        direct = (qs.get("url") or [""])[0]
+        if direct:
+            item = dict(item)
+            item["link"] = direct
+            item["decoded_url"] = direct
+    return item
 
 
 def _fetch_custom_topics(topics: list[str]) -> dict[str, list[dict]]:
@@ -1754,7 +2060,7 @@ def _run_custom_topic(
         return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
 
     # Tier 2 body precheck, before cache write / link attach (while #N identity exists).
-    summary = _precheck_apply(summary, numbered, f"custom:{topic}")
+    summary, paywall = _precheck_apply(summary, numbered, f"custom:{topic}")
     if not _news_bullet_lines(summary):
         # All picks were low-quality — a filter SUCCESS, not a failure. Return
         # ok=True with the placeholder so the caller does NOT re-dump raw RSS items
@@ -1763,7 +2069,8 @@ def _run_custom_topic(
         log_trace("quality_all_dropped", section=f"custom:{topic}")
         return True, ["- 今日無相關新聞"], ""
 
-    with_links, links_attached = _attach_numbered_links(summary, numbered)
+    _resolve_paywall_replacements(paywall, date_str)
+    with_links, links_attached = _attach_numbered_links(summary, numbered, paywall)
     if links_attached == 0:
         # Bullets present but no link attached. Treat as success (still readable
         # for the user) but skip caching so a re-run can try to do better.
@@ -1847,12 +2154,18 @@ def summarize_llm_custom(all_items: dict[str, list[dict]], topics: list[str], ct
         lines_out.extend(sections.get(topic, ["- 今日無相關新聞"]))
         lines_out.append("")
 
+    digest = "\n".join(lines_out)
+    paywall_count = digest.count(PAYWALL_NOTE)
+    if paywall_count:
+        digest += f"\nℹ️ 本次含 {paywall_count} 則付費牆新聞（原文需訂閱）"
+        log_trace("paywall_notice", count=paywall_count)
+
     log_trace(
         "custom_substage_complete",
         topic_count=len(topics),
         degraded_count=len(degraded_topics),
     )
-    return _trim_links_to_limit("\n".join(lines_out))
+    return _trim_links_to_limit(digest)
 
 
 def _resolve_topics(args) -> list[str] | None:

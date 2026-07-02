@@ -139,6 +139,32 @@ class PrecheckActionTests(unittest.TestCase):
             r2 = news_quality.precheck_action(item)
         self.assertEqual(r2["action"], "title_only")
 
+    def test_paywall_domain_carries_decoded_url(self):
+        """title_only verdict must carry the real publisher URL so the render
+        stage / replacement lookup has the host. Locks the plumbing contract."""
+        item = {"title": "Nikkei column", "link": "https://news.google.com/rss/articles/x",
+                "source_name": "日經中文網"}
+        decoded = "https://zh.cn.nikkei.com/story/1"
+        with mock.patch.object(news_quality, "decode_google_news_url", return_value=decoded):
+            r = news_quality.precheck_action(item)
+        self.assertEqual(r["action"], "title_only")
+        self.assertEqual(r["decoded_url"], decoded)
+
+    def test_config_paywall_flags_nytimes_title_only(self):
+        """Regression for the reported incident: with nytimes.com in the config
+        paywall list, a NYTimes URL resolves to title_only (was 'keep' when the
+        list was empty). Config-driven — NOT a code seed."""
+        _set_config(paywall_domains={"nytimes.com"})
+        item = {"title": "They built the most powerful AI - The New York Times",
+                "link": "https://news.google.com/rss/articles/nyt",
+                "source_name": "The New York Times"}
+        with mock.patch.object(news_quality, "decode_google_news_url",
+                               return_value="https://www.nytimes.com/2026/07/01/tech/ai.html"):
+            r = news_quality.precheck_action(item)
+        self.assertEqual(r["action"], "title_only")
+        self.assertEqual(r["reason"], "paywalled")
+        self.assertEqual(r["decoded_url"], "https://www.nytimes.com/2026/07/01/tech/ai.html")
+
     def test_deny_domain_dropped(self):
         item = {"title": "x", "link": "https://news.google.com/rss/articles/c",
                 "source_name": "ChinaTimes"}
@@ -193,6 +219,37 @@ class PrecheckActionTests(unittest.TestCase):
             news_quality.precheck_action(item, fetch_cache=cache)
             news_quality.precheck_action(item, fetch_cache=cache)
         self.assertEqual(dec.call_count, 1)  # second call served from cache
+
+    def test_precheck_action_uses_caller_supplied_decoded_url(self):
+        """Caller-supplied decoded_url bypasses Google News decoding."""
+        decoded = "https://www.reuters.com/technology/ai-story/"
+        item = {"title": "AI story", "link": "https://www.bing.com/news/apiclick.aspx?x=1",
+                "decoded_url": decoded, "source_name": "Reuters"}
+        with mock.patch.object(news_quality, "decode_google_news_url") as dec, \
+             mock.patch.object(news_quality, "fetch_article_text",
+                               return_value={"host": "www.reuters.com", "text": "body",
+                                             "truncated": False}):
+            r = news_quality.precheck_action(item)
+        dec.assert_not_called()
+        self.assertEqual(r["action"], "keep")
+        self.assertEqual(r["decoded_url"], decoded)
+
+    def test_precheck_action_stale_cache_does_not_shadow_decoded_url_hint(self):
+        """Caller decoded_url wins even when fetch_cache has a stale unresolved entry."""
+        link = "https://www.bing.com/news/apiclick.aspx?x=1"
+        decoded = "https://www.reuters.com/technology/ai-story/"
+        item = {"title": "AI story", "link": link, "decoded_url": decoded,
+                "source_name": "Reuters"}
+        cache = {link: {"action": "keep", "reason": "unresolved", "decoded_url": None}}
+        with mock.patch.object(news_quality, "decode_google_news_url") as dec, \
+             mock.patch.object(news_quality, "fetch_article_text",
+                               return_value={"host": "www.reuters.com", "text": "body",
+                                             "truncated": False}):
+            r = news_quality.precheck_action(item, fetch_cache=cache)
+        dec.assert_not_called()
+        self.assertEqual(r["action"], "keep")
+        self.assertEqual(r["decoded_url"], decoded)
+        self.assertEqual(cache[link]["decoded_url"], decoded)
 
 
 class HostMatchTests(unittest.TestCase):

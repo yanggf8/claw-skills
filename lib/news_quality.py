@@ -439,8 +439,9 @@ def precheck_action(
     try:
         source_name = str(item.get("source_name") or "")
         link = str(item.get("link") or "")
+        decoded_url_hint = str(item.get("decoded_url") or "")
 
-        if fetch_cache is not None and link in fetch_cache:
+        if not decoded_url_hint and fetch_cache is not None and link in fetch_cache:
             return dict(fetch_cache[link])
 
         def _finish(result: dict[str, Any]) -> dict[str, Any]:
@@ -452,7 +453,7 @@ def precheck_action(
         if source_name in _deny_sources():
             return _finish({"action": "drop", "reason": "deny", "decoded_url": None})
 
-        decoded_url = decode_google_news_url(link, timeout=decode_timeout)
+        decoded_url = decoded_url_hint or decode_google_news_url(link, timeout=decode_timeout)
         if decoded_url is None:
             # Cannot resolve the publisher. Deterministic fail-open: keep.
             # (Paywall/deny can only be asserted once we know the host; an
