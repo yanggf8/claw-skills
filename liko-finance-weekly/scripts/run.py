@@ -286,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         sr.log("stage: publish start")
         publish_out = sr.run_cmd(
-            ["persona-core", "streams", "issues", "publish", issue_id, "--target", "both"],
+            ["persona-core", "streams", "issues", "publish", issue_id, "--kind", "issue", "--target", "both"],
             timeout=180,
             cwd=REPO,
         )

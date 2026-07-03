@@ -303,8 +303,12 @@ class AiSubstageLanguageGateTests(unittest.TestCase):
                 new_path = run._news_cache_path("2026/05/15 (Fri)", run.AI_SUBSTAGE_CACHE_VARIANT, 0, 2)
 
         self.assertNotEqual(old_path, new_path)
+        # The legacy substage name is frozen on purpose: a cache built under it
+        # must never be reused after a variant bump, so this literal stays hardcoded.
         self.assertIn("default_ai_substage-000-002.txt", old_path)
-        self.assertIn("default_ai_clustered_v2-000-002.txt", new_path)
+        # The new name tracks AI_SUBSTAGE_CACHE_VARIANT — derive it from the constant
+        # so a future variant bump (e.g. v3_precheck -> v4) does not re-stale this test.
+        self.assertIn(f"{run.AI_SUBSTAGE_CACHE_VARIANT}-000-002.txt", new_path)
 
 
 def _item(title, source="Reuters", link="https://example.com/news"):
@@ -451,6 +455,491 @@ class ForbiddenEnglishAdverbTests(unittest.TestCase):
         # With 2 bullets, need at least 2 to pass 80% (chinese * 5 >= total * 4)
         # Only 1 has CJK starting early enough, so this should fail
         self.assertFalse(run._language_validation_passed(summary))
+
+
+class LLMRetryOnTimeoutTests(unittest.TestCase):
+    """Change 1: _run_nullclaw_agent retries ONCE on rc=124, with a budget guard."""
+
+    def _cp(self, rc, stdout=""):
+        return subprocess.CompletedProcess(["nullclaw"], rc, stdout=stdout, stderr="")
+
+    def test_timeout_then_success_retries_and_returns_ok(self):
+        calls = []
+
+        def fake_once(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append(timeout_secs)
+            return self._cp(124) if len(calls) == 1 else self._cp(0, stdout="- #1 ok")
+
+        with patch.object(run, "_run_nullclaw_agent_once", fake_once), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            # ensure no cron budget set so retry is always permitted
+            for var in ("NULLCLAW_SKILL_TIMEOUT", "NULLCLAW_SKILL_STARTED"):
+                run.os.environ.pop(var, None)
+            res = run._run_nullclaw_agent("p", 60, "v", {}, {})
+
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(len(calls), 2, "should attempt exactly twice")
+        self.assertEqual(calls[0], 60, "first attempt uses full timeout")
+        self.assertEqual(calls[1], run.LLM_RETRY_TIMEOUT_SECS, "retry uses shorter timeout")
+
+    def test_nonzero_nontimeout_is_not_retried(self):
+        calls = []
+
+        def fake_once(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append(timeout_secs)
+            return self._cp(1)  # generic failure, deterministic — no retry
+
+        with patch.object(run, "_run_nullclaw_agent_once", fake_once), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            res = run._run_nullclaw_agent("p", 60, "v", {}, {})
+
+        self.assertEqual(res.returncode, 1)
+        self.assertEqual(len(calls), 1, "non-124 exit must not retry")
+
+    def test_success_first_try_does_not_retry(self):
+        calls = []
+
+        def fake_once(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append(timeout_secs)
+            return self._cp(0, stdout="- #1 ok")
+
+        with patch.object(run, "_run_nullclaw_agent_once", fake_once), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            res = run._run_nullclaw_agent("p", 60, "v", {}, {})
+
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(len(calls), 1)
+
+    def test_retry_skipped_when_budget_too_small(self):
+        calls = []
+
+        def fake_once(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append(timeout_secs)
+            return self._cp(124)
+
+        traces = []
+        with patch.object(run, "_run_nullclaw_agent_once", fake_once), \
+             patch.object(run, "log_trace", lambda ev, **k: traces.append(ev)):
+            # only 5s of wall-clock left, retry wants 30s -> skip
+            run.os.environ["NULLCLAW_SKILL_TIMEOUT"] = "5"
+            run.os.environ.pop("NULLCLAW_SKILL_STARTED", None)
+            try:
+                res = run._run_nullclaw_agent("p", 60, "v", {}, {})
+            finally:
+                run.os.environ.pop("NULLCLAW_SKILL_TIMEOUT", None)
+
+        self.assertEqual(res.returncode, 124)
+        self.assertEqual(len(calls), 1, "retry must be skipped under tight budget")
+        self.assertIn("llm_agent_retry_skipped_budget", traces)
+
+
+class RecentFailureCountTests(unittest.TestCase):
+    """Change 2: _recent_failure_count surfaces chronic-alert trends."""
+
+    def _write_log(self, blocks):
+        f = tempfile.NamedTemporaryFile("w", suffix=".log", delete=False, encoding="utf-8")
+        f.write("".join(blocks))
+        f.close()
+        return f.name
+
+    def _block(self, ts, reason, account):
+        return (
+            f"=== {ts} CST ===\n"
+            f"job_id: x\ndeliver_to: y\naccount: {account}\n"
+            f"reason: {reason}\ndetail: whatever\n\n"
+        )
+
+    def test_counts_matching_reason_and_account_in_window(self):
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone(timedelta(hours=8)))
+        recent = (now - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (now - timedelta(days=40)).strftime("%Y-%m-%d %H:%M:%S")
+        log = self._write_log([
+            self._block(recent, "custom_topics_fell_back", "nunu"),
+            self._block(recent, "custom_topics_fell_back", "nunu"),
+            self._block(old, "custom_topics_fell_back", "nunu"),          # outside 30d
+            self._block(recent, "custom_topics_fell_back", "main"),        # other account
+            self._block(recent, "telegram_delivery_failed", "nunu"),       # other reason
+        ])
+        with patch.object(run, "NEWS_FAILURE_LOG", log):
+            n = run._recent_failure_count("custom_topics_fell_back", "nunu", days=30)
+        self.assertEqual(n, 2)
+
+    def test_missing_log_returns_zero(self):
+        with patch.object(run, "NEWS_FAILURE_LOG", "/nonexistent/path.log"):
+            self.assertEqual(run._recent_failure_count("r", "a", days=30), 0)
+
+
+class PaywallReplacementTests(unittest.TestCase):
+    def test_attach_numbered_links_no_paywall_unchanged(self):
+        # Default path must be byte-identical to before this feature.
+        summary = "- #1 一般新聞標題"
+        numbered = {1: {"title": "一般新聞標題", "link": "http://x/1"}}
+        body, attached = run._attach_numbered_links(summary, numbered)
+        self.assertEqual(attached, 1)
+        self.assertEqual(body, "- 一般新聞標題 [🔗](http://x/1)")
+        self.assertNotIn(run.PAYWALL_NOTE, body)
+
+    def test_attach_numbered_links_paywall_no_replacement_single_bullet_note(self):
+        summary = "- #1 付費牆新聞"
+        numbered = {1: {"title": "付費牆新聞", "link": "http://nyt/1", "source_name": "NYT"}}
+        paywall = {1: {"decoded_url": "http://nyt/1", "reason": "paywalled",
+                       "title": "付費牆新聞", "source_name": "NYT"}}
+        body, attached = run._attach_numbered_links(summary, numbered, paywall)
+        # One physical bullet line, plus the note; no continuation line.
+        self.assertEqual(attached, 1)
+        self.assertIn(run.PAYWALL_NOTE, body)
+        self.assertNotIn(run.PAYWALL_CONT_PREFIX, body)
+        self.assertEqual(len(body.splitlines()), 1)
+
+    def test_attach_numbered_links_renders_replacement_double_bullet(self):
+        summary = "- #1 付費牆原標題"
+        numbered = {1: {"title": "付費牆原標題", "link": "http://nyt/1", "source_name": "NYT"}}
+        paywall = {1: {"decoded_url": "http://nyt/1", "reason": "paywalled",
+                       "title": "付費牆原標題", "source_name": "NYT",
+                       "replacement": {"title_zh": "免費替代標題", "link": "http://free/1"}}}
+        body, attached = run._attach_numbered_links(summary, numbered, paywall)
+        first, second = body.splitlines()
+        # Replacement on top with its own link; original continues below with note.
+        self.assertEqual(first, "- 免費替代標題 [🔗](http://free/1)")
+        self.assertTrue(second.startswith(run.PAYWALL_CONT_PREFIX))
+        self.assertIn("付費牆原標題", second)
+        self.assertIn("http://nyt/1", second)
+        self.assertIn(run.PAYWALL_NOTE, second)
+        # Two links attached (replacement + original).
+        self.assertEqual(attached, 2)
+
+    def test_precheck_apply_returns_paywall_map(self):
+        summary = "- #1 付費牆標題"
+        numbered = {1: {"title": "付費牆標題", "link": "http://nyt/1", "source_name": "NYT"}}
+        fake = {"action": "title_only", "reason": "paywalled", "decoded_url": "http://nyt/1"}
+        with patch.object(run.news_quality, "precheck_action", return_value=fake):
+            out_summary, paywall = run._precheck_apply(summary, numbered, "ai")
+        # title_only is never dropped — the bullet survives.
+        self.assertIn("#1", out_summary)
+        self.assertIn(1, paywall)
+        self.assertEqual(paywall[1]["decoded_url"], "http://nyt/1")
+        self.assertEqual(paywall[1]["title"], "付費牆標題")
+
+    def test_resolve_paywall_replacements_swallows_exception(self):
+        # A raising lookup must NOT propagate (exit-0 contract) and must leave
+        # the entry without a replacement so render degrades to note-only.
+        paywall = {1: {"title": "x", "decoded_url": "http://nyt/1"}}
+        with patch.object(run, "fetch_feed", side_effect=RuntimeError("boom")):
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertNotIn("replacement", paywall[1])
+
+    def test_resolve_paywall_replacements_disabled_is_noop(self):
+        paywall = {1: {"title": "x", "decoded_url": "http://nyt/1"}}
+        with patch.object(run, "PAYWALL_REPLACE_ENABLED", False), \
+             patch.object(run, "fetch_feed") as ff:
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        ff.assert_not_called()
+        self.assertNotIn("replacement", paywall[1])
+
+    def test_resolve_paywall_replacements_finds_free_alternative(self):
+        paywall = {1: {"title": "全球最強 AI 面臨謎團 - The New York Times",
+                       "decoded_url": "https://www.nytimes.com/x"}}
+        cands = [{"title": "全球最強 AI 面臨謎團 - TechNews", "link": "http://free/1",
+                  "source_name": "TechNews"}]
+        free_verdict = {"action": "keep", "reason": None, "decoded_url": "https://technews.tw/x"}
+        with patch.object(run, "fetch_feed", return_value=cands), \
+             patch.object(run.news_quality, "precheck_action", return_value=free_verdict), \
+             patch.object(run, "_translate_single_title", return_value="全球最強 AI 面臨謎團"):
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertIn("replacement", paywall[1])
+        self.assertEqual(paywall[1]["replacement"]["link"], "https://technews.tw/x")
+
+    def test_resolve_skips_same_host_candidate(self):
+        # A free-looking candidate on a same-publisher SUBDOMAIN is not a real
+        # alternative (suffix-aware: cn.nytimes.com == www.nytimes.com publisher).
+        paywall = {1: {"title": "AI 謎團 續報 謎團 - NYT",
+                       "decoded_url": "https://www.nytimes.com/x"}}
+        cands = [{"title": "AI 謎團 續報 謎團 - NYT", "link": "http://nyt/2", "source_name": "NYT"}]
+        same_host = {"action": "keep", "reason": None, "decoded_url": "https://cn.nytimes.com/y"}
+        with patch.object(run, "fetch_feed", return_value=cands), \
+             patch.object(run.news_quality, "precheck_action", return_value=same_host), \
+             patch.object(run, "_translate_single_title", return_value="AI 謎團 續報"):
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertNotIn("replacement", paywall[1])
+
+    def test_resolve_skips_candidate_with_unresolved_host(self):
+        # A candidate whose publisher host can't be resolved is skipped (can't
+        # confirm it's a DIFFERENT publisher than the paywalled source).
+        paywall = {1: {"title": "AI 謎團 全球 最強 - NYT",
+                       "decoded_url": "https://www.nytimes.com/x"}}
+        cands = [{"title": "AI 謎團 全球 最強 - Blog", "link": "http://free/1", "source_name": "Blog"}]
+        unresolved = {"action": "keep", "reason": None, "decoded_url": None}
+        with patch.object(run, "fetch_feed", return_value=cands), \
+             patch.object(run.news_quality, "precheck_action", return_value=unresolved), \
+             patch.object(run, "_translate_single_title", return_value="AI 謎團 全球 最強"):
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertNotIn("replacement", paywall[1])
+
+    def test_translate_single_title_uses_placeholder_link(self):
+        # Regression: the temp item must carry a non-empty link so
+        # _translate_selected_section reports success; the placeholder is
+        # stripped so the returned title has no link/marker.
+        with patch.object(run, "_run_nullclaw_agent") as agent:
+            agent.return_value = __import__("subprocess").CompletedProcess(
+                ["nullclaw"], 0, stdout="- #1 免費中文標題", stderr="")
+            out = run._translate_single_title("Free English Headline - TechNews",
+                                              "2026/07/02 (Wed)")
+        self.assertEqual(out, "免費中文標題")
+        self.assertNotIn("🔗", out or "")
+        self.assertFalse((out or "").startswith("-"))
+
+    def test_resolve_end_to_end_produces_double_bullet_replacement(self):
+        # Full resolver with a real (mocked-agent) translate — proves the
+        # replacement path is NOT dead: a free different-host candidate yields a
+        # replacement dict that the renderer turns into a double bullet.
+        paywall = {1: {"title": "全球 最強 AI 面臨 謎團 - The New York Times",
+                       "decoded_url": "https://www.nytimes.com/x",
+                       "source_name": "The New York Times"}}
+        cands = [{"title": "全球 最強 AI 面臨 謎團 - TechNews", "link": "http://free/1",
+                  "source_name": "TechNews"}]
+        free = {"action": "keep", "reason": None, "decoded_url": "https://technews.tw/x"}
+        with patch.object(run, "fetch_feed", return_value=cands), \
+             patch.object(run.news_quality, "precheck_action", return_value=free), \
+             patch.object(run, "_run_nullclaw_agent") as agent:
+            agent.return_value = __import__("subprocess").CompletedProcess(
+                ["nullclaw"], 0, stdout="- #1 全球最強AI面臨謎團", stderr="")
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertIn("replacement", paywall[1])
+        self.assertEqual(paywall[1]["replacement"]["link"], "https://technews.tw/x")
+        # And the renderer turns it into a double bullet.
+        summary = "- #1 原付費標題"
+        numbered = {1: {"title": "原付費標題", "link": "http://nyt/1"}}
+        body, _ = run._attach_numbered_links(summary, numbered, paywall)
+        self.assertEqual(len(body.splitlines()), 2)
+
+    def test_over_limit_replacement_bullet_keeps_continuation(self):
+        # If the replacement bullet alone exceeds the chunk limit, its
+        # continuation must still land in the SAME chunk (not orphaned).
+        long_title = "免" * 500
+        pair = (
+            f"- {long_title} [🔗](http://free/1)\n"
+            f"{run.PAYWALL_CONT_PREFIX}原文：付費原標題 [🔗](http://nyt/1)  {run.PAYWALL_NOTE}"
+        )
+        chunks = run._split_message_preserving_lines(pair, limit=200)
+        # The continuation must ride in the chunk that still holds the tail of the
+        # replacement bullet — never a standalone chunk with only the note.
+        cont_chunks = [c for c in chunks if run.PAYWALL_CONT_PREFIX in c]
+        self.assertEqual(len(cont_chunks), 1)
+        before_note = cont_chunks[0].split(run.PAYWALL_CONT_PREFIX)[0]
+        self.assertIn("免", before_note,
+                      "continuation was orphaned from its replacement bullet's tail")
+
+    def test_paywall_footer_counts_stories_not_bullets(self):
+        # Two paywalled stories (one with replacement double-bullet, one degraded)
+        # → footer says 2, not 3 (the replacement double-bullet must not inflate).
+        digest = (
+            "📰 摘要\n"
+            "- 免費替代 [🔗](http://free/1)\n"
+            f"{run.PAYWALL_CONT_PREFIX}原文：付費A [🔗](http://nyt/1)  {run.PAYWALL_NOTE}\n"
+            f"- 付費B [🔗](http://wsj/1)  {run.PAYWALL_NOTE}\n"
+        )
+        self.assertEqual(digest.count(run.PAYWALL_NOTE), 2)
+
+    def test_paywall_pair_not_orphaned_by_trim(self):
+        # _trim_lines_to_limit must drop the replacement bullet AND its
+        # continuation together — never leave a headless 原文 note.
+        head = "📰 摘要\n" + "\n".join(f"- 填充新聞{i} [🔗](http://x/{i})" for i in range(60))
+        pair = (
+            "- 免費替代標題 [🔗](http://free/1)\n"
+            f"{run.PAYWALL_CONT_PREFIX}原文：付費原標題 [🔗](http://nyt/1)  {run.PAYWALL_NOTE}"
+        )
+        text = head + "\n" + pair
+        trimmed = run._trim_lines_to_limit(text, limit=400)
+        # If the replacement bullet was trimmed, its continuation must be gone too.
+        if "免費替代標題" not in trimmed:
+            self.assertNotIn(run.PAYWALL_CONT_PREFIX, trimmed)
+
+    def test_paywall_pair_not_split_across_chunk(self):
+        # _split_message_preserving_lines must keep a pair in one chunk.
+        filler = "\n".join(f"- 新聞{i} [🔗](http://x/{i})" for i in range(40))
+        pair = (
+            "- 免費替代標題 [🔗](http://free/1)\n"
+            f"{run.PAYWALL_CONT_PREFIX}原文：付費原標題 [🔗](http://nyt/1)  {run.PAYWALL_NOTE}"
+        )
+        body = filler + "\n" + pair
+        chunks = run._split_message_preserving_lines(body, limit=300)
+        for ch in chunks:
+            if run.PAYWALL_CONT_PREFIX in ch:
+                self.assertIn("免費替代標題", ch,
+                              "continuation line was split from its replacement bullet")
+
+    def test_paywall_digest_end_to_end_degrades_to_note(self):
+        # Full section path: LLM picks a paywalled item, precheck flags it
+        # title_only, replacement lookup returns nothing → digest keeps the
+        # original bullet + 付費牆 note, and NO failure alert fires.
+        items = [{"title": "全球最強 AI 面臨謎團 - The New York Times",
+                  "link": "http://nyt/rss/1", "pub_date": "", "source_name": "The New York Times"}]
+
+        def fake_run_agent(prompt, timeout_secs, variant, all_items, numbered):
+            return subprocess.CompletedProcess(
+                ["nullclaw"], 0,
+                stdout="- #1 全球最強 AI 面臨謎團", stderr="")
+
+        title_only = {"action": "title_only", "reason": "paywalled",
+                      "decoded_url": "https://www.nytimes.com/x"}
+        with patch.object(run, "_run_nullclaw_agent", fake_run_agent), \
+             patch.object(run.news_quality, "precheck_action", return_value=title_only), \
+             patch.object(run, "fetch_feed", return_value=[]), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            lines, used_fallback = run._summarize_default_section(
+                "ai", items, "2026/07/02 (Wed)", {items[0]["title"]: "http://nyt/rss/1"})
+
+        joined = "\n".join(lines)
+        self.assertFalse(used_fallback)  # not a failure — news went out
+        self.assertIn(run.PAYWALL_NOTE, joined)
+        self.assertNotIn(run.PAYWALL_CONT_PREFIX, joined)  # degraded: single bullet
+        self.assertNotIn("新聞無法送出", joined)
+
+    def test_normalize_replacement_candidate_unwraps_bing_redirect(self):
+        # Bing apiclick links must resolve to the publisher URL before precheck.
+        item = {"title": "AI story - Reuters",
+                "link": "https://www.bing.com/news/apiclick.aspx?ref=FexRss&url=https%3A%2F%2Fwww.reuters.com%2Ftechnology%2Fai-story%2F",
+                "source_name": "Reuters"}
+        out = run._normalize_replacement_candidate(item)
+        self.assertEqual(out["link"], "https://www.reuters.com/technology/ai-story/")
+        self.assertEqual(out["decoded_url"], "https://www.reuters.com/technology/ai-story/")
+
+    def test_normalize_replacement_candidate_missing_url_param_left_unresolved(self):
+        # Malformed Bing apiclick links are left untouched and do not raise.
+        item = {"title": "AI story - Reuters",
+                "link": "https://www.bing.com/news/apiclick.aspx?ref=FexRss&aid=1",
+                "source_name": "Reuters"}
+        out = run._normalize_replacement_candidate(item)
+        self.assertEqual(out, item)
+        self.assertNotIn("decoded_url", out)
+
+    def test_resolve_paywall_replacements_merges_google_and_bing_sources(self):
+        # Resolver consults both Google and Bing replacement feeds.
+        paywall = {1: {"title": "Global AI policy breakthrough shifts markets - NYT",
+                       "decoded_url": "https://www.nytimes.com/ai-policy"}}
+        google_url = "https://google.invalid/rss"
+        bing_url = "https://bing.invalid/rss"
+        calls = []
+
+        def fake_fetch(url, max_items=15, timeout=15):
+            calls.append(url)
+            if url == google_url:
+                return [{"title": "Local sports championship result - Example",
+                         "link": "https://example.com/sports",
+                         "source_name": "Example"}]
+            if url == bing_url:
+                return [{"title": "Global AI policy breakthrough shifts markets - Reuters",
+                         "link": "https://reuters.com/ai-policy",
+                         "source_name": "Reuters"}]
+            self.fail(f"unexpected feed URL: {url}")
+
+        free = {"action": "keep", "reason": None,
+                "decoded_url": "https://www.reuters.com/ai-policy"}
+        with patch.object(run, "_topic_feed_url", return_value=google_url), \
+             patch.object(run, "_bing_news_feed_url", return_value=bing_url), \
+             patch.object(run, "fetch_feed", side_effect=fake_fetch), \
+             patch.object(run.news_quality, "precheck_action", return_value=free), \
+             patch.object(run, "_translate_single_title", return_value="AI 政策突破"):
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertCountEqual(calls, [google_url, bing_url])
+        self.assertEqual(paywall[1]["replacement"]["link"], "https://www.reuters.com/ai-policy")
+
+    def test_resolve_paywall_replacements_dedupes_exact_title_across_sources(self):
+        # Exact duplicate titles from Google and Bing are prechecked once.
+        paywall = {1: {"title": "Global AI policy breakthrough shifts markets - NYT",
+                       "decoded_url": "https://www.nytimes.com/ai-policy"}}
+        google_url = "https://google.invalid/rss"
+        bing_url = "https://bing.invalid/rss"
+        title = "Global AI policy breakthrough shifts markets - Reuters"
+
+        def fake_fetch(url, max_items=15, timeout=15):
+            return [{"title": title, "link": f"https://{url.split('//', 1)[1]}/story",
+                     "source_name": "Reuters"}]
+
+        unresolved = {"action": "keep", "reason": "unresolved", "decoded_url": None}
+        with patch.object(run, "_topic_feed_url", return_value=google_url), \
+             patch.object(run, "_bing_news_feed_url", return_value=bing_url), \
+             patch.object(run, "fetch_feed", side_effect=fake_fetch), \
+             patch.object(run.news_quality, "precheck_action", return_value=unresolved) as pc:
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertEqual(pc.call_count, 1)
+        self.assertEqual(pc.call_args.args[0]["title"], title)
+        self.assertNotIn("replacement", paywall[1])
+
+    def test_resolve_paywall_replacements_both_sources_empty_degrades_cleanly(self):
+        # Empty Google and Bing feeds leave the paywall entry note-only.
+        paywall = {1: {"title": "Global AI policy breakthrough shifts markets - NYT",
+                       "decoded_url": "https://www.nytimes.com/ai-policy"}}
+        with patch.object(run, "_topic_feed_url", return_value="https://google.invalid/rss"), \
+             patch.object(run, "_bing_news_feed_url", return_value="https://bing.invalid/rss"), \
+             patch.object(run, "fetch_feed", return_value=[]) as ff:
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertEqual(ff.call_count, 2)
+        self.assertNotIn("replacement", paywall[1])
+
+    def test_resolve_paywall_replacements_near_duplicate_titles_both_survive(self):
+        # Near-duplicate but non-exact titles both reach the existing overlap check.
+        paywall = {1: {"title": "Global AI policy breakthrough shifts markets - NYT",
+                       "decoded_url": "https://www.nytimes.com/ai-policy"}}
+        google_title = "Global AI policy breakthrough shifts markets - Reuters"
+        bing_title = "Global AI policy breakthrough shift markets - Reuters"
+
+        def fake_fetch(url, max_items=15, timeout=15):
+            if "google" in url:
+                return [{"title": google_title, "link": "https://reuters.com/a",
+                         "source_name": "Reuters"}]
+            return [{"title": bing_title, "link": "https://reuters.com/b",
+                     "source_name": "Reuters"}]
+
+        unresolved = {"action": "keep", "reason": "unresolved", "decoded_url": None}
+        with patch.object(run, "_topic_feed_url", return_value="https://google.invalid/rss"), \
+             patch.object(run, "_bing_news_feed_url", return_value="https://bing.invalid/rss"), \
+             patch.object(run, "fetch_feed", side_effect=fake_fetch), \
+             patch.object(run.news_quality, "precheck_action", return_value=unresolved) as pc:
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertEqual([c.args[0]["title"] for c in pc.call_args_list],
+                         [google_title, bing_title])
+        self.assertNotIn("replacement", paywall[1])
+
+    def test_fetch_feed_receives_shrinking_timeout_across_two_calls(self):
+        # Bing fetch timeout is bounded by remaining resolver deadline budget.
+        paywall = {1: {"title": "Global AI policy breakthrough shifts markets - NYT",
+                       "decoded_url": "https://www.nytimes.com/ai-policy"}}
+        now = {"value": 100.0}
+        timeouts = []
+
+        def fake_fetch(url, max_items=15, timeout=15):
+            timeouts.append(timeout)
+            if len(timeouts) == 1:
+                now["value"] = 104.0
+            return []
+
+        with patch.object(run, "_topic_feed_url", return_value="https://google.invalid/rss"), \
+             patch.object(run, "_bing_news_feed_url", return_value="https://bing.invalid/rss"), \
+             patch.object(run, "PAYWALL_REPLACE_DEADLINE", 10.0), \
+             patch.object(run.time, "monotonic", side_effect=lambda: now["value"]), \
+             patch.object(run, "fetch_feed", side_effect=fake_fetch):
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertEqual(len(timeouts), 2)
+        self.assertLess(timeouts[1], timeouts[0])
+        self.assertLessEqual(timeouts[1], 6.0)
+        self.assertNotEqual(timeouts[1], 15)
+
+    def test_replacement_link_prefers_decoded_url_over_raw_candidate_link(self):
+        # Replacement link uses verdict decoded_url, not the raw RSS candidate link.
+        paywall = {1: {"title": "Global AI policy breakthrough shifts markets - NYT",
+                       "decoded_url": "https://www.nytimes.com/ai-policy"}}
+        raw_link = "https://www.bing.com/news/apiclick.aspx?url=https%3A%2F%2Fbing.invalid%2Fraw"
+        cands = [{"title": "Global AI policy breakthrough shifts markets - Reuters",
+                  "link": raw_link, "source_name": "Reuters"}]
+        free = {"action": "keep", "reason": None,
+                "decoded_url": "https://www.reuters.com/ai-policy"}
+        with patch.object(run, "fetch_feed", return_value=cands), \
+             patch.object(run.news_quality, "precheck_action", return_value=free), \
+             patch.object(run, "_translate_single_title", return_value="AI 政策突破"):
+            run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
+        self.assertEqual(paywall[1]["replacement"]["link"], "https://www.reuters.com/ai-policy")
 
 
 if __name__ == "__main__":

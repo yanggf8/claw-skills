@@ -80,6 +80,7 @@ Summarize in Traditional Chinese. Output is validated to ensure ≥80% CJK chara
 
 - **預設新聞模式（`summarize_llm`）**：AI 區塊先做確定性的事件群集去重，再切成兩半（Level 2）。每半是一個 LLM 呼叫（約 14-30 秒）。若某半失敗（逾時、非 0 exit、空 stdout），只把失敗的半段再切成兩個 quarter（Level 3）。若 quarter 仍失敗，整次執行會告警並中止（不再遞迴）。科技與一般新聞維持單次 LLM 呼叫。
 - **自訂主題模式（`summarize_llm_custom`，由 `--account-topics` 使用）**：每個主題各跑一次 LLM，依序執行。單一主題失敗時，該主題退回原始標題列表並告警；其他主題繼續送出。
+- **逾時自動重試（一次）**：任何 LLM 呼叫若是 *逾時*（rc=124，供應商在 stream 開始後卡住、無輸出）會自動重試一次，再退回降級。只重試逾時——驗證失敗、空 stdout、其他非 0 exit 屬確定性失敗，不重試。重試使用較短的 `LLM_RETRY_TIMEOUT_SECS`（預設 30 秒，可用 `NEWS_LLM_RETRY_TIMEOUT` 覆寫），且當 cron 剩餘 wall-clock（`NULLCLAW_SKILL_TIMEOUT` / `NULLCLAW_SKILL_STARTED`）不足以容納重試時直接跳過，避免拖過 cron kill window。trace：`llm_agent_retry`、`llm_agent_retry_skipped_budget`。
 
 AI 預設新聞去重：
 
@@ -89,7 +90,7 @@ CJK bigram 通用詞過濾：常見的中文填充詞（`公司`、`發布`、`�
 
 這個去重在 LLM 分段前完成，所以同一事件不會分散到兩個 half。執行時會寫入 `cluster_dedup` trace，欄位包含 `before`、`after`、`clusters_total`、`clusters_kept`。
 
-快取：`~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`。AI 預設新聞分段使用 `default_ai_clustered_v2` variant，避免重用舊版未群集分段快取。鍵為 `(date, variant, range)`。腳本啟動時會清除 7 天以前的子目錄；需要時可手動刪除。
+快取：`~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`。AI 預設新聞分段使用 `AI_SUBSTAGE_CACHE_VARIANT`（目前為 `default_ai_clustered_v3_precheck`）variant，避免重用舊版（未群集 / 未做 precheck）分段快取——precheck 邏輯變更時 bump variant 即可讓當日舊快取失效。鍵為 `(date, variant, range)`。腳本啟動時會清除 7 天以前的子目錄；需要時可手動刪除。
 
 送出長度處理：
 
@@ -109,6 +110,11 @@ attempted on every failure:
    outages.
 2. Best-effort Telegram message to the same chat the news would have gone
    to (`fail_on_delivery_error=False`, never raises).
+
+每則告警的 `detail` 會附上同一 `(reason, account)` 在過去 30 天的累計次數
+（`_recent_failure_count`，例如「此告警近30天已出現 5 次」），讓慢性問題
+（例如某模型反覆 thinking-stall 逾時）在告警本身就能被看見，而不是看起來像
+一次性事件。資料來源就是上面的 `news-failures.log`，不需額外的 metrics 系統。
 
 Coverage matrix (every path that ends without the full intended news):
 
@@ -130,6 +136,67 @@ nullclaw cron trace <job_id_prefix> --event news_failure
 nullclaw cron trace <job_id_prefix> --event cluster_dedup
 nullclaw cron trace <job_id_prefix> --event ai_substage
 ```
+
+## Content prechecking
+
+The skill sees only RSS titles, so a strong title on paywalled/thin/promo content used
+to slip through. Two-tier prechecking (`lib/news_quality.py`) handles it with a **three-way
+verdict** per item — `keep`, `drop`, or `title_only`:
+
+- **Tier 1 (every run, no network):** at the dedup site, drops deny-listed **sources** only.
+  Promo/listicle judgement is left to the LLM + Tier 2 (the body-tuned patterns over-match
+  short legitimate titles like `限時降息`, so they must not hard-gate titles).
+- **Tier 2 (only the LLM-picked items, before link attach):** decodes each picked Google
+  News link to its real publisher URL (headless `batchexecute`, no browser), then:
+  - **drop** — deny source/domain (e.g. `chinatimes.com`) or marketing/PR/listicle body.
+  - **title_only** — paywalled/truncated reputable source (e.g. Nikkei/FT). The item is
+    **kept**; the LLM's already-Chinese bullet stays as-is (we don't drop it, and we don't
+    overwrite it with the raw RSS headline — that would inject English/Japanese past the
+    Traditional-Chinese language gate). Counted separately in the trace.
+  - **keep** — everything else (LLM bullet retained).
+  Runs inside each section function while the `#N` identity still exists, so links stay correct.
+
+**Deterministic** — a paywalled source is always `title_only` whether the body fetch
+succeeds or fails (no network-timing nondeterminism). Decode/fetch failure for an unknown
+source is `keep` (fail-open). An all-paywalled batch renders headlines, never an empty
+section or a false failure.
+
+**Source policy lives in config, not code** — the module ships EMPTY deny/paywall seeds
+(no hardcoded publishers). Policy is read from `~/.nullclaw/news-quality-sources.json`
+`{"trusted":[...],"deny":[...],"deny_domains":[...],"paywall_domains":[...]}`:
+`deny`/`deny_domains` → drop; `paywall_domains` → title_only (keep LLM bullet). Host matching
+is suffix-aware (`ft.com` matches `www.ft.com`, not `craft.com`). The repo's working policy
+(e.g. `chinatimes.com` deny; Nikkei/FT paywall) lives in that file, so it is operator-owned
+and removable without editing source. Because config is union-only (it cannot *remove* a code
+seed), keeping seeds empty is what makes any entry removable.
+
+**Starter `paywall_domains`** (add to the config file per host — NOT seeded in code):
+```json
+{"paywall_domains": ["nytimes.com","cn.nytimes.com","wsj.com","cn.wsj.com","ft.com",
+  "ftchinese.com","bloomberg.com","economist.com","nikkei.com","asia.nikkei.com",
+  "barrons.com","washingtonpost.com","newyorker.com","wired.com"]}
+```
+
+**Paywall free-replacement (double bullet)** — when a `title_only` (paywalled) item
+survives selection (i.e. it was the only coverage of its story), the skill searches Google
+News RSS and Bing News RSS (keyless) by the headline keywords for a FREE same-story article
+from a *different* host, dedupes exact-title hits across sources, translates the winner's
+title to Traditional Chinese, and renders a **double bullet**: the free replacement on top,
+then a continuation line carrying the original paywalled headline + a
+`⚠️ 付費牆（原文需訂閱）` note. If no free replacement is found (or the lookup times out /
+errors), it degrades to a single paywalled bullet + the same note — never a hard failure.
+A footer `ℹ️ 本次含 N 則付費牆新聞（原文需訂閱）` counts paywalled *stories* (once each). The
+lookup is bounded and defensive (any exception → no replacement), preserving the exit-0
+contract. Trace: `paywall_replacement_found`, `paywall_replace_deadline`, `paywall_notice`.
+Env knobs: `NEWS_PAYWALL_REPLACE=0` disables the lookup (note-only);
+`NEWS_PAYWALL_REPLACE_DEADLINE` (default 20s), `NEWS_PAYWALL_REPLACE_MAX` (default 4) bound it;
+`NEWS_PAYWALL_REPLACE_SOURCES` (default `google,bing`) selects which RSS indexes to query;
+`NEWS_PAYWALL_REPLACE_BING_MKT` (default `en-US`) sets Bing's market parameter.
+
+Env knobs: `NEWS_PRECHECK=0` disables both tiers; `NEWS_PRECHECK_DECODE_TIMEOUT`,
+`NEWS_PRECHECK_FETCH_TIMEOUT`, `NEWS_PRECHECK_DEADLINE`, `NEWS_PRECHECK_WORKERS` bound latency
+(the deadline force-cancels stragglers so wall-clock is capped). Trace events
+`quality_tier1` / `quality_tier2` record counts, drops, and title_only conversions.
 
 ## Notes
 
