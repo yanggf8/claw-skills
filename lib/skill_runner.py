@@ -173,6 +173,41 @@ def pc(*args: str, timeout: int = 120, input_text: str | None = None) -> str:
     return run_cmd(["persona-core", *args], timeout=timeout, input_text=input_text)
 
 
+def _extract_body(output: str, body_marker: tuple[str, str] | None) -> str:
+    """Pull the real body out of an LLM's (possibly marker-wrapped) stdout.
+
+    The markers exist so the model can speak freely before/after the payload
+    (a preamble like "I'll perform the rewrite..." or trailing commentary)
+    without polluting downstream consumers. That only works if extraction is
+    robust to the model being *sloppy* with the markers — which MiniMax-M3
+    routinely is: it prepends a preamble, glues the start marker onto it, and
+    sometimes omits the end marker entirely. Precedence:
+
+    1. No ``body_marker`` configured → the whole trimmed output.
+    2. Both markers present → the text strictly between them (drops any
+       preamble before ``start`` and any epilogue after ``end``).
+    3. Only ``start`` present (end marker dropped by the model) → everything
+       *after* the start marker to end-of-output. This is the load-bearing
+       case: it strips the preamble that would otherwise become the "body"
+       and fail the downstream frontmatter check.
+    4. Not even ``start`` present → the whole trimmed output; the downstream
+       verify gate is the real backstop.
+    """
+    if body_marker is None:
+        return output.strip()
+    start, end = body_marker
+    both = re.escape(start) + r"\s*(.*?)\s*" + re.escape(end)
+    match = re.search(both, output, re.S)
+    if match:
+        return match.group(1).strip()
+    # End marker missing: take everything after the (last) start marker.
+    idx = output.rfind(start)
+    if idx != -1:
+        return output[idx + len(start):].strip()
+    # No start marker at all: fall back to the whole output.
+    return output.strip()
+
+
 def call_agent(
     prompt: str,
     *,
@@ -212,14 +247,7 @@ def call_agent(
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
         raise RuntimeError(f"nullclaw agent failed: {detail}")
-    output = proc.stdout
-    if body_marker is not None:
-        start, end = body_marker
-        pattern = re.escape(start) + r"\s*(.*?)\s*" + re.escape(end)
-        match = re.search(pattern, output, re.S)
-        body = match.group(1).strip() if match else output.strip()
-    else:
-        body = output.strip()
+    body = _extract_body(proc.stdout, body_marker)
     if not body:
         raise RuntimeError("agent returned an empty body")
     return body
