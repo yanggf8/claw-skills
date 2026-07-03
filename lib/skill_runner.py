@@ -208,11 +208,29 @@ def _extract_body(output: str, body_marker: tuple[str, str] | None) -> str:
     return output.strip()
 
 
+def _agent_argv(prompt: str, provider: str | None, model: str | None) -> list[str]:
+    """Build the `nullclaw agent` command line.
+
+    ``provider``/``model`` are optional per-call overrides — nullclaw natively
+    supports ``--provider``/``--model`` (override the configured default). When
+    both are None the argv is exactly the historical bare form, so existing
+    callers are byte-for-byte unaffected.
+    """
+    argv = ["nullclaw", "agent", "-m", prompt]
+    if provider:
+        argv += ["--provider", provider]
+    if model:
+        argv += ["--model", model]
+    return argv
+
+
 def call_agent(
     prompt: str,
     *,
     timeout: int,
     body_marker: tuple[str, str] | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Run `nullclaw agent -m <prompt>` and return the agent's stdout.
 
@@ -229,12 +247,17 @@ def call_agent(
     prompted to wrap its real output in markers so it can speak freely
     before/after the body without polluting downstream consumers.
 
+    ``provider``/``model`` pin the model for this call, overriding nullclaw's
+    configured default (e.g. to route one skill's turn to a fallback model).
+    Omitting them uses the default — identical to prior behavior.
+
     Raises RuntimeError on non-zero exit or empty body (post-extraction).
     """
-    log("$ " + _display_args(["nullclaw", "agent", "-m", prompt]))
+    argv = _agent_argv(prompt, provider, model)
+    log("$ " + _display_args(argv))
     env = {**os.environ, "NULLCLAW_AGENT_TIMING_TRACE": "1"}
     proc = subprocess.run(
-        ["nullclaw", "agent", "-m", prompt],
+        argv,
         capture_output=True,
         text=True,
         timeout=timeout,

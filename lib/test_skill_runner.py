@@ -100,5 +100,37 @@ class ExtractBodyTests(unittest.TestCase):
         )
 
 
+class AgentArgvTests(unittest.TestCase):
+    """_agent_argv builds the `nullclaw agent` command line. Optional
+    provider/model let a caller pin a model per-call (nullclaw natively
+    supports --provider/--model); omitting them must reproduce the exact
+    prior argv so existing callers are unaffected."""
+
+    def test_no_provider_or_model_is_bare_argv(self):
+        self.assertEqual(
+            sr._agent_argv("hello", provider=None, model=None),
+            ["nullclaw", "agent", "-m", "hello"],
+        )
+
+    def test_model_only_appends_model_flag(self):
+        self.assertEqual(
+            sr._agent_argv("hi", provider=None, model="GLM-5.2"),
+            ["nullclaw", "agent", "-m", "hi", "--model", "GLM-5.2"],
+        )
+
+    def test_provider_only_appends_provider_flag(self):
+        self.assertEqual(
+            sr._agent_argv("hi", provider="anthropic-custom:https://x/anthropic", model=None),
+            ["nullclaw", "agent", "-m", "hi",
+             "--provider", "anthropic-custom:https://x/anthropic"],
+        )
+
+    def test_provider_and_model_append_both(self):
+        self.assertEqual(
+            sr._agent_argv("hi", provider="prov", model="mod"),
+            ["nullclaw", "agent", "-m", "hi", "--provider", "prov", "--model", "mod"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
