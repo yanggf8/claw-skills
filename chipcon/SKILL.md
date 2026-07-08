@@ -78,3 +78,24 @@ nullclaw cron add-skill "30 5 * * 2-6" chipcon --deliver-to 7972814626 --timeout
 
 The skill emits `[skill-status:ok|degraded|failed]` and `[trace:<job_id>]`
 for `skill_contract` verification.
+
+## Delivery
+
+The Telegram report is sent as **plain text** (`parse_mode=None`). The body
+is not Markdown — the status string `INSUFFICIENT_HISTORY` contains an
+underscore, and the `price fetch` WARN can carry a raw Stooq anti-scraping
+payload with unbalanced backticks/brackets. Under Telegram legacy Markdown
+these break entity parsing (`can't parse entities`, HTTP 400) and the delivery
+fails. Plain text is both correct and immune to any content.
+
+## Degraded vs failed
+
+- `degraded` (`skill-status:degraded`): a `price fetch` WARN was present but the
+  report still built and delivered. Most common cause today is Stooq serving
+  its **anti-scraping page** instead of CSV — an upstream data-source issue.
+  When that blocks the tickers, history never accumulates and the status is
+  `INSUFFICIENT_HISTORY`. The run still delivers; it self-reports `degraded` to
+  flag the fetch warning. `ok` returns automatically once Stooq serves clean
+  CSV again (no code change needed).
+- `failed` (`skill-status:failed`): a hard error — registry unreachable,
+  price CLI non-partial failure, or delivery failure.
