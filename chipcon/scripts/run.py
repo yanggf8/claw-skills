@@ -298,11 +298,19 @@ def record_line(status: str, details: dict, warning: str | None) -> str:
 
 
 def emit(message: str, status: str, args) -> None:
+    # Send as plain text (parse_mode=None): the chipcon report is plain text —
+    # status names carry underscores (e.g. INSUFFICIENT_HISTORY) and the Stooq
+    # price-fetch WARN can carry anti-scraping JS garbage with unbalanced
+    # backticks/brackets. Under Telegram legacy Markdown these break entity
+    # parsing ("can't parse entities" HTTP 400 → delivery fails → degraded).
+    # Nothing here is intentional Markdown, so plain text is both correct and
+    # immune to any content. (Mirrors the news skill's markdown-unsafe → plain
+    # fallback.)
     job_id = os.environ.get("NULLCLAW_JOB_ID")
     output = message
     if job_id:
-        output += f"\n\n`{job_id}`"
-    deliver_or_fail(args.deliver_to, output, account=args.account)
+        output += f"\n\n{job_id}"
+    deliver_or_fail(args.deliver_to, output, account=args.account, parse_mode=None)
     emit_skill_status(status)
     emit_trace()
 

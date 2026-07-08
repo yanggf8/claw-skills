@@ -123,3 +123,46 @@ def test_update_state_fails_on_price_cli_registry_error(monkeypatch):
         assert "turso registry unavailable" in str(exc)
     else:
         raise AssertionError("expected registry failure to raise RuntimeError")
+
+
+# Real Stooq anti-scraping garbage that broke Telegram Markdown parsing
+# (HTTP 400 "can't parse entities") in the live 2026-07-08 chipcon run.
+STOOQ_GARBAGE_WARN = (
+    'price fetch SMH: parse error: bad close '
+    '\'"0")).join("");if(x.startsWith(t))break;n++}const r=await fetch("/__verify"'
+)
+
+
+def test_emit_sends_plain_text_so_garbage_warning_cannot_break_delivery(monkeypatch):
+    # The chipcon report is plain text (status underscores + possibly Stooq
+    # anti-scraping garbage in the WARN). emit() must send with parse_mode=None
+    # so Telegram never tries to parse it as Markdown ("can't parse entities"
+    # HTTP 400 that flipped the run to degraded on 2026-07-08).
+    captured = {}
+
+    def fake_deliver(chat_id, body, *, account="main", parse_mode="Markdown", **kwargs):
+        captured["parse_mode"] = parse_mode
+        captured["body"] = body
+        return True
+
+    monkeypatch.setattr(run, "deliver_or_fail", fake_deliver)
+    monkeypatch.setattr(run, "emit_skill_status", lambda status: None)
+    monkeypatch.setattr(run, "emit_trace", lambda: None)
+    monkeypatch.setenv("NULLCLAW_JOB_ID", "job-xyz")
+
+    message, _ = run.format_message(
+        "INSUFFICIENT_HISTORY", {"rows": 5}, {}, warning=STOOQ_GARBAGE_WARN
+    )
+
+    class Args:
+        deliver_to = "123"
+        account = "main"
+
+    run.emit(message, "degraded", Args())
+
+    assert captured["parse_mode"] is None
+    # The garbage is delivered verbatim (plain text) — no sanitization needed.
+    assert "parse error" in captured["body"]
+    # job_id is appended as plain text, not a backtick code span.
+    assert "job-xyz" in captured["body"]
+    assert "`job-xyz`" not in captured["body"]
