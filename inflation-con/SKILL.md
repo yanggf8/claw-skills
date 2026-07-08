@@ -76,12 +76,15 @@ Monthly, not daily. Inflation is not a daily signal. Best cadence: run the day
 after each CPI release (~mid-month) and the day after each PCE release
 (~month-end), plus a manual policy-stance note after FOMC meetings.
 
+**Live cron** (added 2026-07-08, job `skill-d8960d53`):
+
 ```
 nullclaw cron add-skill "0 6 3-5 * *" inflation-con --deliver-to 7972814626 --timeout 180 --tz +08:00 --verify skill_contract --repair retry_once
 ```
 
-(Early-month window catches the prior month's PCE release; the run no-ops
-usefully if data hasn't updated — it just reports the latest available.)
+Runs 06:00 on days 3–5 of each month, UTC+8. The early-month window catches
+the prior month's PCE release; the run no-ops usefully if data hasn't updated —
+it just reports the latest available. Next fire after wiring: 2026-08-03.
 
 The skill emits `[skill-status:ok|degraded|failed]` and `[trace:<job_id>]`
 for `skill_contract` verification.
