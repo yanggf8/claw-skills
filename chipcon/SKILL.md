@@ -10,10 +10,10 @@ Monitor the SMH semiconductor satellite position using trend signals, not
 entry-price stop levels. This skill is signal-only: it never trades and never
 edits portfolio state.
 
-Data input comes through the shared `price` CLI. Each daily run calls
-`price fetch` for the configured tickers, then calls `price history` to read
-accumulated closes from the shared `price-registry` for the trend calculation.
-No broker state is read or changed.
+Data input comes from Yahoo Finance. Each daily run fetches ~1 year of daily
+closes per configured ticker via `lib/oil_fetch.py` `fetch_history(range=1y)`
+for the trend calculation. No local store, no registry, and no broker state is
+read or changed.
 
 ## Script
 
@@ -61,12 +61,9 @@ Manual event checks remain outside the algorithm:
 
 ## Data Store
 
-- CLI substrate: `price fetch <ticker...>` and `price history <ticker...>`
-- Source and storage are owned by `price`: Stooq CSV latest-close quotes into
-  Turso `price-registry`, table `prices(ticker,date,close,source)`
-- Output contract consumed by this skill: TSV `ticker date close source`
-- CLI resolution order: `CHIPCON_PRICE_CLI`, `price_cli_path` in config,
-  `price` from `PATH`, then local-dev fallback `~/b/gwebcdb/target/debug/price`
+- Source: Yahoo Finance chart API via `lib/oil_fetch.py` `fetch_history(range=1y)`
+- Each run fetches ~1 year of daily closes per configured ticker (SMH, QQQ, SOXX)
+- No local store and no price registry — history is fetched fresh each run
 
 ## Cron
 
@@ -83,19 +80,16 @@ for `skill_contract` verification.
 
 The Telegram report is sent as **plain text** (`parse_mode=None`). The body
 is not Markdown — the status string `INSUFFICIENT_HISTORY` contains an
-underscore, and the `price fetch` WARN can carry a raw Stooq anti-scraping
-payload with unbalanced backticks/brackets. Under Telegram legacy Markdown
-these break entity parsing (`can't parse entities`, HTTP 400) and the delivery
-fails. Plain text is both correct and immune to any content.
+underscore, and upstream WARN text can carry unbalanced backticks/brackets.
+Under Telegram legacy Markdown these break entity parsing (`can't parse
+entities`, HTTP 400) and the delivery fails. Plain text is both correct and
+immune to any content.
 
 ## Degraded vs failed
 
-- `degraded` (`skill-status:degraded`): a `price fetch` WARN was present but the
-  report still built and delivered. Most common cause today is Stooq serving
-  its **anti-scraping page** instead of CSV — an upstream data-source issue.
-  When that blocks the tickers, history never accumulates and the status is
-  `INSUFFICIENT_HISTORY`. The run still delivers; it self-reports `degraded` to
-  flag the fetch warning. `ok` returns automatically once Stooq serves clean
-  CSV again (no code change needed).
-- `failed` (`skill-status:failed`): a hard error — registry unreachable,
-  price CLI non-partial failure, or delivery failure.
+- `degraded` (`skill-status:degraded`): a Yahoo fetch WARN was present but the
+  report still built and delivered — e.g. a secondary ticker (QQQ or SOXX)
+  failed or returned no rows while SMH succeeded. The run still delivers; it
+  self-reports `degraded` to flag the fetch warning.
+- `failed` (`skill-status:failed`): a hard error — SMH fetch failed or empty,
+  or delivery failure.

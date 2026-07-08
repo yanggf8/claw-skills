@@ -5,13 +5,12 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
-import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
+import oil_fetch
 
 try:
     from delivery import deliver_or_fail
@@ -26,7 +25,6 @@ except Exception:
 
 
 DEFAULT_CONFIG = Path.home() / ".nullclaw" / "skills" / "chipcon" / "config.json"
-LOCAL_DEV_PRICE_CLI = Path.home() / "b" / "gwebcdb" / "target" / "debug" / "price"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -59,41 +57,6 @@ def load_config(path: Path) -> dict:
     cfg.setdefault("symbols", {"SMH": "SMH", "QQQ": "QQQ", "SOXX": "SOXX"})
     cfg.setdefault("manual_events", default_events())
     return cfg
-
-
-def price_cli_path(cfg: dict) -> str:
-    if os.environ.get("CHIPCON_PRICE_CLI"):
-        return str(Path(os.environ["CHIPCON_PRICE_CLI"]).expanduser())
-    configured = str(cfg.get("price_cli_path", "")).strip()
-    if configured:
-        return str(Path(configured).expanduser())
-    found = shutil.which("price")
-    if found:
-        return found
-    return str(LOCAL_DEV_PRICE_CLI)
-
-
-def run_price_cli(cfg: dict, args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [price_cli_path(cfg), *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
-
-def parse_price_history_tsv(output: str) -> dict[str, list[list]]:
-    state: dict[str, list[list]] = {}
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        if len(parts) < 3:
-            raise ValueError(f"bad price history row: {line}")
-        ticker, day, close_raw = parts[0].strip().upper(), parts[1].strip(), parts[2].strip()
-        state.setdefault(ticker, []).append([day, float(close_raw)])
-    return state
 
 
 def as_rows(state: dict[str, list[list]], key: str) -> list[tuple[str, float]]:
@@ -262,26 +225,22 @@ def format_message(status: str, details: dict, cfg: dict, warning: str | None = 
 
 
 def update_state(cfg: dict) -> tuple[dict[str, list[list]], str | None]:
-    warnings: list[str] = []
     symbols = cfg.get("symbols", {"SMH": "SMH", "QQQ": "QQQ", "SOXX": "SOXX"})
-    tickers = [str(symbol).upper() for symbol in symbols.values()]
-
-    fetch = run_price_cli(cfg, ["fetch", *tickers])
-    if fetch.returncode == 2:
-        warnings.append(fetch.stderr.strip() or "price fetch returned partial failures")
-    elif fetch.returncode != 0:
-        raise RuntimeError((fetch.stderr.strip() or fetch.stdout.strip() or f"price fetch failed with exit {fetch.returncode}"))
-
-    history = run_price_cli(cfg, ["history", *tickers])
-    if history.returncode == 2:
-        warnings.append(history.stderr.strip() or "price history returned missing tickers")
-    elif history.returncode != 0:
-        raise RuntimeError((history.stderr.strip() or history.stdout.strip() or f"price history failed with exit {history.returncode}"))
-
-    by_ticker = parse_price_history_tsv(history.stdout)
-    state = {}
+    warnings: list[str] = []
+    state: dict[str, list[list]] = {}
     for key, symbol in symbols.items():
-        state[str(key)] = by_ticker.get(str(symbol).upper(), [])
+        sym = str(symbol).upper()
+        try:
+            rows = oil_fetch.fetch_history(sym, range_name="1y")
+            rows = sorted(rows, key=lambda r: r[0])
+            if not rows:
+                warnings.append(f"yahoo {sym}: no rows")
+            state[str(key)] = [[d, float(c)] for d, c in rows]
+        except Exception as exc:
+            warnings.append(f"yahoo fetch {sym}: {exc}")
+            state[str(key)] = []
+    if not state.get("SMH"):
+        raise RuntimeError("; ".join(warnings) or "yahoo: no SMH history (primary symbol)")
     return state, "; ".join(warnings) if warnings else None
 
 

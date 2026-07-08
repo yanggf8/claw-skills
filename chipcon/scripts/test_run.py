@@ -1,6 +1,8 @@
 from pathlib import Path
-import subprocess
 import sys
+import types
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -47,82 +49,109 @@ def test_yellow_when_underperforming_qqq():
     assert details["rel_qqq5"] is not None
 
 
-def cp(code=0, stdout="", stderr=""):
-    return subprocess.CompletedProcess(args=[], returncode=code, stdout=stdout, stderr=stderr)
+UNSORTED_YAHOO_ROWS = [
+    ("2026-01-03", 103.0),
+    ("2026-01-01", 101.0),
+    ("2026-01-02", 102.0),
+]
+
+SORTED_YAHOO_ROWS = [
+    ["2026-01-01", 101.0],
+    ["2026-01-02", 102.0],
+    ["2026-01-03", 103.0],
+]
+
+CFG = {"symbols": {"SMH": "SMH", "QQQ": "QQQ", "SOXX": "SOXX"}}
 
 
-def test_parse_price_history_tsv_groups_rows():
-    parsed = run.parse_price_history_tsv(
-        "SMH\t2026-06-01\t620.0\tstooq\n"
-        "QQQ\t2026-06-01\t528.4\tstooq\n"
-        "SMH\t2026-06-02\t625.18\tstooq\n"
+def test_update_state_yahoo_success_sorts_and_shapes(monkeypatch):
+    def fake_fetch_history(symbol, **kwargs):
+        return list(UNSORTED_YAHOO_ROWS)
+
+    monkeypatch.setattr(
+        run,
+        "oil_fetch",
+        types.SimpleNamespace(fetch_history=fake_fetch_history),
+        raising=False,
     )
-    assert parsed == {
-        "SMH": [["2026-06-01", 620.0], ["2026-06-02", 625.18]],
-        "QQQ": [["2026-06-01", 528.4]],
-    }
+    state, warning = run.update_state(CFG)
 
-
-def test_price_cli_resolution_prefers_env_config_then_path(monkeypatch):
-    monkeypatch.setenv("CHIPCON_PRICE_CLI", "/tmp/price-env")
-    assert run.price_cli_path({"price_cli_path": "/tmp/price-config"}) == "/tmp/price-env"
-
-    monkeypatch.delenv("CHIPCON_PRICE_CLI")
-    assert run.price_cli_path({"price_cli_path": "/tmp/price-config"}) == "/tmp/price-config"
-
-    monkeypatch.setattr(run.shutil, "which", lambda name: "/usr/local/bin/price" if name == "price" else None)
-    assert run.price_cli_path({}) == "/usr/local/bin/price"
-
-
-def test_update_state_uses_price_cli_fetch_then_history(monkeypatch):
-    calls = []
-
-    def fake_run_price_cli(cfg, args):
-        calls.append(args)
-        if args[0] == "fetch":
-            return cp(0, "SMH\t2026-06-02\t625.18\tstooq\n")
-        return cp(0, (
-            "SMH\t2026-06-01\t620.0\tstooq\n"
-            "SMH\t2026-06-02\t625.18\tstooq\n"
-            "QQQ\t2026-06-02\t528.4\tstooq\n"
-            "SOXX\t2026-06-02\t290.1\tstooq\n"
-        ))
-
-    monkeypatch.setattr(run, "run_price_cli", fake_run_price_cli)
-    state, warning = run.update_state({"symbols": {"SMH": "SMH", "QQQ": "QQQ", "SOXX": "SOXX"}})
-
-    assert calls == [
-        ["fetch", "SMH", "QQQ", "SOXX"],
-        ["history", "SMH", "QQQ", "SOXX"],
-    ]
     assert warning is None
-    assert state["SMH"] == [["2026-06-01", 620.0], ["2026-06-02", 625.18]]
+    assert state["SMH"] == SORTED_YAHOO_ROWS
+    assert state["QQQ"] == SORTED_YAHOO_ROWS
+    assert state["SOXX"] == SORTED_YAHOO_ROWS
 
 
-def test_update_state_degrades_on_price_cli_partial_fetch(monkeypatch):
-    def fake_run_price_cli(cfg, args):
-        if args[0] == "fetch":
-            return cp(2, stderr="price fetch SOXX: no usable price data\n")
-        return cp(0, "SMH\t2026-06-02\t625.18\tstooq\n")
+def test_update_state_raises_when_smh_fetch_errors(monkeypatch):
+    def fake_fetch_history(symbol, **kwargs):
+        if symbol == "SMH":
+            raise RuntimeError("yahoo down")
+        return list(UNSORTED_YAHOO_ROWS)
 
-    monkeypatch.setattr(run, "run_price_cli", fake_run_price_cli)
-    state, warning = run.update_state({"symbols": {"SMH": "SMH"}})
+    monkeypatch.setattr(
+        run,
+        "oil_fetch",
+        types.SimpleNamespace(fetch_history=fake_fetch_history),
+        raising=False,
+    )
+    with pytest.raises(RuntimeError):
+        run.update_state(CFG)
 
-    assert state["SMH"] == [["2026-06-02", 625.18]]
-    assert "price fetch SOXX" in warning
+
+def test_update_state_raises_when_smh_empty(monkeypatch):
+    def fake_fetch_history(symbol, **kwargs):
+        if symbol == "SMH":
+            return []
+        return list(UNSORTED_YAHOO_ROWS)
+
+    monkeypatch.setattr(
+        run,
+        "oil_fetch",
+        types.SimpleNamespace(fetch_history=fake_fetch_history),
+        raising=False,
+    )
+    with pytest.raises(RuntimeError):
+        run.update_state(CFG)
 
 
-def test_update_state_fails_on_price_cli_registry_error(monkeypatch):
-    def fake_run_price_cli(cfg, args):
-        return cp(1, stderr="price: turso registry unavailable\n")
+def test_update_state_degrades_on_secondary_ticker_error(monkeypatch):
+    def fake_fetch_history(symbol, **kwargs):
+        if symbol == "QQQ":
+            raise RuntimeError("yahoo down")
+        return list(UNSORTED_YAHOO_ROWS)
 
-    monkeypatch.setattr(run, "run_price_cli", fake_run_price_cli)
-    try:
-        run.update_state({"symbols": {"SMH": "SMH"}})
-    except RuntimeError as exc:
-        assert "turso registry unavailable" in str(exc)
-    else:
-        raise AssertionError("expected registry failure to raise RuntimeError")
+    monkeypatch.setattr(
+        run,
+        "oil_fetch",
+        types.SimpleNamespace(fetch_history=fake_fetch_history),
+        raising=False,
+    )
+    state, warning = run.update_state(CFG)
+
+    assert "yahoo fetch QQQ" in warning
+    assert state["QQQ"] == []
+    assert state["SMH"] == SORTED_YAHOO_ROWS
+
+
+def test_update_state_warns_on_secondary_empty(monkeypatch):
+    def fake_fetch_history(symbol, **kwargs):
+        if symbol == "SOXX":
+            return []
+        return list(UNSORTED_YAHOO_ROWS)
+
+    monkeypatch.setattr(
+        run,
+        "oil_fetch",
+        types.SimpleNamespace(fetch_history=fake_fetch_history),
+        raising=False,
+    )
+    state, warning = run.update_state(CFG)
+
+    assert warning is not None
+    assert "SOXX" in warning
+    assert "no rows" in warning
+    assert state["SOXX"] == []
+    assert state["SMH"] == SORTED_YAHOO_ROWS
 
 
 # Real Stooq anti-scraping garbage that broke Telegram Markdown parsing
