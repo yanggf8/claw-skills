@@ -1,0 +1,13 @@
+{
+  "series": {
+    "core_pce": "PCEPILFE",
+    "core_cpi": "CPILFESL",
+    "headline_pce": "PCEPI",
+    "headline_cpi": "CPIAUCSL",
+    "breakeven_10y": "T10YIE",
+    "real_yield_10y": "DFII10",
+    "nominal_10y": "DGS10"
+  },
+  "policy_stance": "unclear",
+  "_policy_stance_note": "MANUAL input, one of: restrictive | neutral | easing | unclear. Never machine-parsed from FOMC text. Update by hand after each FOMC meeting. Only tips the RED context clause (RED needs context 'not easing')."
+}
