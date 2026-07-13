@@ -70,6 +70,15 @@ monetary inflation. 3-mo and 6-mo figures are compound-annualized.
 text. It only tips the RED context clause. Update it by hand after each FOMC
 meeting.
 
+**Config file (runtime, not committed):**
+
+- Path (absolute): `~/.nullclaw/skills/inflation-con/config.json`
+- On a symlink deploy this is the same file as `inflation-con/config.json` in the
+  repo (gitignored). Template: `config.example.json`.
+- Missing file → loader defaults `policy_stance` to `unclear` (no silent
+  fallback if the file exists but is corrupt JSON — that raises).
+- Override: `--config /path/to/config.json`
+
 ## Frequency
 
 Monthly, not daily. Inflation is not a daily signal. Best cadence: run the day

@@ -213,3 +213,191 @@ def test_report_never_prescribes_a_trade():
     low = message.lower()
     for banned in ("buy ", "sell ", "un-gate", "allocate ", "shares", "$"):
         assert banned not in low, f"report leaked action verb: {banned!r}"
+
+
+# ---- load_config + deploy path contracts (drift fix) -----------------------
+# Test plan: docs/reviews/2026-07-13-inflation-con-drift-test-plan.md
+# Codex execute: approve-with-changes (no silent loss of policy_stance).
+
+import json
+import os
+
+
+def test_load_config_missing_path_returns_unclear(tmp_path):
+    missing = tmp_path / "nope" / "config.json"
+    cfg = run.load_config(missing)
+    assert cfg["policy_stance"] == "unclear"
+    for key in run.DEFAULT_SERIES:
+        assert key in cfg["series"]
+        assert cfg["series"][key] == run.DEFAULT_SERIES[key]
+
+
+def test_load_config_empty_object_stance_unclear(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text("{}", encoding="utf-8")
+    cfg = run.load_config(p)
+    assert cfg["policy_stance"] == "unclear"
+    assert set(cfg["series"]) == set(run.DEFAULT_SERIES)
+
+
+def test_load_config_restrictive(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"policy_stance": "restrictive"}), encoding="utf-8")
+    cfg = run.load_config(p)
+    assert cfg["policy_stance"] == "restrictive"
+    assert set(cfg["series"]) == set(run.DEFAULT_SERIES)
+
+
+def test_load_config_stance_case_normalized(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"policy_stance": "RESTRICTIVE"}), encoding="utf-8")
+    assert run.load_config(p)["policy_stance"] == "restrictive"
+
+
+def test_load_config_invalid_stance_becomes_unclear(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"policy_stance": "hawkish"}), encoding="utf-8")
+    assert run.load_config(p)["policy_stance"] == "unclear"
+
+
+def test_load_config_series_partial_override(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(
+        json.dumps({
+            "policy_stance": "neutral",
+            "series": {"core_pce": "CUSTOM_PCE"},
+        }),
+        encoding="utf-8",
+    )
+    cfg = run.load_config(p)
+    assert cfg["series"]["core_pce"] == "CUSTOM_PCE"
+    assert cfg["series"]["core_cpi"] == run.DEFAULT_SERIES["core_cpi"]
+    assert cfg["policy_stance"] == "neutral"
+
+
+def test_load_config_unknown_keys_ignored_safely(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(
+        json.dumps({
+            "policy_stance": "easing",
+            "_policy_stance_note": "human note",
+            "extra": 1,
+        }),
+        encoding="utf-8",
+    )
+    cfg = run.load_config(p)
+    assert cfg["policy_stance"] == "easing"
+    assert cfg.get("extra") == 1
+
+
+def test_load_config_invalid_json_raises(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        run.load_config(p)
+
+
+def test_default_config_path_shape():
+    expected = Path.home() / ".nullclaw" / "skills" / "inflation-con" / "config.json"
+    assert run.DEFAULT_CONFIG == expected
+
+
+def test_load_config_via_skills_symlink_layout(tmp_path, monkeypatch):
+    """T10: absolute skills path resolves through symlink to repo config file."""
+    home = tmp_path / "home"
+    repo_skill = tmp_path / "repo" / "inflation-con"
+    skills = home / ".nullclaw" / "skills"
+    skills.mkdir(parents=True)
+    repo_skill.mkdir(parents=True)
+    cfg_path = repo_skill / "config.json"
+    cfg_path.write_text(json.dumps({"policy_stance": "restrictive"}), encoding="utf-8")
+    os.symlink(repo_skill, skills / "inflation-con")
+
+    # DEFAULT_CONFIG is import-time; rebind to the fake skills path (do not
+    # pretend Path.home patch rewrites it — load_config never calls Path.home).
+    skills_cfg = home / ".nullclaw" / "skills" / "inflation-con" / "config.json"
+    monkeypatch.setattr(run, "DEFAULT_CONFIG", skills_cfg)
+    assert skills_cfg.is_symlink() or skills_cfg.parent.is_symlink()
+    assert skills_cfg.resolve() == cfg_path.resolve()
+    cfg = run.load_config(skills_cfg)
+    assert cfg["policy_stance"] == "restrictive"
+
+
+def test_load_config_symlink_layout_missing_config_unclear(tmp_path, monkeypatch):
+    """T11: symlink deploy without config file → silent unclear (the bug we prevent)."""
+    home = tmp_path / "home"
+    repo_skill = tmp_path / "repo" / "inflation-con"
+    skills = home / ".nullclaw" / "skills"
+    skills.mkdir(parents=True)
+    repo_skill.mkdir(parents=True)
+    # deliberately no config.json in repo_skill
+    os.symlink(repo_skill, skills / "inflation-con")
+    monkeypatch.setattr(
+        run,
+        "DEFAULT_CONFIG",
+        home / ".nullclaw" / "skills" / "inflation-con" / "config.json",
+    )
+    cfg = run.load_config(run.DEFAULT_CONFIG)
+    assert cfg["policy_stance"] == "unclear"
+
+
+def test_gitignore_scopes_inflation_con_config():
+    """T15: red until implement adds exact ignore line (not a comment substring)."""
+    root = Path(__file__).resolve().parents[2]
+    lines = [
+        ln.strip()
+        for ln in (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    assert "inflation-con/config.json" in lines
+
+
+def test_config_example_documents_policy_stance():
+    root = Path(__file__).resolve().parents[1]
+    example = json.loads((root / "config.example.json").read_text(encoding="utf-8"))
+    assert "policy_stance" in example
+    assert example["policy_stance"] in run.VALID_STANCES
+    assert "_policy_stance_note" in example
+
+
+def test_live_deploy_loads_restrictive_or_skip():
+    """T12 host-gated acceptance for symlink deploy.
+
+    Default: skip if still a pre-fix real copy (not red noise in unit runs).
+    Force red-before-deploy / hard accept with:
+      INFLATION_CON_REQUIRE_DEPLOY=1 pytest ... -k live_deploy
+    """
+    skill = Path.home() / ".nullclaw" / "skills" / "inflation-con"
+    require = os.environ.get("INFLATION_CON_REQUIRE_DEPLOY") == "1"
+    if not skill.exists():
+        if require:
+            pytest.fail("INFLATION_CON_REQUIRE_DEPLOY=1 but skill path missing")
+        pytest.skip("no live inflation-con deploy")
+    cfg_path = run.DEFAULT_CONFIG
+    if not skill.is_symlink():
+        if require:
+            pytest.fail(
+                "INFLATION_CON_REQUIRE_DEPLOY=1: inflation-con is still a COPY; "
+                "expected symlink into repo with restrictive config"
+            )
+        if cfg_path.exists():
+            cfg = run.load_config(cfg_path)
+            assert cfg["policy_stance"] in run.VALID_STANCES
+        pytest.skip("live skill is still a copy; deploy not executed yet")
+    # Post-deploy acceptance (always hard when symlink).
+    assert cfg_path.resolve().is_file(), "symlink deploy missing config.json"
+    repo = Path(__file__).resolve().parents[1]
+    assert str(cfg_path.resolve()).startswith(str(repo.resolve())), (
+        f"config resolves outside repo: {cfg_path.resolve()}"
+    )
+    cfg = run.load_config(cfg_path)
+    assert cfg["policy_stance"] == "restrictive", cfg
+
+
+def test_chipcon_remains_copy_when_present():
+    """T13 scope guard: do not convert chipcon in this workstream."""
+    chip = Path.home() / ".nullclaw" / "skills" / "chipcon"
+    if not chip.exists():
+        pytest.skip("no live chipcon")
+    assert chip.is_dir()
+    assert not chip.is_symlink()

@@ -16,3 +16,6 @@ liko-finance-weekly/failed/
 .secrets
 *.secrets
 *.credentials.json
+
+# inflation-con runtime stance (local; not committed)
+inflation-con/config.json

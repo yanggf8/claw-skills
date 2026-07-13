@@ -1,0 +1,6 @@
+2026-07-13T11:00:46+08:00 | PLAN | inflation-con drift fix plan written; await Codex review
+2026-07-13T11:06:19+08:00 | CORROBORATE | Codex approve-with-changes; plan A + execute checklist fixes; not executed
+2026-07-13T11:16:39+08:00 | DEPLOY | inflation-con symlink OK; stance=restrictive; doctor 1 drift=chipcon only
+2026-07-13T11:21:14+08:00 | DONE | tests 29 green; deploy OK; Claude full APPROVE
+2026-07-13T11:21:42+08:00 | SKILL | document config path; HANDOFF task1 done note
+2026-07-13T11:25:36+08:00 | PROTOCOL | REVIEW-PROTOCOL.md: Claude reviews must run pytest; re-request issued
