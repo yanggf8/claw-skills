@@ -195,3 +195,13 @@ def test_emit_sends_plain_text_so_garbage_warning_cannot_break_delivery(monkeypa
     # job_id is appended as plain text, not a backtick code span.
     assert "job-xyz" in captured["body"]
     assert "`job-xyz`" not in captured["body"]
+
+def test_format_message_is_observation_not_exit_review():
+    message, skill_status = run.format_message(
+        "INSUFFICIENT_HISTORY", {"rows": 5}, {}, warning=None
+    )
+    assert skill_status == "ok"
+    assert "觀測" in message
+    assert "退場" not in message
+    assert "出場" not in message
+    assert "不是交易指令" in message

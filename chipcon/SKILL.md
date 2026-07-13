@@ -1,14 +1,15 @@
 ---
 name: chipcon
-description: Monitor semiconductor momentum for the SMH tactical position using trend and relative-strength signals, then deliver a signal-only exit-review report.
+description: Observe SMH semiconductor momentum via trend and relative-strength signals; signal-only observation report (no trade or exit advice).
 always: true
 ---
 
 # chipcon
 
-Monitor the SMH semiconductor satellite position using trend signals, not
-entry-price stop levels. This skill is signal-only: it never trades and never
-edits portfolio state.
+Observe semiconductor **market momentum** (SMH vs 20/50DMA and relative
+strength vs QQQ/SOXX). This is **observation-only**: no entry/exit advice, no
+position sizing, no portfolio edits. Status labels describe trend health, not
+an instruction to sell or reduce.
 
 Data input comes from Yahoo Finance. Each daily run fetches ~1 year of daily
 closes per configured ticker via `lib/oil_fetch.py` `fetch_history(range=1y)`
@@ -42,14 +43,14 @@ The report watches:
 
 Status ladder:
 
-| Status | Meaning |
+| Status | Meaning (observation only) |
 |---|---|
 | `OK` | Trend intact. |
-| `YELLOW` | Momentum weakening; do not add automatically. |
-| `ORANGE` | Trend deterioration; reduce review. |
-| `RED` | Exit-bias review. |
-| `PROFIT_PROTECT` | Trend still high but overextended; protect gains review. |
-| `INSUFFICIENT_HISTORY` | Need more local history before trend can be trusted. |
+| `YELLOW` | Momentum weakening (observe). |
+| `ORANGE` | Trend deterioration (observe). |
+| `RED` | Trend broken vs key averages / RS (observe). |
+| `PROFIT_PROTECT` | Still extended above 20DMA after a down day (observe). |
+| `INSUFFICIENT_HISTORY` | Need more history before trend can be trusted. |
 
 Manual event checks remain outside the algorithm:
 

@@ -186,7 +186,7 @@ Prior design context lives in `docs/specs/` (`2026-04-15-oilcon-skill-design.md`
 | `cct` | `--mode <pre-market\|eod\|...>` | CCT internal |
 | `cct2` | `--mode pre-market\|eod` | Yahoo Finance + dual LLM |
 | `stock` | `--market tw\|hk\|all`, `--symbol CODE` | TWSE, Yahoo Finance |
-| `chipcon` | `--mode record`, `--deliver-to` | Stooq via shared `price` CLI → Turso `price-registry` |
+| `chipcon` | `--mode record`, `--deliver-to` | Yahoo Finance chart (SMH/QQQ/SOXX); observation-only report |
 | `weather` | `--location NAME` (repeatable) | CWA (Taiwan), HKO (HK) |
 | `traffic` | `--from`, `--to`, `--via` | TomTom Routing API |
 | `commute` | wraps traffic | TomTom |

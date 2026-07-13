@@ -68,7 +68,7 @@ Config schema auto-detected:
 | agent-reach | Give the agent internet eyes — search/read 17 platforms (Twitter/X, Reddit, YouTube, GitHub, Bilibili, etc.) and any web page |
 | cct | Fetch CCT 4-moment trading intelligence and deliver to Telegram |
 | cct2 | Dual-LLM market sentiment analysis for configured tickers — pre-market and EOD reports |
-| chipcon | Monitor SMH semiconductor momentum via trend/relative-strength signals; signal-only exit-review report |
+| chipcon | Observe SMH semiconductor momentum via trend/relative-strength signals; signal-only observation report |
 | commute | Fetch route travel time via traffic sub-skill |
 | doughcon | Fetch PizzINT DOUGHCON level and deliver or record |
 | liko-finance-weekly | Draft, validate, and publish the weekly liko-finance cross-border wealth signal stream |

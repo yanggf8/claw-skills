@@ -220,7 +220,7 @@ def format_message(status: str, details: dict, cfg: dict, warning: str | None = 
     for event in cfg.get("manual_events", default_events()):
         lines.append(f"- {event}")
     lines.append("")
-    lines.append("SIGNAL-ONLY：這是退場 review 信號，不是交易指令。")
+    lines.append("SIGNAL-ONLY：這是動能觀測信號，不是交易指令。")
     return "\n".join(lines), skill_status
 
 
