@@ -35,7 +35,9 @@ LLM_CUSTOM_TIMEOUT_SECS = 180
 LLM_SECTION_TIMEOUT_SECS = 90
 LLM_TRANSLATION_TIMEOUT_SECS = 60
 TELEGRAM_RAW_CHUNK_LIMIT = 3800
-AI_SUBSTAGE_CACHE_VARIANT = "default_ai_clustered_v3_precheck"
+# Bumped when AI substage prompt / cached-output semantics change
+# (DEDUP_RULES + post-select hard dedup). Old day-caches under prior variants ignored.
+AI_SUBSTAGE_CACHE_VARIANT = "default_ai_clustered_v5_post_dedup"
 
 # Content prechecking (lib/news_quality). Tier 1 = deterministic, no network,
 # pre-LLM. Tier 2 = body precheck of LLM-picked items, before link attach.
@@ -57,6 +59,16 @@ PAYWALL_REPLACE_SOURCES = tuple(
     if s.strip()
 )
 PAYWALL_REPLACE_BING_MKT = os.environ.get("NEWS_PAYWALL_REPLACE_BING_MKT", "en-US")
+# Soft pair-hints for default section LLM selection (pre-LLM, no hard drop).
+# NEWS_LLM_DEDUP_HINTS=0 disables injection + skips builder work.
+LLM_DEDUP_HINTS_ENABLED = os.environ.get("NEWS_LLM_DEDUP_HINTS", "1") != "0"
+# Post-LLM selected-set hard dedup (after marker validation, before precheck).
+# NEWS_LLM_POST_DEDUP=0 disables. Threshold matches hints: overlap >= 4 only
+# (NOT 3+entity — that false-merges same-theme different events).
+LLM_POST_DEDUP_ENABLED = os.environ.get("NEWS_LLM_POST_DEDUP", "1") != "0"
+# Independent pair / post-dedup threshold: overlap >= 4.
+LLM_DEDUP_HINT_OVERLAP = 4
+LLM_POST_DEDUP_OVERLAP = 4
 # Substaging: each Level-2 half (or Level-3 quarter) gets a smaller timeout
 # than the original 90s monolithic call — half-size prompts should not need it.
 AI_SUBSTAGE_TIMEOUT_SECS = 60
@@ -107,6 +119,22 @@ _CJK_STOP_BIGRAMS = {
     "公司", "發布", "布新", "新產", "產品", "股價", "上漲", "下跌",
 }
 _CLUSTER_OVERLAP = 2
+
+# Shared event-dedup rules for default section + AI substage LLM prompts.
+# Distinguish same *event* (collapse) from same *theme* (may keep multiple).
+DEDUP_RULES = (
+    "- 同一則新聞如果有多個來源（標題講同一件事，例如同一財報／同一政策公告／"
+    "同一研究報告／同一產品發布的不同改寫），只挑一則：\n"
+    "  優先選免費來源（cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、"
+    "Reuters、AP、ScienceDaily、TechCrunch 等）\n"
+    "  避開付費牆來源（WSJ、Bloomberg、FT、Nikkei、Barron's 等）\n"
+    "  只有付費來源報導時才保留付費來源\n"
+    "- 重複判斷以「事件本身」為準，不是「同產業主題」：\n"
+    "  同事件（應合併）：同一份報告／同一公告／同一季財報／同一產品發布的多出口改寫，"
+    "即使標題 hook 不同（例如「晶片回流夢碎」與「彭博爆晶片業拉警報」講同一危機）\n"
+    "  不同事件（應保留）：主體或焦點不同（例如記憶體股技術性熊市 vs 輝達選擇權 vs "
+    "泛板塊震盪綜述可同時保留）"
+)
 
 TRANSLATION_RULES_STRICT = (
     "英文標題必須完整翻譯成繁體中文。"
@@ -498,6 +526,259 @@ def pick_representatives(clusters: list[list[dict]], *, per_cluster: int = 1) ->
     for group in clusters:
         ranked.extend(group[:per_cluster])
     return ranked
+
+
+def _dedup_pair_hints(
+    numbered: dict[int, dict],
+    *,
+    min_overlap: int = LLM_DEDUP_HINT_OVERLAP,
+) -> list[tuple[int, int, int]]:
+    """Return independent high-overlap pairs among numbered candidates.
+
+    Each entry is ``(a, b, overlap)`` with ``a < b``. Pairs are independent
+    (no transitive closure / connected components). Deterministic: marker
+    ids are sorted before pairwise comparison.
+    """
+    ids = sorted(numbered)
+    word_sets = {
+        i: _topic_words(str(numbered[i].get("title") or ""))
+        for i in ids
+    }
+    pairs: list[tuple[int, int, int]] = []
+    for i, a in enumerate(ids):
+        wa = word_sets[a]
+        if not wa:
+            continue
+        for b in ids[i + 1:]:
+            wb = word_sets[b]
+            if not wb:
+                continue
+            overlap = len(wa & wb)
+            if overlap >= min_overlap:
+                pairs.append((a, b, overlap))
+    return pairs
+
+
+def _format_dedup_hint_block(pairs: list[tuple[int, int, int]]) -> str:
+    """Render soft pair hints for the LLM prompt (empty string if none)."""
+    if not pairs:
+        return ""
+    parts = [f"#{a}+#{b}" for a, b, _ov in pairs]
+    return (
+        "可能同事件候選（僅供複核，仍按事件語義判斷；非硬性合併）："
+        + "; ".join(parts)
+        + "\n\n"
+    )
+
+
+def _parse_pick_min(pick_spec) -> int | None:
+    """Lower bound of a section pick range like ``\"3-5\"`` → 3."""
+    if pick_spec is None:
+        return None
+    match = re.match(r"\s*(\d+)", str(pick_spec))
+    return int(match.group(1)) if match else None
+
+
+def _post_dedup_selected_summary(
+    summary: str,
+    numbered: dict[int, dict],
+    *,
+    section: str,
+    min_overlap: int = LLM_POST_DEDUP_OVERLAP,
+    pick_min: int | None = None,
+) -> str:
+    """Hard-collapse same-event rewrites among LLM-selected ``#N`` bullets.
+
+    Call **after** marker validation and **before** precheck/paywall, while
+    ``#N`` identity still exists. Only the selected subset is considered
+    (not the full feed).
+
+    Algorithm (greedy, **not** connected-components): walk LLM output order;
+    keep a bullet iff its title-token overlap with every already-kept bullet
+    is ``< min_overlap``. Direct high-overlap pairs collapse; a weak bridge
+    cannot transitively delete two unrelated stories (A–B and B–C edges do
+    not force dropping C when A∩C is low). First kept = first in LLM order
+    (preserves model free-source preference when it already chose).
+
+    When ``pick_min`` is set and the kept count falls below that floor (but
+    stays non-empty), emit ``post_dedup_underfill`` then attempt **one**
+    deterministic refill from *never-LLM-selected* numbered candidates
+    (overlap with every kept item must be ``< min_overlap``). Does not revive
+    P2-dropped ids and does not re-call the LLM (Codex S3).
+
+    Kill-switch: ``NEWS_LLM_POST_DEDUP=0``.
+    """
+    selected = _extract_leading_marker_ids(summary, numbered)
+    if not LLM_POST_DEDUP_ENABLED:
+        log_trace(
+            "llm_post_dedup",
+            section=section,
+            enabled=False,
+            before=selected,
+            after=selected,
+            dropped=[],
+            min_overlap=min_overlap,
+        )
+        return summary
+
+    if len(selected) < 2:
+        log_trace(
+            "llm_post_dedup",
+            section=section,
+            enabled=True,
+            before=selected,
+            after=selected,
+            dropped=[],
+            pairs=[],
+            min_overlap=min_overlap,
+        )
+        return summary
+
+    word_sets = {
+        i: _topic_words(str(numbered[i].get("title") or ""))
+        for i in selected
+        if i in numbered
+    }
+    # Diagnostic pairs (same as hints); collapse uses greedy keep, not union-find.
+    pairs = _dedup_pair_hints(
+        {i: numbered[i] for i in selected if i in numbered},
+        min_overlap=min_overlap,
+    )
+
+    keep_ordered: list[int] = []
+    for mid in selected:
+        words = word_sets.get(mid) or set()
+        if any(
+            len(words & (word_sets.get(k) or set())) >= min_overlap
+            for k in keep_ordered
+        ):
+            continue
+        keep_ordered.append(mid)
+
+    keep = set(keep_ordered)
+    after = list(keep_ordered)
+    dropped = [m for m in selected if m not in keep]
+    log_trace(
+        "llm_post_dedup",
+        section=section,
+        enabled=True,
+        before=selected,
+        after=after,
+        dropped=dropped,
+        pairs=[{"a": a, "b": b, "overlap": ov} for a, b, ov in pairs],
+        min_overlap=min_overlap,
+    )
+
+    body = summary
+    if dropped:
+        bullet_lines = set(_news_bullet_lines(summary))
+        out: list[str] = []
+        for line in summary.splitlines():
+            if line not in bullet_lines:
+                out.append(line)
+                continue
+            match = _MARKER_RE.match(line)
+            if not match:
+                out.append(line)
+                continue
+            num = int(match.group(1))
+            if num in numbered and num not in keep:
+                continue
+            out.append(line)
+        body = "\n".join(out)
+
+    if (
+        pick_min is not None
+        and len(selected) >= pick_min
+        and 0 < len(after) < pick_min
+    ):
+        log_trace(
+            "post_dedup_underfill",
+            section=section,
+            before=len(selected),
+            after=len(after),
+            pick_min=pick_min,
+            before_ids=selected,
+            after_ids=after,
+        )
+        body, after = _refill_unselected_after_underfill(
+            body,
+            numbered,
+            section=section,
+            keep_ids=after,
+            llm_selected=selected,
+            pick_min=pick_min,
+            min_overlap=min_overlap,
+        )
+    return body
+
+
+def _refill_unselected_after_underfill(
+    summary: str,
+    numbered: dict[int, dict],
+    *,
+    section: str,
+    keep_ids: list[int],
+    llm_selected: list[int],
+    pick_min: int,
+    min_overlap: int = LLM_POST_DEDUP_OVERLAP,
+) -> tuple[str, list[int]]:
+    """Deterministic one-shot refill from never-LLM-selected candidates (Codex S3).
+
+    Does not re-call the LLM, does not lower ``min_overlap``, and does not
+    revive ids that were in the LLM selection (including those P2 dropped).
+    """
+    keep = list(keep_ids)
+    if pick_min <= 0 or len(keep) >= pick_min or not keep:
+        log_trace(
+            "post_dedup_refill",
+            section=section,
+            attempted=0,
+            added=[],
+            final_count=len(keep),
+            still_underfill=len(keep) < pick_min,
+        )
+        return summary, keep
+
+    forbidden = set(llm_selected)
+    keep_word_sets = {
+        i: _topic_words(str(numbered[i].get("title") or ""))
+        for i in keep
+        if i in numbered
+    }
+    added: list[int] = []
+    lines = [summary] if summary.strip() else []
+
+    for cand in sorted(numbered):
+        if len(keep) >= pick_min:
+            break
+        if cand in forbidden or cand in keep_word_sets:
+            continue
+        title = str(numbered[cand].get("title") or "").strip()
+        if not title:
+            continue
+        words = _topic_words(title)
+        if any(
+            len(words & kwords) >= min_overlap
+            for kwords in keep_word_sets.values()
+        ):
+            continue
+        keep.append(cand)
+        keep_word_sets[cand] = words
+        added.append(cand)
+        safe = _neutralize_markdown_specials(title)
+        lines.append(f"- #{cand} {safe}")
+
+    log_trace(
+        "post_dedup_refill",
+        section=section,
+        attempted=len(added),
+        added=added,
+        final_count=len(keep),
+        still_underfill=len(keep) < pick_min,
+        pick_min=pick_min,
+    )
+    return "\n".join(lines), keep
 
 
 def _build_link_map(all_items: dict[str, list[dict]]) -> dict[str, str]:
@@ -1518,9 +1799,30 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
         labels=[key],
         limits={key: spec["limit"]},
     )
+    # Soft pair-hints for default sections (tech/general). Independent pairs.
+    hint_block = ""
+    if LLM_DEDUP_HINTS_ENABLED:
+        pairs = _dedup_pair_hints(numbered)
+        log_trace(
+            "llm_dedup_hints",
+            section=key,
+            enabled=True,
+            pairs=[{"a": a, "b": b, "overlap": ov} for a, b, ov in pairs],
+            min_overlap=LLM_DEDUP_HINT_OVERLAP,
+        )
+        hint_block = _format_dedup_hint_block(pairs)
+    else:
+        log_trace(
+            "llm_dedup_hints",
+            section=key,
+            enabled=False,
+            pairs=[],
+            min_overlap=LLM_DEDUP_HINT_OVERLAP,
+        )
     prompt = (
         f"你是新聞編輯。以下是今天({date_str})的「{spec['header']}」候選新聞標題（每則有編號 #N）。\n\n"
         f"{raw}\n\n"
+        f"{hint_block}"
         f"請挑出 {spec['pick']} 則{spec['focus']}。\n"
         f"用繁體中文輸出，格式嚴格如下（不要輸出標題、開場白或結語）：\n"
         f"- #N 新聞標題\n"
@@ -1530,11 +1832,7 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
         f"- {TRANSLATION_RULES_STRICT}\n"
         f"- 每行必須以繁體中文新聞句子開始，不要輸出英文原標題或「英文（中文）」格式\n"
         f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n"
-        f"- 同一則新聞如果有多個來源（標題講同一件事，例如「百度Q1財報」三個版本），只挑一則：\n"
-        f"  優先選免費來源（cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、Reuters、AP、ScienceDaily、TechCrunch 等）\n"
-        f"  避開付費牆來源（WSJ、Bloomberg、FT、Nikkei、Barron's 等）\n"
-        f"  只有付費來源報導時才保留付費來源\n"
-        f"- 重複判斷以「事件本身」為準：同公司同季財報、同一政策公告、同一產品發布、同一研究突破都算重複"
+        f"{DEDUP_RULES}"
     )
     try:
         result = _run_nullclaw_agent(
@@ -1548,6 +1846,17 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
         if summary:
             marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
             if total_bullets > 0 and marked_bullets == total_bullets:
+                # P2: collapse same-event rewrites on the selected set only,
+                # before precheck builds paywall maps from #N identities.
+                summary = _post_dedup_selected_summary(
+                    summary,
+                    numbered,
+                    section=key,
+                    pick_min=_parse_pick_min(spec.get("pick")),
+                )
+                if not _news_bullet_lines(summary):
+                    log_trace("quality_all_dropped", section=key, reason="post_dedup_empty")
+                    return ["- 今日無相關新聞"], False
                 chinese_bullets, language_total = _language_validation_stats(summary)
                 if not _language_validation_passed(summary):
                     _log_llm_validation_failed(
@@ -1669,9 +1978,30 @@ def _run_ai_substage(
     # Smaller pick count proportional to batch size; the two halves are
     # concatenated, so each half should not over-select.
     pick_count = max(2, len(sub_items) // 3)
+    # P1 soft pair hints (Codex S5) — same builder as default/custom.
+    hint_block = ""
+    if LLM_DEDUP_HINTS_ENABLED:
+        pairs = _dedup_pair_hints(numbered)
+        log_trace(
+            "llm_dedup_hints",
+            section="ai",
+            enabled=True,
+            pairs=[{"a": a, "b": b, "overlap": ov} for a, b, ov in pairs],
+            min_overlap=LLM_DEDUP_HINT_OVERLAP,
+        )
+        hint_block = _format_dedup_hint_block(pairs)
+    else:
+        log_trace(
+            "llm_dedup_hints",
+            section="ai",
+            enabled=False,
+            pairs=[],
+            min_overlap=LLM_DEDUP_HINT_OVERLAP,
+        )
     prompt = (
         f"你是新聞編輯。以下是今天({date_str})的「{spec['header']}」候選新聞標題（每則有編號 #N），這是分批處理的批次。\n\n"
         f"{raw}\n\n"
+        f"{hint_block}"
         f"請從這個批次挑出 {pick_count} 則{spec['focus']}。\n"
         f"用繁體中文輸出，格式嚴格如下（不要輸出標題、開場白或結語）：\n"
         f"- #N 新聞標題\n"
@@ -1680,10 +2010,7 @@ def _run_ai_substage(
         f"- 每則新聞前面必須保留原始編號 #N\n"
         f"- {TRANSLATION_RULES_STRICT}\n"
         f"- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n"
-        f"- 同一則新聞如果有多個來源（標題講同一件事），只挑一則：\n"
-        f"  優先選免費來源（cnyes、TechNews、Yahoo新聞、MoneyDJ、工商時報、Reuters、AP、ScienceDaily、TechCrunch 等）\n"
-        f"  避開付費牆來源（WSJ、Bloomberg、FT、Nikkei、Barron's 等）\n"
-        f"  只有付費來源報導時才保留付費來源"
+        f"{DEDUP_RULES}"
     )
 
     result = _run_nullclaw_agent(
@@ -1705,6 +2032,17 @@ def _run_ai_substage(
     marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
     if total_bullets == 0 or marked_bullets != total_bullets:
         return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
+
+    # P2: selected-set hard dedup before precheck (while #N identity exists).
+    summary = _post_dedup_selected_summary(
+        summary,
+        numbered,
+        section="ai",
+        pick_min=pick_count,
+    )
+    if not _news_bullet_lines(summary):
+        log_trace("ai_substage_all_dropped", range=[start, end], reason="post_dedup_empty")
+        return True, [], ""
 
     # Tier 2 body precheck, before any cache write or link attach (while #N identity exists).
     summary, paywall = _precheck_apply(summary, numbered, "ai")
@@ -2001,7 +2339,7 @@ def _run_custom_topic(
     is embedded so a precheck-logic bump invalidates same-day caches) and reused
     on the next attempt of the same (date, topic).
     """
-    variant = "custom_topic_v2_precheck"
+    variant = "custom_topic_v3_dedup"
     safe_date = date_str.split()[0].replace("/", "-")
     safe_topic = "".join(ch if ch.isalnum() else "_" for ch in topic)[:40]
     # Embed the variant in the filename so a bump actually invalidates same-day
@@ -2026,9 +2364,30 @@ def _run_custom_topic(
         labels=[topic],
         limits={topic: LLM_CUSTOM_TOPIC_LIMIT},
     )
+    section_key = f"custom:{topic}"
+    hint_block = ""
+    if LLM_DEDUP_HINTS_ENABLED:
+        pairs = _dedup_pair_hints(numbered)
+        log_trace(
+            "llm_dedup_hints",
+            section=section_key,
+            enabled=True,
+            pairs=[{"a": a, "b": b, "overlap": ov} for a, b, ov in pairs],
+            min_overlap=LLM_DEDUP_HINT_OVERLAP,
+        )
+        hint_block = _format_dedup_hint_block(pairs)
+    else:
+        log_trace(
+            "llm_dedup_hints",
+            section=section_key,
+            enabled=False,
+            pairs=[],
+            min_overlap=LLM_DEDUP_HINT_OVERLAP,
+        )
     prompt = (
         f"你是新聞編輯。以下是今天({date_str})關於「{topic}」的候選新聞標題（每則有編號 #N）。\n\n"
         f"{raw}\n\n"
+        f"{hint_block}"
         f"請從中挑出 2-4 則真正有影響力、有意義的新聞，排除瑣碎、純行銷推廣、政治宣傳性質的新聞。\n"
         f"用繁體中文輸出，格式嚴格如下（不要輸出標題、開場白或結語）：\n"
         f"- #N 新聞標題\n"
@@ -2036,6 +2395,7 @@ def _run_custom_topic(
         f"規則：\n"
         f"- 每則新聞前面必須保留原始編號 #N\n"
         f"- {TRANSLATION_RULES_STRICT}\n"
+        f"{DEDUP_RULES}\n"
         f"- 如果今日無相關新聞，輸出「- 今日無相關新聞」"
     )
 
@@ -2059,6 +2419,16 @@ def _run_custom_topic(
     if total_bullets == 0 or marked_bullets != total_bullets:
         return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
 
+    summary = _post_dedup_selected_summary(
+        summary,
+        numbered,
+        section=section_key,
+        pick_min=2,  # custom prompt asks for 2-4
+    )
+    if not _news_bullet_lines(summary):
+        log_trace("quality_all_dropped", section=section_key, reason="post_dedup_empty")
+        return True, ["- 今日無相關新聞"], ""
+
     # Tier 2 body precheck, before cache write / link attach (while #N identity exists).
     summary, paywall = _precheck_apply(summary, numbered, f"custom:{topic}")
     if not _news_bullet_lines(summary):
@@ -2070,6 +2440,29 @@ def _run_custom_topic(
         return True, ["- 今日無相關新聞"], ""
 
     _resolve_paywall_replacements(paywall, date_str)
+
+    # Language gate (Claude full-review M1): after post-dedup/refill + precheck,
+    # same ordering as AI substage so a refilled raw English RSS title is translated.
+    if not _language_validation_passed(summary):
+        translated = _translate_selected_section(
+            f"custom:{topic}",
+            _extract_leading_marker_ids(summary, numbered),
+            numbered,
+            date_str,
+            paywall,
+        )
+        if translated is None:
+            return False, [], "language_validation"
+        body = "\n".join(translated)
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                f.write(body)
+            log_trace("news_cache_write", variant=variant, topic=topic, bytes=len(body))
+        except OSError as e:
+            log_trace("news_cache_write_error", variant=variant, topic=topic, error=str(e))
+        return True, translated, ""
+
     with_links, links_attached = _attach_numbered_links(summary, numbered, paywall)
     if links_attached == 0:
         # Bullets present but no link attached. Treat as success (still readable

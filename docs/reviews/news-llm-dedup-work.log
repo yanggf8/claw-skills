@@ -1,0 +1,72 @@
+# news LLM dedup review work log
+# append-only; ISO timestamps
+
+2026-07-13T09:56:41+08:00 | START | file-based handoff workflow
+2026-07-13T09:56:41+08:00 | CANCEL | stuck codex job task-mrikfbi2-cgbapx (prior session hung after exploration)
+2026-07-13T09:56:50+08:00 | WRITE | drafting proposal -> docs/reviews/news-llm-dedup-proposal.md
+2026-07-13T09:57:05+08:00 | PROPOSAL_READY | docs/reviews/news-llm-dedup-proposal.md
+2026-07-13T09:57:05+08:00 | CODEX_START | codex-companion task --write --fresh (file-based)
+[codex] Starting Codex task thread.
+[codex] Thread ready (019f5931-395b-7232-898b-d9c11cc2c724).
+[codex] Turn started (019f5931-3fce-7f50-9071-1bdb332fa490).
+[codex] Assistant message captured: 我會依指定順序做唯讀審查：先完整讀提案，再只抽查 `run.py`、測試與 `SKILL.md` 中需要引用的段落；不呼叫 `bl`，也不修改 `news/scripts/` 或 `li...
+[codex] Running command: /usr/bin/zsh -lc "sed -n '1,260p' docs/reviews/news-llm-dedup-proposal.md"
+[codex] Command completed: /usr/bin/zsh -lc "sed -n '1,260p' docs/reviews/news-llm-dedup-proposal.md" (exit 0)
+[codex] Assistant message captured: 提案已讀完。接下來我只核對它依賴的幾個事實：現行 exact dedup、AI pre-cluster、tech/AI prompt、marker/language/precheck/p...
+[codex] Running command: /usr/bin/zsh -lc 'rg -n "''^(def (dedup|cluster|pick_representatives|_topic_words|_summarize_...
+[codex] Command completed: /usr/bin/zsh -lc 'rg -n "''^(def (dedup|cluster|pick_representatives|_topic_words|_summarize_... (exit 0)
+2026-07-13T09:57:29+08:00 | CODEX_TERMINAL | see status
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '96,114p;430,505p;560,680p;880,1005p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '96,114p;430,505p;560,680p;880,1005p'" (exit 0)
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1500,1600p;1638,1788p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1500,1600p;1638,1788p'" (exit 0)
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/test_run.py | sed -n '285,440p;760,817p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/test_run.py | sed -n '285,440p;760,817p'" (exit 0)
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/SKILL.md | sed -n '76,100p;140,191p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/SKILL.md | sed -n '76,100p;140,191p'" (exit 0)
+2026-07-13T09:57:35+08:00 | POLL_RESUME | waiting for task-mriknror-19z1rp
+[codex] Assistant message captured: 初步核對顯示提案的大方向成立，但 P2 的插入點需要更保守：`precheck` 會以仍存在的 `#N` 建立 paywall map，而語言失敗分支還會先保留 marker 再翻譯；因...
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1540,1605p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1540,1605p'" (exit 0)
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1638,1755p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1638,1755p'" (exit 0)
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1003,1048p;1086,1212p'"
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/test_run.py | sed -n '387,436p;574,624p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/test_run.py | sed -n '387,436p;574,624p'" (exit 0)
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1754,1795p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1754,1795p'" (exit 0)
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '1003,1048p;1086,1212p'" (exit 0)
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '20,60p;120,155p;2248,2270p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '20,60p;120,155p;2248,2270p'" (exit 0)
+[codex] Running command: /usr/bin/zsh -lc "rg -n \"DEFAULT_SECTION_SPECS|\\\"pick\\\"|\\\"limit\\\"\" news/scripts/run...
+[codex] Command completed: /usr/bin/zsh -lc "rg -n \"DEFAULT_SECTION_SPECS|\\\"pick\\\"|\\\"limit\\\"\" news/scripts/run... (exit 0)
+[codex] Running command: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '65,92p'"
+[codex] Command completed: /usr/bin/zsh -lc "nl -ba news/scripts/run.py | sed -n '65,92p'" (exit 0)
+2026-07-13T09:57:57+08:00 | CODEX_PROGRESS | forming review; noted P2 insertion risk with precheck/paywall markers
+2026-07-13T09:58:31+08:00 | CODEX_RESTART | zombie pid gone; relaunch with --background --write --fresh
+Codex Task started in the background as task-mrikpltw-dicioi. Check /codex:status task-mrikpltw-dicioi for progress.
+2026-07-13T09:58:35+08:00 | CODEX_BG | task-mrikpltw-dicioi started --background --write
+2026-07-13T09:59:14+08:00 | WAIT | task-mrikpltw-dicioi; monitor on review file
+2026-07-13T09:59:45+08:00 | FIX | user corrected: use codex plugin subagent + files only; stop shell companion drive
+2026-07-13T09:59:50+08:00 | PLUGIN | spawn codex:codex-rescue; input proposal.md -> output codex-review.md
+2026-07-13T10:02:15+08:00 | PLUGIN_RESUME | force write codex-review.md only
+2026-07-13T10:04:24+08:00 | CODEX | writing review
+2026-07-13T10:05:35+08:00 | CORROBORATE_DONE | wrote news-llm-dedup-corroboration.md; adopt approve-with-changes MVP
+2026-07-13T10:05:35+08:00 | CODEX_NOTE | review file written by plugin; turn later hit model capacity but file complete (146 lines)
+2026-07-13T10:13:21+08:00 | IMPL | MVP shipped: P0 DEDUP_RULES + tech P1 hints overlap>=4; cache v4; tests 70 pass
+2026-07-13T10:17:45+08:00 | IMPL | full stack: P0+P1(all default sections)+P2 hard post-dedup; cache v5; 74 tests pass
+2026-07-13T10:18:52+08:00 | COMPLETE | P0+P1+P2 all paths; 76 tests; request claude plugin review
+2026-07-13T10:19:38+08:00 | TESTS | LlmDedupHintsTests 20 passed; inventory in news-llm-dedup-test-plan.md; request claude test review
+2026-07-13T10:23:47+08:00 | CLAUDE | review done -> news-llm-dedup-claude-review.md; verdict approve-with-changes; 1 major (P2 union-find transitive over-merge, shipped despite Codex drop); order/cache/env OK; 82 tests pass
+2026-07-13T02:24:02Z | CLAUDE | test-only review complete: approve-with-changes; 20/20 green; M1 (T07 vacuous no-hints assert) + M2 (T03 non-transitive unlocked) flagged
+2026-07-13T10:25:27+08:00 | TESTS+FIX | Claude test review approve-with-changes; fixed M1/M2/m*; P2 greedy not CC; 83 pass
+2026-07-13T10:27:28+08:00 | FIX_ALL | Claude major+minor: underfill trace, MC4-7 tests, pick_min;  full suite
+2026-07-13T10:28:01+08:00 | CODEX_ASK | open skips S1-S7 -> news-llm-dedup-open-skips.md; no unilateral 刻意不做
+2026-07-13T10:31:18+08:00 | CODEX_CANCEL | stuck on bl; relaunch write-only no-bl
+2026-07-13T10:32:46+08:00 | CODEX | skips-verdict written
+2026-07-13T10:34:29+08:00 | CODEX_S3_S5_S7 | implement refill + AI hints + SKILL skip wording; skips S1/S2/S4/S6 permanent
+2026-07-13T10:35:45+08:00 | CLAUDE_REVIEW_REQ | full impl+tests news LLM dedup
+2026-07-13T10:40:00+08:00 | CLAUDE | full read-only review done -> news-llm-dedup-claude-full-review.md; verdict approve-with-changes; 90/90 green; 1 minor (AI-substage refill can leak raw English title past 80% language gate) + test-coverage gap for refill×language-gate; P0/P1/P2/refill/order/cache/env verified correct
+2026-07-13T10:39:41+08:00 | CLAUDE_RESTART | previous full-review hung without file; force write-only
+2026-07-13T10:43:09+08:00 | CLAUDE_FULL | review on disk; corroborating M1 custom no language gate
+2026-07-13T10:43:30+08:00 | CLAUDE_M1_FIX | custom language gate after refill; test added

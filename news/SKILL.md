@@ -90,7 +90,28 @@ CJK bigram 通用詞過濾：常見的中文填充詞（`公司`、`發布`、`�
 
 這個去重在 LLM 分段前完成，所以同一事件不會分散到兩個 half。執行時會寫入 `cluster_dedup` trace，欄位包含 `before`、`after`、`clusters_total`、`clusters_kept`。
 
-快取：`~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`。AI 預設新聞分段使用 `AI_SUBSTAGE_CACHE_VARIANT`（目前為 `default_ai_clustered_v3_precheck`）variant，避免重用舊版（未群集 / 未做 precheck）分段快取——precheck 邏輯變更時 bump variant 即可讓當日舊快取失效。鍵為 `(date, variant, range)`。腳本啟動時會清除 7 天以前的子目錄；需要時可手動刪除。
+LLM 事件去重（完整三層）：
+
+1. **P0 共用 `DEDUP_RULES`**：default section（tech/general）、AI substage、custom-topic 的 LLM prompt 共用「同事件合併 / 同主題不同事件保留」規則；免費源優先僅為 prompt 文字指引（`pick_representatives` / post-dedup keep 皆採 LLM 順序第一則 — Codex S4 永久 skip 程式端免費源 ranking）。
+2. **P1 soft pair hints**（pre-LLM）：對 numbered 候選用 `_topic_words` 算**獨立 pair**，**`overlap >= 4`** 才注入 `可能同事件候選：#A+#B`。hint 列表不做傳遞合群。LLM 仍最終選擇。`NEWS_LLM_DEDUP_HINTS=0` 關閉。trace：`llm_dedup_hints`。套用：default tech/general、**AI substage**、custom-topic。
+3. **P2 post-select hard dedup**（post-LLM 安全網）：marker 驗證通過後、precheck 前，**只對 LLM 已選的 `#N`** 做 hard 合併。門檻 **`overlap >= 4`**。演算法是 **greedy 保序**（依 LLM 輸出順序；與已保留則 overlap≥4 則丟），**不做** union-find / 連通分量。`NEWS_LLM_POST_DEDUP=0` 關閉。trace：`llm_post_dedup`。若砍完後則數低於 `pick` 下限且仍非空：記 `post_dedup_underfill`，再做一次 **deterministic refill**（從未被 LLM 選過的 numbered 候選補滿；與每個已保留項 overlap 皆 `<4` 才可補；**不**復活 P2 砍掉的 id、**不**二次 LLM）。trace：`post_dedup_refill`。套用：default tech/general、AI substage、custom-topic。
+4. **語言閘**：default / AI / custom 在 post-dedup（含 refill）與 precheck 之後、送出前，皆跑 `_language_validation_passed`；不合格則 `_translate_selected_section`（避免 refill 塞入未翻譯英文 RSS 標題）。
+
+Env（去重相關）：
+
+| 變數 | 預設 | 作用 |
+|------|------|------|
+| `NEWS_LLM_DEDUP_HINTS` | on（`!=0`） | `=0` 關閉 P1 soft pair hints |
+| `NEWS_LLM_POST_DEDUP` | on（`!=0`） | `=0` 關閉 P2 hard dedup + underfill refill |
+
+**Codex 裁決為永久 skip**（非單方面省略；見 `docs/reviews/news-llm-dedup-codex-skips-verdict.md`）：
+
+- **S1** 全量 tech/general 套 `_CLUSTER_OVERLAP=2` pre-cluster：fixture `1∩3=2` 會誤併同主題不同事件；overlap≥4 的 pre-cluster 又與 P1/P2 重複且會在 LLM 前不可逆縮候選 → 維持 P1 hints + P2 greedy。
+- **S2** `overlap≥3 + entity lexicon`：fixture `1∩2=3`（美光/三星）會誤連不同事件；entity 詞表無法分辨同實體不同事件 → 門檻維持 ≥4、無 lexicon。
+- **S4** 程式端免費源 ranking：屬編輯政策非事件正確性；硬編碼 source 名單會隨付費牆變化失效 → 只保留 prompt 文字偏好。
+- **S6** 無第四條未接路徑：default / AI / custom 已對齊 P0+P1+P2（含 custom 路徑 post-dedup 後語言閘，與 AI/default 一致）。
+
+快取：`~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`。AI 預設新聞分段使用 `AI_SUBSTAGE_CACHE_VARIANT`（目前為 `default_ai_clustered_v5_post_dedup`）variant，避免重用舊版分段快取——prompt 或 cached-output 語意變更時 bump variant 即可讓當日舊快取失效。鍵為 `(date, variant, range)`。腳本啟動時會清除 7 天以前的子目錄；需要時可手動刪除。
 
 送出長度處理：
 

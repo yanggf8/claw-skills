@@ -1,0 +1,43 @@
+<task>
+File-based design review. Input/output are FILES under docs/reviews/.
+
+READ first:
+- docs/reviews/news-llm-dedup-proposal.md
+Then spot-check only needed lines in:
+- news/scripts/run.py
+- news/scripts/test_run.py
+- news/SKILL.md
+
+WRITE required:
+- docs/reviews/news-llm-dedup-codex-review.md (full structured review)
+
+APPEND optional progress lines to:
+- docs/reviews/news-llm-dedup-work.log
+Format: ISO_TIME | CODEX | short status
+
+Do NOT modify news/scripts/ or lib/.
+Do NOT call bl/bailian.
+Minimize exploration; after enough citations, WRITE the review file and stop.
+</task>
+
+<structured_output_contract>
+docs/reviews/news-llm-dedup-codex-review.md sections in order:
+1. Verdict: approve | approve-with-changes | reject
+2. Corroborated facts (path + function + line numbers)
+3. Incorrect or risky claims in the proposal
+4. Per-package critique P0–P4 (keep | change | drop)
+5. Recommended minimal ship set (ordered)
+6. Tests + acceptance criteria (5-title fixture)
+7. Do-not-do list
+8. Answers to open questions 1–6 from the proposal
+
+Traditional Chinese preferred; identifiers English OK. Separate evidence vs 意見.
+</structured_output_contract>
+
+<default_follow_through_policy>
+Prefer finishing the review file over exhaustive rereads. Trust proposal measurements after quick line checks.
+</default_follow_through_policy>
+
+<grounding_rules>
+Cite file + function + lines for code claims. For P2 insertion vs paywall/precheck, recommend the safer point with reasons.
+</grounding_rules>
