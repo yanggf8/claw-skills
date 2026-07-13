@@ -19,3 +19,6 @@ liko-finance-weekly/failed/
 
 # inflation-con runtime stance (local; not committed)
 inflation-con/config.json
+
+# chipcon runtime config (local; not committed)
+chipcon/config.json
