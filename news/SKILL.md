@@ -95,7 +95,16 @@ LLM 事件去重（完整三層）：
 1. **P0 共用 `DEDUP_RULES`**：default section（tech/general）、AI substage、custom-topic 的 LLM prompt 共用「同事件合併 / 同主題不同事件保留」規則；免費源優先僅為 prompt 文字指引（`pick_representatives` / post-dedup keep 皆採 LLM 順序第一則 — Codex S4 永久 skip 程式端免費源 ranking）。
 2. **P1 soft pair hints**（pre-LLM）：對 numbered 候選用 `_topic_words` 算**獨立 pair**，**`overlap >= 4`** 才注入 `可能同事件候選：#A+#B`。hint 列表不做傳遞合群。LLM 仍最終選擇。`NEWS_LLM_DEDUP_HINTS=0` 關閉。trace：`llm_dedup_hints`。套用：default tech/general、**AI substage**、custom-topic。
 3. **P2 post-select hard dedup**（post-LLM 安全網）：marker 驗證通過後、precheck 前，**只對 LLM 已選的 `#N`** 做 hard 合併。門檻 **`overlap >= 4`**。演算法是 **greedy 保序**（依 LLM 輸出順序；與已保留則 overlap≥4 則丟），**不做** union-find / 連通分量。`NEWS_LLM_POST_DEDUP=0` 關閉。trace：`llm_post_dedup`。若砍完後則數低於 `pick` 下限且仍非空：記 `post_dedup_underfill`，再做一次 **deterministic refill**（從未被 LLM 選過的 numbered 候選補滿；與每個已保留項 overlap 皆 `<4` 才可補；**不**復活 P2 砍掉的 id、**不**二次 LLM）。trace：`post_dedup_refill`。套用：default tech/general、AI substage、custom-topic。
-4. **語言閘**：default / AI / custom 在 post-dedup（含 refill）與 precheck 之後、送出前，皆跑 `_language_validation_passed`；不合格則 `_translate_selected_section`（避免 refill 塞入未翻譯英文 RSS 標題）。
+4. **P3 cross-half LLM same-event dedup**（AI 區、翻譯後、跨半安全網）：兩半選稿+翻譯
+   合流後、送出前，把合流清單解析成原子 story block，用**一次 LLM 呼叫**判定哪些
+   block 報導同一事件（只回傳編號分組，不改文案/連結/順序），程式對每組保留一則、
+   原子移除其餘（含 paywall 續行）。**只做 AI 區**（tech/general/custom 不含）。判定用
+   LLM 語義（非 token overlap——確定性 overlap 在翻譯後中文標題分不出同事件 vs 同主題，
+   見 `docs/superpowers/specs/2026-07-14-...`）。安全網不變量：LLM 失敗/逾時/回應不合法/
+   崩塌熔斷（砍到低於 `min(before,5)` 或移除 >50%）→ 整段 passthrough 不變、不使 run 失敗。
+   underfill 接受變少、不 refill。`NEWS_CROSS_DEDUP=0` 關閉（call-time 讀取，honors
+   `~/.nullclaw/.env`）。trace：`cross_dedup_llm`（before/after/dropped/groups/ok）。
+5. **語言閘**：default / AI / custom 在 post-dedup（含 refill）與 precheck 之後、送出前，皆跑 `_language_validation_passed`；不合格則 `_translate_selected_section`（避免 refill 塞入未翻譯英文 RSS 標題）。
 
 Env（去重相關）：
 
@@ -103,6 +112,7 @@ Env（去重相關）：
 |------|------|------|
 | `NEWS_LLM_DEDUP_HINTS` | on（`!=0`） | `=0` 關閉 P1 soft pair hints |
 | `NEWS_LLM_POST_DEDUP` | on（`!=0`） | `=0` 關閉 P2 hard dedup + underfill refill |
+| `NEWS_CROSS_DEDUP` | on（`!=0`） | `=0` 關閉 P3 cross-half LLM 同事件去重（AI 區） |
 
 **Codex 裁決為永久 skip**（非單方面省略；見 `docs/reviews/news-llm-dedup-codex-skips-verdict.md`）：
 
