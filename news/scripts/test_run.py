@@ -1708,5 +1708,39 @@ class PaywallReplacementTests(unittest.TestCase):
         self.assertIsNone(run._parse_ai_blocks(lines))
 
 
+class CrossDedupGroupingTests(unittest.TestCase):
+    def test_parse_cross_dedup_response_valid(self):
+        out = '{"groups":[{"members":[2,3],"keep":2}]}'
+        groups = run._parse_cross_dedup_response(out, 4)
+        self.assertEqual(groups, [{"members": [2, 3], "keep": 2}])
+
+    def test_parse_cross_dedup_response_empty_groups_ok(self):
+        self.assertEqual(run._parse_cross_dedup_response('{"groups":[]}', 4), [])
+
+    def test_parse_cross_dedup_response_rejects_invalid(self):
+        bad = [
+            "not json at all",
+            '{"no_groups_key":1}',
+            '{"groups":[{"members":[2,9],"keep":2}]}',   # 9 out of range (block_count=4)
+            '{"groups":[{"members":[2,2],"keep":2}]}',   # duplicate member
+            '{"groups":[{"members":[2],"keep":2}]}',      # <2 members
+            '{"groups":[{"members":[2,3],"keep":4}]}',    # keep not in group
+            '{"groups":[{"members":[1,2],"keep":1},{"members":[2,3],"keep":2}]}',  # overlap on 2
+        ]
+        for b in bad:
+            self.assertIsNone(run._parse_cross_dedup_response(b, 4), b)
+
+    def test_cross_dedup_prompt_contains_rules_and_blocks(self):
+        blocks = run._parse_ai_blocks([
+            "- 標題甲 [🔗](https://x)",
+            "- 標題乙 [🔗](https://y)",
+        ])
+        p = run._cross_dedup_prompt(blocks, "2026/07/14 (Tue)")
+        self.assertIn("#1", p)
+        self.assertIn("標題甲", p)
+        self.assertIn("groups", p)          # asks for JSON groups
+        self.assertIn("同一", p)            # same-event language present
+
+
 if __name__ == "__main__":
     unittest.main()
