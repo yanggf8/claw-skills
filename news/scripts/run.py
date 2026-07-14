@@ -2227,6 +2227,45 @@ def _apply_cross_dedup(lines: list[str], blocks: list[dict], groups: list[dict])
     return [ln for i, ln in enumerate(lines) if i not in drop_line_idxs]
 
 
+CROSS_DEDUP_TIMEOUT_SECS = 45  # short; refinement not gate. One logical call, up to 2 attempts.
+
+def _cross_dedup_ai(final: list[str], date_str: str, all_items: dict, numbered: dict) -> list[str]:
+    # Call-time env read so ~/.nullclaw/.env is honored (constants are import-time).
+    if os.environ.get("NEWS_CROSS_DEDUP", "1") == "0":
+        return final
+    blocks = _parse_ai_blocks(final)
+    if not blocks or len(blocks) < 2:
+        return final
+    prompt = _cross_dedup_prompt(blocks, date_str)
+    try:
+        result = _run_nullclaw_agent(
+            prompt, CROSS_DEDUP_TIMEOUT_SECS, "cross_dedup", all_items, numbered
+        )
+    except Exception as exc:  # never let this fail the run
+        log_trace("cross_dedup_llm", ok=False, error=f"{exc}", before=len(blocks))
+        return final
+    if getattr(result, "returncode", 1) != 0 or not (result.stdout or "").strip():
+        log_trace("cross_dedup_llm", ok=False, error="bad_result", before=len(blocks))
+        return final
+    groups = _parse_cross_dedup_response(result.stdout, len(blocks))
+    if groups is None:
+        log_trace("cross_dedup_llm", ok=False, error="invalid_grouping", before=len(blocks))
+        return final
+    if not groups:
+        log_trace("cross_dedup_llm", ok=True, before=len(blocks), after=len(blocks),
+                  dropped=[], groups=[])
+        return final
+    new_lines = _apply_cross_dedup(final, blocks, groups)
+    if new_lines is None:  # circuit breaker tripped
+        log_trace("cross_dedup_llm", ok=True, before=len(blocks), after=len(blocks),
+                  dropped=[], groups=groups, rejected="circuit_breaker")
+        return final
+    dropped = [m for g in groups for m in g["members"] if m != g["keep"]]
+    log_trace("cross_dedup_llm", ok=True, before=len(blocks),
+              after=len(blocks) - len(dropped), dropped=dropped, groups=groups)
+    return new_lines
+
+
 def _summarize_default_ai_substaged(
     items: list[dict],
     date_str: str,
@@ -2315,6 +2354,8 @@ def _summarize_default_ai_substaged(
     if not final:
         log_trace("ai_substage_empty_after_merge", total_items=n)
         return ["- 今日無相關新聞"]
+
+    final = _cross_dedup_ai(final, date_str, {"ai": items}, {})   # NEW: cross-half same-event dedup
 
     log_trace("ai_substage_complete", total_items=n, total_bullets=len(final))
     return final

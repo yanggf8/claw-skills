@@ -426,7 +426,9 @@ class NewsClusteringTests(unittest.TestCase):
 
         body = "\n".join(lines)
         self.assertEqual(body.count("DeepSeek 降低 API 價格"), 1)
-        self.assertEqual(len(calls), 2)
+        # 2 Level-2 half substages + 1 cross-half LLM same-event dedup pass
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[-1][0], "cross_dedup")
         cluster_events = [fields for event, fields in trace_events if event == "cluster_dedup"]
         self.assertEqual(cluster_events, [{
             "before": 4,
@@ -1765,6 +1767,70 @@ class CrossDedupGroupingTests(unittest.TestCase):
         blocks = run._parse_ai_blocks(lines)   # 8 blocks
         groups = [{"members": [1, 2, 3, 4, 5, 6, 7], "keep": 1}]  # 8 -> 2 (>50%, < min(8,5))
         self.assertIsNone(run._apply_cross_dedup(lines, blocks, groups))
+
+    def test_cross_dedup_ai_merges_same_event(self):
+        lines = [
+            "- 祖克柏豪賭 AI：單座資料中心上看 2,500 億美元 [🔗](https://a)",
+            "- 全新 AI 模型以影像思考 [🔗](https://b)",
+            "- 美國對中國 AI 的恐慌並未切中要點 [🔗](https://c)",
+            "- 台積電營收創新高 [🔗](https://d)",
+            "- SK 海力士獲利預警 [🔗](https://e)",
+            "- Meta 路易斯安那資料中心 500 億美元 [🔗](https://f)",
+        ]
+        def fake_agent(prompt, timeout_secs, variant, all_items, numbered):
+            import subprocess
+            return subprocess.CompletedProcess(["nullclaw"], 0,
+                stdout='{"groups":[{"members":[1,6],"keep":1}]}', stderr="")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NEWS_CROSS_DEDUP", None)
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        joined = "\n".join(out)
+        self.assertIn("2,500 億", joined)          # kept (#1)
+        self.assertNotIn("路易斯安那", joined)      # dropped (#6, same event)
+        self.assertEqual(len(out), 5)
+
+    def test_cross_dedup_ai_false_merge_kept(self):
+        lines = [
+            "- Google 投資 100 億美元興建日本資料中心 [🔗](https://a)",
+            "- Microsoft 投資 50 億美元擴建德國資料中心 [🔗](https://b)",
+            "- 台積電營收創新高 [🔗](https://c)",
+            "- SK 海力士獲利預警 [🔗](https://d)",
+            "- 全新 AI 模型以影像思考 [🔗](https://e)",
+        ]
+        def fake_agent(prompt, timeout_secs, variant, all_items, numbered):
+            import subprocess
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout='{"groups":[]}', stderr="")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent):
+            os.environ.pop("NEWS_CROSS_DEDUP", None)
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        self.assertEqual(len(out), 5)   # both kept
+
+    def test_cross_dedup_ai_kill_switch_env(self):
+        lines = ["- 甲 [🔗](https://a)", "- 乙 [🔗](https://b)"]
+        called = {"n": 0}
+        def fake_agent(*a, **k):
+            called["n"] += 1
+            import subprocess
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout='{"groups":[]}', stderr="")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent):
+            os.environ["NEWS_CROSS_DEDUP"] = "0"
+            try:
+                out = run._cross_dedup_ai(list(lines), "d", {}, {})
+            finally:
+                os.environ.pop("NEWS_CROSS_DEDUP", None)
+        self.assertEqual(out, lines)
+        self.assertEqual(called["n"], 0)   # no LLM call when disabled
+
+    def test_cross_dedup_ai_llm_failure_safe(self):
+        lines = ["- 甲 [🔗](https://a)", "- 乙 [🔗](https://b)", "- 丙 [🔗](https://c)"]
+        def fake_agent(*a, **k):
+            import subprocess
+            return subprocess.CompletedProcess(["nullclaw"], 124, stdout="", stderr="timeout")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent):
+            os.environ.pop("NEWS_CROSS_DEDUP", None)
+            out = run._cross_dedup_ai(list(lines), "d", {}, {})
+        self.assertEqual(out, lines)   # unchanged on failure
 
 
 if __name__ == "__main__":
