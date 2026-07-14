@@ -2208,6 +2208,25 @@ def _parse_cross_dedup_response(stdout: str, block_count: int):
     return out
 
 
+def _apply_cross_dedup(lines: list[str], blocks: list[dict], groups: list[dict]):
+    drop_block_idxs: set[int] = set()
+    for g in groups:
+        for m in g["members"]:
+            if m != g["keep"]:
+                drop_block_idxs.add(m - 1)  # members are 1-based #N
+    kept_block_count = len(blocks) - len(drop_block_idxs)
+    # circuit breaker: reject catastrophic collapse
+    floor = min(len(blocks), 5)
+    if kept_block_count < floor or len(drop_block_idxs) > len(blocks) * 0.5:
+        return None
+    drop_line_idxs: set[int] = set()
+    for bi in drop_block_idxs:
+        b = blocks[bi]
+        for li in range(b["start"], b["end"]):
+            drop_line_idxs.add(li)
+    return [ln for i, ln in enumerate(lines) if i not in drop_line_idxs]
+
+
 def _summarize_default_ai_substaged(
     items: list[dict],
     date_str: str,

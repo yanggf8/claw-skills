@@ -1741,6 +1741,31 @@ class CrossDedupGroupingTests(unittest.TestCase):
         self.assertIn("groups", p)          # asks for JSON groups
         self.assertIn("同一", p)            # same-event language present
 
+    def test_apply_cross_dedup_drops_non_kept_atomically(self):
+        lines = [
+            "- 甲 [🔗](https://a)",
+            "- 乙（重複）[🔗](https://b)",
+            "　↳ 原文：乙原始 [🔗](https://b2)  ⚠️ 付費牆（原文需訂閱）",
+            "- 丙 [🔗](https://c)",
+            "- 丁 [🔗](https://d)",
+            "- 戊 [🔗](https://e)",
+            "- 己 [🔗](https://f)",
+        ]
+        blocks = run._parse_ai_blocks(lines)      # 6 blocks (block #2 spans 2 lines)
+        groups = [{"members": [1, 2], "keep": 1}]  # keep #1, drop #2 (+continuation)
+        out = run._apply_cross_dedup(lines, blocks, groups)
+        self.assertIsNotNone(out)
+        self.assertNotIn("乙（重複）", "\n".join(out))
+        self.assertNotIn("乙原始", "\n".join(out))          # continuation gone too
+        self.assertIn("甲", "\n".join(out))
+        self.assertEqual(len(out), 5)                         # 7 lines - 2 dropped
+
+    def test_apply_cross_dedup_circuit_breaker_blocks_excessive(self):
+        lines = [f"- 標題{i} [🔗](https://{i})" for i in range(8)]
+        blocks = run._parse_ai_blocks(lines)   # 8 blocks
+        groups = [{"members": [1, 2, 3, 4, 5, 6, 7], "keep": 1}]  # 8 -> 2 (>50%, < min(8,5))
+        self.assertIsNone(run._apply_cross_dedup(lines, blocks, groups))
+
 
 if __name__ == "__main__":
     unittest.main()
