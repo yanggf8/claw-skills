@@ -2089,6 +2089,56 @@ class _AiSubstageExhausted(Exception):
     pass
 
 
+def _strip_bullet_text(line: str) -> str:
+    """Clean a rendered AI bullet down to its headline text: drop leading '- ',
+    the Markdown link '[🔗](...)', and a trailing PAYWALL_NOTE."""
+    t = line
+    if t.startswith("- "):
+        t = t[2:]
+    # drop the markdown link (and anything after it on the line, e.g. paywall note)
+    t = re.sub(r"\s*\[🔗\]\([^)]*\).*$", "", t)
+    t = t.replace(PAYWALL_NOTE, "")
+    return t.strip()
+
+
+def _parse_ai_blocks(lines: list[str]) -> list[dict] | None:
+    """Parse merged AI lines into atomic story blocks. Fail closed (return None)
+    on any orphan continuation or unclassifiable line."""
+    blocks: list[dict] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if line.startswith(PAYWALL_CONT_PREFIX):
+            return None  # orphan continuation (no preceding parent consumed it)
+        if not line.startswith("- "):
+            if line.strip() == "":
+                i += 1
+                continue
+            return None  # unexpected non-bullet, non-blank line
+        start = i
+        headline = _strip_bullet_text(line)
+        paywalled = PAYWALL_NOTE in line
+        original_headline = None
+        access = "paywalled" if paywalled else "normal"
+        end = i + 1
+        if end < n and lines[end].startswith(PAYWALL_CONT_PREFIX):
+            cont = lines[end]
+            original_headline = _strip_bullet_text(cont[len(PAYWALL_CONT_PREFIX):].replace("原文：", "", 1))
+            access = "free_replacement"
+            end += 1
+        blocks.append({
+            "idx": len(blocks),
+            "start": start,
+            "end": end,
+            "headline": headline,
+            "original_headline": original_headline,
+            "access": access,
+        })
+        i = end
+    return blocks
+
+
 def _summarize_default_ai_substaged(
     items: list[dict],
     date_str: str,

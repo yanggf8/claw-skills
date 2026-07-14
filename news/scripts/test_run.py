@@ -1678,6 +1678,35 @@ class PaywallReplacementTests(unittest.TestCase):
             run._resolve_paywall_replacements(paywall, "2026/07/02 (Wed)")
         self.assertEqual(paywall[1]["replacement"]["link"], "https://www.reuters.com/ai-policy")
 
+    def test_parse_ai_blocks_normal_paywall_and_replacement(self):
+        import subprocess  # noqa
+        lines = [
+            "- 全新 AI 模型以影像思考 [🔗](https://news.google.com/rss/articles/AAA?oc=5)",
+            "- 祖克柏豪賭 AI：單座資料中心上看 2,500 億美元 [🔗](https://news.google.com/rss/articles/BBB?oc=5)  ⚠️ 付費牆（原文需訂閱）",
+            "- Meta 路易斯安那資料中心 [🔗](https://thenextweb.com/x)",
+            "　↳ 原文：Meta 路易斯安那 Hyperion 資料中心 [🔗](https://news.google.com/rss/articles/CCC?oc=5)  ⚠️ 付費牆（原文需訂閱）",
+        ]
+        blocks = run._parse_ai_blocks(lines)
+        self.assertEqual(len(blocks), 3)
+        self.assertEqual(blocks[0]["headline"], "全新 AI 模型以影像思考")
+        self.assertEqual(blocks[0]["access"], "normal")
+        self.assertEqual(blocks[1]["access"], "paywalled")
+        self.assertNotIn("付費牆", blocks[1]["headline"])
+        self.assertNotIn("🔗", blocks[1]["headline"])
+        # replacement block spans 2 lines, carries the original headline
+        self.assertEqual(blocks[2]["access"], "free_replacement")
+        self.assertEqual(blocks[2]["start"], 2)
+        self.assertEqual(blocks[2]["end"], 4)
+        self.assertIn("Hyperion", blocks[2]["original_headline"])
+
+    def test_parse_ai_blocks_fails_closed_on_orphan_continuation(self):
+        lines = ["　↳ 原文：孤兒續行 [🔗](https://x)"]  # continuation with no parent
+        self.assertIsNone(run._parse_ai_blocks(lines))
+
+    def test_parse_ai_blocks_fails_closed_on_unexpected_line(self):
+        lines = ["- 正常標題 [🔗](https://x)", "以下是結果："]  # stray non-bullet
+        self.assertIsNone(run._parse_ai_blocks(lines))
+
 
 if __name__ == "__main__":
     unittest.main()
