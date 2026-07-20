@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import collections
 import os
 import subprocess
 import tempfile
@@ -414,9 +415,12 @@ class NewsClusteringTests(unittest.TestCase):
         def fake_log_trace(event, **fields):
             trace_events.append((event, fields))
 
+        # Pin the cross-dedup ensemble to a single sample so this test keeps
+        # asserting the substage call *shape* rather than tracking N.
         with patch.object(run, "_run_nullclaw_agent", fake_run_agent), \
              patch.object(run, "_news_cache_get", lambda *args, **kwargs: None), \
              patch.object(run, "_news_cache_put", lambda *args, **kwargs: None), \
+             patch.dict(os.environ, {"NEWS_CROSS_DEDUP_N": "1"}, clear=False), \
              patch.object(run, "log_trace", fake_log_trace):
             lines = run._summarize_default_ai_substaged(
                 items,
@@ -1831,6 +1835,314 @@ class CrossDedupGroupingTests(unittest.TestCase):
             os.environ.pop("NEWS_CROSS_DEDUP", None)
             out = run._cross_dedup_ai(list(lines), "d", {}, {})
         self.assertEqual(out, lines)   # unchanged on failure
+
+
+class CrossDedupVoteEnsembleTests(unittest.TestCase):
+    """P4: N concurrent samples of the same prompt + K-of-N pair voting.
+
+    Contract these tests pin:
+      - module constants CROSS_DEDUP_SAMPLES (N) and CROSS_DEDUP_VOTE_K (K),
+        overridable at call time by NEWS_CROSS_DEDUP_N / NEWS_CROSS_DEDUP_K
+      - each sample parsed independently; a bad sample = zero votes, never an abort
+      - groups = connected components over pairs with >= K votes (never raw model groups)
+      - survivor chosen deterministically (free_replacement/normal > paywalled,
+        then lowest block index) -- the model's own "keep" is ignored
+      - traces: cross_dedup_skipped{reason=...} and cross_dedup_llm{n,k,samples,votes,kept}
+    """
+
+    # Sentinels for _queued_agent: a canned sample that fails instead of returning JSON.
+    RC_FAIL = ("rc_fail",)
+    RAISES = ("raises",)
+
+    def _env(self, **overrides):
+        # patch.dict restores on cleanup; NEWS_CROSS_DEDUP is popped so an ambient
+        # kill switch in the shell cannot silently mask these tests.
+        patcher = patch.dict(os.environ, overrides, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("NEWS_CROSS_DEDUP", None)
+
+    def _queued_agent(self, outputs):
+        """Thread-safe queue fake: each sample pops one canned stdout.
+
+        Samples run concurrently so pop order is nondeterministic -- only the
+        multiset of canned outputs is meaningful. deque.popleft() is atomic under
+        CPython, unlike the list.pop(0) used by AiSubstageLanguageGateTests.
+        """
+        queue = collections.deque(outputs)
+        calls = []
+
+        def fake_agent(prompt, timeout_secs, variant, all_items, numbered):
+            calls.append(variant)
+            try:
+                out = queue.popleft()
+            except IndexError:
+                raise AssertionError("more agent calls than canned sample outputs")
+            if out is self.RC_FAIL:
+                return subprocess.CompletedProcess(["nullclaw"], 124, stdout="", stderr="timeout")
+            if out is self.RAISES:
+                raise RuntimeError("sample blew up")
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout=out, stderr="")
+
+        return fake_agent, calls
+
+    def _fixed_agent(self, stdout):
+        return self._queued_agent(collections.deque([stdout] * 64))
+
+    @staticmethod
+    def _filler(n):
+        # block #N <-> 標題N, so assertions can name blocks by their 1-based number
+        return [f"- 標題{i} [🔗](https://{i})" for i in range(1, n + 1)]
+
+    # a) pair-vote threshold
+    def test_cross_dedup_ai_pair_needs_k_votes(self):
+        lines = self._filler(6)
+        # (2,3) gets K-1 votes and must NOT merge; (1,6) gets K votes and must merge.
+        outputs = ['{"groups":[{"members":[2,3],"keep":2}]}'] * 2 + \
+                  ['{"groups":[{"members":[1,6],"keep":1}]}'] * 3
+        fake_agent, calls = self._queued_agent(outputs)
+        self._env(NEWS_CROSS_DEDUP_N="5", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        joined = "\n".join(out)
+        self.assertEqual(len(calls), 5)                 # N independent samples
+        self.assertNotIn("標題6", joined)               # 3 votes >= K -> dropped
+        self.assertIn("標題2", joined)                  # 2 votes < K -> both kept
+        self.assertIn("標題3", joined)
+        self.assertEqual(len(out), 5)
+
+    # b) a bad sample contributes zero votes and must not abort the run
+    def test_cross_dedup_ai_bad_samples_do_not_abort_run(self):
+        lines = self._filler(6)
+        # raise / rc=124 / unparseable JSON first: any one of them aborts the old
+        # all-or-nothing implementation before the good samples are ever counted.
+        outputs = [self.RAISES, self.RC_FAIL, "not json at all"] + \
+                  ['{"groups":[{"members":[1,6],"keep":1}]}'] * 3
+        fake_agent, calls = self._queued_agent(outputs)
+        self._env(NEWS_CROSS_DEDUP_N="6", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        joined = "\n".join(out)
+        self.assertEqual(len(calls), 6)                 # bad samples never short-circuit the rest
+        self.assertNotIn("標題6", joined)               # 3 good votes still reach K
+        self.assertIn("標題1", joined)
+        self.assertEqual(len(out), 5)
+
+    # c) components are built from VOTED pairs, not from raw model groups
+    def test_cross_dedup_ai_unvoted_bridge_does_not_merge_components(self):
+        lines = self._filler(8)
+        # (2,4) is the bridge and appears in only K-1 samples -> {1,2} and {4,5}
+        # must stay two separate components rather than collapsing into {1,2,4,5}.
+        outputs = ['{"groups":[{"members":[2,4],"keep":2}]}'] * 2 + \
+                  ['{"groups":[{"members":[1,2],"keep":1},{"members":[4,5],"keep":4}]}'] * 3
+        fake_agent, calls = self._queued_agent(outputs)
+        self._env(NEWS_CROSS_DEDUP_N="5", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        joined = "\n".join(out)
+        self.assertEqual(len(calls), 5)
+        self.assertNotIn("標題2", joined)               # component {1,2} -> keep #1
+        self.assertNotIn("標題5", joined)               # component {4,5} -> keep #4
+        self.assertIn("標題4", joined)                  # bridge unvoted: #4 survives
+        self.assertIn("標題1", joined)
+        self.assertEqual(len(out), 6)
+
+    def test_cross_dedup_ai_voted_bridge_merges_components(self):
+        lines = self._filler(8)
+        # same shape as above but the bridge now clears K, so union-find over voted
+        # pairs must transitively merge {1,2} + {2,4} + {4,5} into one component.
+        outputs = ['{"groups":[{"members":[2,4],"keep":2}]}'] * 3 + \
+                  ['{"groups":[{"members":[1,2],"keep":1},{"members":[4,5],"keep":4}]}'] * 3
+        fake_agent, calls = self._queued_agent(outputs)
+        self._env(NEWS_CROSS_DEDUP_N="6", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        joined = "\n".join(out)
+        self.assertEqual(len(calls), 6)
+        self.assertIn("標題1", joined)                  # lowest index in the component
+        for gone in ("標題2", "標題4", "標題5"):
+            self.assertNotIn(gone, joined, gone)
+        self.assertEqual(len(out), 5)
+
+    # d) deterministic keep policy -- the model's "keep" is ignored
+    def test_cross_dedup_ai_keeps_free_access_over_paywalled(self):
+        lines = [
+            f"- 甲 [🔗](https://a)  {run.PAYWALL_NOTE}",                                  # #1 paywalled
+            "- 乙 [🔗](https://b)",                                                        # #2 ...
+            f"{run.PAYWALL_CONT_PREFIX}原文：乙原始 [🔗](https://b2)  {run.PAYWALL_NOTE}",  # ... free_replacement
+            f"- 丙 [🔗](https://c)  {run.PAYWALL_NOTE}",                                  # #3 paywalled
+            "- 丁 [🔗](https://d)",                                                        # #4 normal
+        ] + [f"- 標題{i} [🔗](https://{i})" for i in range(5, 9)]                          # #5..#8
+        blocks = run._parse_ai_blocks(lines)
+        self.assertEqual([b["access"] for b in blocks][:4],
+                         ["paywalled", "free_replacement", "paywalled", "normal"])
+        # model asks to keep the paywalled member of each pair; policy must overrule it
+        fake_agent, calls = self._fixed_agent(
+            '{"groups":[{"members":[1,2],"keep":1},{"members":[3,4],"keep":3}]}')
+        self._env(NEWS_CROSS_DEDUP_N="3", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        joined = "\n".join(out)
+        self.assertNotIn("甲", joined)                  # paywalled loses to free_replacement
+        self.assertIn("乙", joined)
+        self.assertIn("乙原始", joined)                 # survivor keeps its continuation line
+        self.assertNotIn("丙", joined)                  # paywalled loses to normal
+        self.assertIn("丁", joined)
+        self.assertEqual(len(out), 7)                   # 9 lines - 2 single-line blocks
+
+    def test_cross_dedup_ai_tie_breaks_to_lowest_block_index(self):
+        lines = self._filler(6)
+        # all blocks are "normal", so the tie-break alone decides; model says keep #5
+        fake_agent, calls = self._fixed_agent('{"groups":[{"members":[2,5],"keep":5}]}')
+        self._env(NEWS_CROSS_DEDUP_N="3", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        joined = "\n".join(out)
+        self.assertIn("標題2", joined)                  # lowest index wins the tie
+        self.assertNotIn("標題5", joined)
+        self.assertEqual(len(out), 5)
+
+    # e) circuit breaker: >=1 drop must be possible for any n >= 2, 50% cap still holds
+    def test_apply_cross_dedup_allows_one_drop_but_still_caps_at_half(self):
+        for n in range(2, 6):
+            lines = self._filler(n)
+            blocks = run._parse_ai_blocks(lines)
+            groups = [{"members": [1, 2], "keep": 1}]      # exactly one drop
+            out = run._apply_cross_dedup(lines, blocks, groups)
+            self.assertIsNotNone(out, f"n={n} must permit a single drop")
+            self.assertEqual(len(out), n - 1, f"n={n}")
+        for n in (4, 5, 6, 8):
+            lines = self._filler(n)
+            blocks = run._parse_ai_blocks(lines)
+            drops = n // 2 + 1                             # one past the 50% cap
+            groups = [{"members": list(range(1, drops + 2)), "keep": 1}]
+            self.assertIsNone(run._apply_cross_dedup(lines, blocks, groups),
+                              f"n={n} must still reject {drops} drops")
+
+    # Measured on the 2026-07-18 input over 14 real N=7 runs. Drops per run were mostly
+    # 0-3, but one run bridged an unrelated story into a true group and cut the section
+    # from 10 blocks to 5, landing exactly on the old 50% cap without tripping it.
+    # Concurrent samples turn out to be correlated, so a whole run swings aggressive
+    # together and a false pair collects as many votes as a true one — the vote threshold
+    # cannot filter that, so the drop cap is what has to hold the line. The cap is 40%
+    # and not tighter because two other runs legitimately found 4 drops of 10 (the full
+    # same-event trio plus two more true pairs); rejection is all-or-nothing, so a 30%
+    # cap threw those correct results away wholesale.
+    def test_apply_cross_dedup_rejects_half_section_collapse(self):
+        lines = self._filler(10)
+        blocks = run._parse_ai_blocks(lines)
+        collapse = [{"members": [1, 2, 7, 8], "keep": 2},
+                    {"members": [3, 6], "keep": 3},
+                    {"members": [9, 10], "keep": 9}]        # 5 drops — the observed run
+        self.assertIsNone(run._apply_cross_dedup(lines, blocks, collapse),
+                          "a 5-of-10 collapse must be rejected")
+        legit = [{"members": [1, 2, 7], "keep": 2},
+                 {"members": [3, 6], "keep": 3},
+                 {"members": [9, 10], "keep": 9}]            # 4 drops — also observed, correct
+        out = run._apply_cross_dedup(lines, blocks, legit)
+        self.assertIsNotNone(out, "4 drops of 10 must survive the cap")
+        self.assertEqual(len(out), 6)
+        moderate = [{"members": [2, 7], "keep": 2},
+                    {"members": [3, 6], "keep": 3}]          # 2 drops — the common case
+        out = run._apply_cross_dedup(lines, blocks, moderate)
+        self.assertIsNotNone(out, "2 drops of 10 must still be allowed")
+        self.assertEqual(len(out), 8)
+        # the tightened cap must not resurrect the zero-drop defect on short sections
+        for n in range(2, 6):
+            short = self._filler(n)
+            self.assertIsNotNone(
+                run._apply_cross_dedup(short, run._parse_ai_blocks(short),
+                                       [{"members": [1, 2], "keep": 1}]),
+                f"n={n} must still permit a single drop")
+
+    # f) _parse_ai_blocks returning None is currently a silent no-op
+    def test_cross_dedup_ai_traces_block_parse_failure(self):
+        lines = [f"{run.PAYWALL_CONT_PREFIX}原文：孤兒 [🔗](https://a)  {run.PAYWALL_NOTE}"]
+        self.assertIsNone(run._parse_ai_blocks(lines))     # orphan continuation, fails closed
+        traces = []
+        fake_agent, calls = self._fixed_agent('{"groups":[]}')
+        self._env()
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        self.assertEqual(out, lines)
+        self.assertEqual(len(calls), 0)                    # no LLM call once parsing failed
+        skipped = [f for e, f in traces if e == "cross_dedup_skipped"]
+        self.assertEqual(len(skipped), 1, traces)
+        self.assertEqual(skipped[0].get("reason"), "parse_failed")
+
+    def test_cross_dedup_ai_traces_too_few_blocks_distinctly(self):
+        lines = ["- 只有一則 [🔗](https://a)"]              # parses fine, just nothing to dedup
+        self.assertEqual(len(run._parse_ai_blocks(lines)), 1)
+        traces = []
+        fake_agent, calls = self._fixed_agent('{"groups":[]}')
+        self._env()
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        self.assertEqual(out, lines)
+        self.assertEqual(len(calls), 0)
+        skipped = [f for e, f in traces if e == "cross_dedup_skipped"]
+        self.assertEqual(len(skipped), 1, traces)
+        reason = skipped[0].get("reason")
+        self.assertTrue(reason)
+        self.assertNotEqual(reason, "parse_failed")        # must not be confused with a bug
+
+    def test_cross_dedup_ai_traces_votes_and_sample_outcomes(self):
+        lines = self._filler(6)
+        outputs = [self.RC_FAIL] + ['{"groups":[{"members":[1,6],"keep":1}]}'] * 3
+        fake_agent, calls = self._queued_agent(outputs)
+        traces = []
+        self._env(NEWS_CROSS_DEDUP_N="4", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        summary = [f for e, f in traces if e == "cross_dedup_llm"]
+        self.assertEqual(len(summary), 1, traces)
+        f = summary[0]
+        self.assertEqual(f.get("n"), 4)
+        self.assertEqual(f.get("k"), 3)
+        self.assertEqual(len(f.get("samples") or []), 4)   # one outcome per sample
+        self.assertEqual((f.get("samples") or []).count("ok"), 3)
+        votes = [list(v) for v in (f.get("votes") or [])]  # [member_a, member_b, count]
+        self.assertIn([1, 6, 3], votes)
+        self.assertEqual(f.get("kept"), [1])               # deterministic survivor
+
+    # g) N=1 restores single-sample behaviour; default N is > 1
+    def test_cross_dedup_ai_default_multi_sample_and_env_n1_restores_single(self):
+        self.assertIsNotNone(getattr(run, "CROSS_DEDUP_SAMPLES", None),
+                             "default sample count N must be a module constant")
+        self.assertIsNotNone(getattr(run, "CROSS_DEDUP_VOTE_K", None),
+                             "default vote threshold K must be a module constant")
+        self.assertGreater(run.CROSS_DEDUP_SAMPLES, 1)
+        self.assertGreaterEqual(run.CROSS_DEDUP_SAMPLES, run.CROSS_DEDUP_VOTE_K)
+
+        lines = self._filler(6)
+        body = '{"groups":[{"members":[1,6],"keep":1}]}'
+
+        fake_agent, calls = self._fixed_agent(body)
+        self._env()
+        os.environ.pop("NEWS_CROSS_DEDUP_N", None)
+        os.environ.pop("NEWS_CROSS_DEDUP_K", None)
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        self.assertEqual(len(calls), run.CROSS_DEDUP_SAMPLES)
+
+        fake_agent, calls = self._fixed_agent(body)
+        self._env(NEWS_CROSS_DEDUP_N="1", NEWS_CROSS_DEDUP_K="1")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        self.assertEqual(len(calls), 1)                    # N=1 -> exactly the old one call
+        self.assertNotIn("標題6", "\n".join(out))          # and the lone sample still applies
+        self.assertEqual(len(out), 5)
 
 
 if __name__ == "__main__":

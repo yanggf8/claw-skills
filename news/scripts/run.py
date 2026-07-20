@@ -3,9 +3,11 @@
 import argparse
 import json
 import os
+import random
 import re
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -147,8 +149,16 @@ TRANSLATION_RULES_STRICT = (
 )
 
 
+_TRACE_LOCK = threading.Lock()  # cross-dedup runs N agent calls in parallel; each traces
+
+
 def log_trace(event: str, **fields) -> None:
-    """Append structured skill diagnostics without logging secrets."""
+    """Append structured skill diagnostics without logging secrets.
+
+    Serialized: entries such as llm_agent_timeout carry 4000-char stdout/stderr
+    tails, which exceed the write buffer and would otherwise interleave between
+    concurrent writers and break one-JSON-object-per-line ops verification.
+    """
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "job_id": os.environ.get("NULLCLAW_JOB_ID", "interactive"),
@@ -157,7 +167,7 @@ def log_trace(event: str, **fields) -> None:
         **fields,
     }
     try:
-        with open(TRACE_FILE, "a", encoding="utf-8") as f:
+        with _TRACE_LOCK, open(TRACE_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError as e:
         print(f"[WARN] trace write failed: {e}", file=sys.stderr)
@@ -2208,6 +2218,9 @@ def _parse_cross_dedup_response(stdout: str, block_count: int):
     return out
 
 
+CROSS_DEDUP_MAX_DROP_RATIO = 0.40   # ceiling on how much of a section one pass may remove
+
+
 def _apply_cross_dedup(lines: list[str], blocks: list[dict], groups: list[dict]):
     drop_block_idxs: set[int] = set()
     for g in groups:
@@ -2215,9 +2228,21 @@ def _apply_cross_dedup(lines: list[str], blocks: list[dict], groups: list[dict])
             if m != g["keep"]:
                 drop_block_idxs.add(m - 1)  # members are 1-based #N
     kept_block_count = len(blocks) - len(drop_block_idxs)
-    # circuit breaker: reject catastrophic collapse
-    floor = min(len(blocks), 5)
-    if kept_block_count < floor or len(drop_block_idxs) > len(blocks) * 0.5:
+    # Circuit breaker: reject catastrophic collapse. The cap is the entire rule — an
+    # extra absolute floor is not just redundant, it is harmful: min(len(blocks), 5) —
+    # and equally min(len(blocks) - 1, 5) — is strictly tighter than the cap for every
+    # n <= 8, and since rejection is all-or-nothing it discards EVERY drop of a
+    # legitimate multi-pair result on a short section instead of trimming it back.
+    #
+    # The cap is CROSS_DEDUP_MAX_DROP_RATIO rather than the obvious half because the
+    # vote ensemble cannot police itself: measured over 6 real N=7 runs on one input,
+    # the samples proved correlated rather than independent, so an entire run swings
+    # aggressive together and a false pair collects as many votes as a true one. One of
+    # those runs bridged an unrelated story into a real group and cut the section from
+    # 10 blocks to 5 — landing exactly on a half cap without tripping it. max(1, ...)
+    # keeps the n >= 2 single-drop guarantee that the ratio alone would lose below n=4.
+    max_drops = max(1, int(len(blocks) * CROSS_DEDUP_MAX_DROP_RATIO))
+    if kept_block_count < 1 or len(drop_block_idxs) > max_drops:
         return None
     drop_line_idxs: set[int] = set()
     for bi in drop_block_idxs:
@@ -2227,42 +2252,206 @@ def _apply_cross_dedup(lines: list[str], blocks: list[dict], groups: list[dict])
     return [ln for i, ln in enumerate(lines) if i not in drop_line_idxs]
 
 
-CROSS_DEDUP_TIMEOUT_SECS = 45  # short; refinement not gate. One logical call, up to 2 attempts.
+CROSS_DEDUP_TIMEOUT_SECS = 45  # per sample; short — refinement not gate. Up to 2 attempts each.
+# A single sample of this prompt is unreliable: measured per-sample recall on an
+# obvious duplicate pair is only 40-60%, 20-50% of samples return no groups at all,
+# and 20-30% contain a false pair. Bootstrap over recorded runs puts N=7 samples with
+# a K=3 pair-vote threshold at recall 46%->68% and false pairs 20%->3%. Both are
+# env-overridable at call time. NEWS_CROSS_DEDUP_N=1 collapses the ensemble back to a
+# single call, but it is NOT a bit-exact revert: the survivor is still chosen by policy
+# rather than by the model's "keep", so a one-sample run can keep a different member of
+# a pair than the pre-ensemble code did. To disable this layer outright use
+# NEWS_CROSS_DEDUP=0, which is the real rollback lever.
+CROSS_DEDUP_SAMPLES = 7   # N: independent samples of the same prompt, run concurrently
+CROSS_DEDUP_VOTE_K = 3    # K: votes a pair needs across those samples to be believed
+CROSS_DEDUP_MAX_SAMPLES = 12    # hard ceiling on N: bounds threads and agent subprocesses
+CROSS_DEDUP_MAX_INFLIGHT = 3    # concurrent agent calls; beyond this they just self-contend
+CROSS_DEDUP_STAGGER_SECS = 0.35     # de-correlates sample (and rc=124 retry) start times
+CROSS_DEDUP_TOTAL_TIMEOUT_SECS = 120    # whole-ensemble wall-clock ceiling — refinement, not gate
+
+
+def _cross_dedup_env_int(name: str, default: int, maximum: int | None = None) -> int:
+    """Call-time env read (constants are import-time) for an int >= 1, optionally
+    capped. The cap matters for N: this var exists to be hand-edited during an
+    incident, and an unbounded value fans out to that many threads and concurrent
+    agent subprocesses at once."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value < 1:
+        return default
+    return min(value, maximum) if maximum is not None else value
+
+
+def _cross_dedup_sample(prompt: str, block_count: int, all_items: dict, numbered: dict):
+    """Run ONE sample. Returns (groups | None, outcome). Never raises: a sample that
+    times out, errors, or answers unparseably contributes zero votes and must not
+    disturb its siblings."""
+    try:
+        result = _run_nullclaw_agent(
+            prompt, CROSS_DEDUP_TIMEOUT_SECS, "cross_dedup", all_items, numbered
+        )
+    except Exception as exc:
+        return None, f"error:{type(exc).__name__}"
+    if getattr(result, "returncode", 1) != 0 or not (result.stdout or "").strip():
+        return None, "bad_result"
+    groups = _parse_cross_dedup_response(result.stdout, block_count)
+    if groups is None:
+        return None, "invalid_grouping"
+    return groups, "ok"
+
+
+def _cross_dedup_pair_votes(sample_groups: list[list[dict]]) -> dict:
+    """Decompose each sample's groups into unordered pairs and tally votes.
+    A pair is counted at most once per sample."""
+    votes: dict[tuple[int, int], int] = {}
+    for groups in sample_groups:
+        pairs = set()
+        for g in groups:
+            members = sorted(set(g["members"]))
+            for i in range(len(members)):
+                for j in range(i + 1, len(members)):
+                    pairs.add((members[i], members[j]))
+        for pair in pairs:
+            votes[pair] = votes.get(pair, 0) + 1
+    return votes
+
+
+def _cross_dedup_components(voted_pairs, block_count: int) -> list[list[int]]:
+    """Union-find over the surviving VOTED pairs only — never over a raw model
+    group, since the vote threshold is the sole guard against a bridge error
+    chaining two unrelated stories together."""
+    parent = list(range(block_count + 1))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in voted_pairs:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    comps: dict[int, list[int]] = {}
+    for n in range(1, block_count + 1):
+        comps.setdefault(find(n), []).append(n)
+    return sorted((sorted(v) for v in comps.values() if len(v) > 1), key=lambda c: c[0])
+
+
+def _cross_dedup_survivor(members: list[int], blocks: list[dict]) -> int:
+    """Pick the survivor deterministically instead of trusting the model's "keep":
+    an accessible block beats a paywalled one, then lowest block index wins."""
+    return min(members, key=lambda n: (1 if blocks[n - 1]["access"] == "paywalled" else 0, n))
+
 
 def _cross_dedup_ai(final: list[str], date_str: str, all_items: dict, numbered: dict) -> list[str]:
     # Call-time env read so ~/.nullclaw/.env is honored (constants are import-time).
     if os.environ.get("NEWS_CROSS_DEDUP", "1") == "0":
         return final
     blocks = _parse_ai_blocks(final)
-    if not blocks or len(blocks) < 2:
+    if blocks is None:  # fail-closed parse; worth a trace, it means the render drifted
+        log_trace("cross_dedup_skipped", reason="parse_failed", lines=len(final))
         return final
+    if len(blocks) < 2:  # normal and uninteresting — distinct reason from a parse bug
+        log_trace("cross_dedup_skipped", reason="too_few_blocks", blocks=len(blocks))
+        return final
+
+    n = _cross_dedup_env_int("NEWS_CROSS_DEDUP_N", CROSS_DEDUP_SAMPLES,
+                             CROSS_DEDUP_MAX_SAMPLES)
+    k = min(_cross_dedup_env_int("NEWS_CROSS_DEDUP_K", CROSS_DEDUP_VOTE_K), n)
     prompt = _cross_dedup_prompt(blocks, date_str)
-    try:
-        result = _run_nullclaw_agent(
-            prompt, CROSS_DEDUP_TIMEOUT_SECS, "cross_dedup", all_items, numbered
-        )
-    except Exception as exc:  # never let this fail the run
-        log_trace("cross_dedup_llm", ok=False, error=f"{exc}", before=len(blocks))
-        return final
-    if getattr(result, "returncode", 1) != 0 or not (result.stdout or "").strip():
-        log_trace("cross_dedup_llm", ok=False, error="bad_result", before=len(blocks))
-        return final
-    groups = _parse_cross_dedup_response(result.stdout, len(blocks))
-    if groups is None:
-        log_trace("cross_dedup_llm", ok=False, error="invalid_grouping", before=len(blocks))
-        return final
+
+    # N independent samples of the SAME prompt, concurrently. Each writes its own
+    # slot, so one slow or failing sample cannot abort or reorder the others.
+    # Concurrency is capped and staggered: N simultaneous agent subprocesses on a
+    # small host contend hard enough to time each other out, and every rc=124 retry
+    # would then fire in lockstep with a SHORTER budget than the attempt that just
+    # failed — manufacturing the very contention it dies of.
+    results: list = [(None, "no_result")] * n
+    inflight = threading.Semaphore(CROSS_DEDUP_MAX_INFLIGHT)
+
+    def _sample(slot: int) -> None:
+        if slot:
+            time.sleep(random.uniform(0, CROSS_DEDUP_STAGGER_SECS))
+        with inflight:
+            results[slot] = _cross_dedup_sample(prompt, len(blocks), all_items, numbered)
+
+    if n == 1:
+        _sample(0)
+    else:
+        # Throttling serializes waves, so bound the whole pass on wall clock too.
+        # A sample still running at the deadline is abandoned (daemon thread; its
+        # subprocess carries its own timeout) and simply contributes no votes.
+        deadline = time.monotonic() + CROSS_DEDUP_TOTAL_TIMEOUT_SECS
+        workers = []
+        for i in range(n):
+            w = threading.Thread(target=_sample, args=(i,), daemon=True)
+            try:
+                w.start()
+            except RuntimeError:
+                break   # thread/process ceiling — proceed with the samples we did get
+            workers.append(w)
+        for w in workers:
+            w.join(max(0.0, deadline - time.monotonic()))
+    # Snapshot before tallying: an abandoned thread may still land in its slot.
+    settled = list(results)
+    outcomes = [outcome for _, outcome in settled]
+
+    ok_count = sum(1 for o in outcomes if o == "ok")
+    # K was calibrated as a FRACTION of N (3 of 7) over independent sequential runs.
+    # These samples share one host and one provider quota, so their failures are
+    # correlated — holding K fixed against a shrunken sample set makes the threshold
+    # unreachable and would dedup LESS than the single-sample code this replaced.
+    # Scale K to the samples that actually returned groups instead; with one survivor
+    # this degrades to exactly the old single-call behaviour, never worse.
+    k_eff = max(1, -(-k * ok_count // n)) if ok_count else k
+
+    votes = _cross_dedup_pair_votes([g for g, _ in settled if g is not None])
+    components = _cross_dedup_components(sorted(p for p, c in votes.items() if c >= k_eff),
+                                         len(blocks))
+    groups = [{"members": comp, "keep": _cross_dedup_survivor(comp, blocks)}
+              for comp in components]
+    dropped = sorted(m for g in groups for m in g["members"] if m != g["keep"])
+    kept = [g["keep"] for g in groups]
+    # surviving pairs plus near-misses, so ops can see how close a tuning change is
+    tally = [[a, b, c] for (a, b), c in sorted(votes.items()) if c >= max(1, k_eff - 1)]
+
+    # Block numbers alone are undiagnosable after the fact: a dropped block is gone
+    # from the delivered digest, and the prompt that held its text is never logged.
+    # Carry the headline of every block the decision touched so a suspected false
+    # positive can be judged from the trace without re-sampling a rolled-over feed.
+    focus = {m for g in groups for m in g["members"]}
+    focus.update(m for a, b, _ in tally for m in (a, b))
+    headlines = {}
+    for m in sorted(focus):
+        text = blocks[m - 1]["headline"]
+        headlines[str(m)] = text if len(text) <= 80 else text[:79] + "…"
+
+    def _trace(after: int, applied: bool, rejected: str | None = None) -> None:
+        fields = {
+            "ok": any(o == "ok" for o in outcomes),
+            "n": n, "k": k_eff, "k_target": k, "ok_samples": ok_count,
+            "samples": outcomes, "votes": tally, "headlines": headlines,
+            "kept": kept, "dropped": dropped if applied else [],
+            "before": len(blocks), "after": after, "groups": groups,
+        }
+        if rejected:
+            fields["rejected"] = rejected
+        log_trace("cross_dedup_llm", **fields)
+
     if not groups:
-        log_trace("cross_dedup_llm", ok=True, before=len(blocks), after=len(blocks),
-                  dropped=[], groups=[])
+        _trace(len(blocks), False)
         return final
     new_lines = _apply_cross_dedup(final, blocks, groups)
     if new_lines is None:  # circuit breaker tripped
-        log_trace("cross_dedup_llm", ok=True, before=len(blocks), after=len(blocks),
-                  dropped=[], groups=groups, rejected="circuit_breaker")
+        _trace(len(blocks), False, rejected="circuit_breaker")
         return final
-    dropped = [m for g in groups for m in g["members"] if m != g["keep"]]
-    log_trace("cross_dedup_llm", ok=True, before=len(blocks),
-              after=len(blocks) - len(dropped), dropped=dropped, groups=groups)
+    _trace(len(blocks) - len(dropped), True)
     return new_lines
 
 
