@@ -2282,6 +2282,29 @@ class CrossDedupVoteEnsembleTests(unittest.TestCase):
         self.assertIn("remaining_to_kill_at_start", t)     # present (None without cron env)
         self.assertIn("remaining_to_kill_at_end", t)
 
+    def test_cross_dedup_llm_reports_abandoned_workers_past_deadline(self):
+        # The core signal of the instrumentation: a sample still running when the
+        # ensemble join deadline passes must be counted as abandoned (= P3 sat on its
+        # ceiling). Without this test a broken is_alive() count fails silently in the
+        # ONLY case abandoned exists to catch.
+        import time as _time
+
+        def slow_agent(prompt, timeout_secs, variant, all_items, numbered):
+            _time.sleep(0.3)   # outlives the 0.05s join deadline patched below
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout='{"groups":[]}', stderr="")
+
+        lines = self._filler(6)
+        traces = []
+        self._env(NEWS_CROSS_DEDUP_N="2", NEWS_CROSS_DEDUP_K="2")
+        with patch.object(run, "CROSS_DEDUP_TOTAL_TIMEOUT_SECS", 0.05), \
+             patch.object(run, "CROSS_DEDUP_STAGGER_SECS", 0.0), \
+             patch.object(run, "_run_nullclaw_agent", slow_agent), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            run._cross_dedup_ai(list(lines), "2026/07/21 (Tue)", {}, {})
+        t = [f for e, f in traces if e == "cross_dedup_llm"][0]
+        self.assertGreaterEqual(t["abandoned"], 1)         # >=1 thread outlived the join
+        self.assertIsInstance(t["elapsed_ms"], int)
+
     # Measured on the 2026-07-18 input over 14 real N=7 runs. Drops per run were mostly
     # 0-3, but one run bridged an unrelated story into a true group and cut the section
     # from 10 blocks to 5, landing exactly on the old 50% cap without tripping it.
