@@ -173,6 +173,7 @@ python3 lib/test_oil_store.py
 
 - **`weather` needs `CWA_API_KEY`**: put it in `~/.nullclaw/.env` (default) or `~/.openclaw/.env` and export `CLAW_ENV` to point at it. Without the key, Taiwan forecasts silently return no data.
 - **OpenClaw `weather` name collision**: OpenClaw ships a bundled `weather` skill (wttr.in). Workspace skills take precedence, so this repo's `weather` wins. Rename the folder + frontmatter `name:` if you want both.
+- **`oilcon` needs `libsql-experimental` on the host python**: declared in `oilcon/requirements.txt` and imported by `lib/oil_store.py`. If missing, oilcon degrades (`contract_degraded`) and delivers `WARN: turso unavailable - libsql-experimental not installed` — TURSO creds being present does not help. On an externally-managed host python (PEP 668, e.g. Ubuntu 24.04 `/usr/bin/python3`), both plain and `--user` pip are blocked; install with `python3 -m pip install --user --break-system-packages libsql-experimental` (lands in `~/.local`, cp312 manylinux wheel, no Rust build; `--user` keeps it out of system site, `--break-system-packages` only clears the PEP 668 gate). Cron runs bare `/usr/bin/python3`, which resolves `~/.local` user-site via `HOME`, so it picks it up. Fixes any Python skill importing `libsql_experimental`, not just oilcon.
 
 ## Design notes
 
