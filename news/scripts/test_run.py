@@ -62,6 +62,39 @@ class NewsDeliveryFormattingTests(unittest.TestCase):
 
         self.assertEqual(body, "- 長科＊成關鍵受惠股 [🔗](http://example.com/1)")
 
+    def test_attach_numbered_links_drops_stray_bracket_markers(self):
+        # A production digest leaked LLM-emitted instrumentation markers
+        # ([hint_picked:none], [hints_used:false], [cat_dedup:0]) into the tech
+        # section; their underscores broke Markdown and forced a plaintext
+        # fallback that expanded every [🔗] link. Such pure-bracket noise lines
+        # must be dropped (and traced), while headers and bullets survive.
+        summary = "**💻 科技**\n- #1 正常標題\n[hint_picked:none]\n[hints_used:false]\n[cat_dedup:0]"
+        numbered = {1: {"title": "正常標題", "link": "http://example.com/1"}}
+        traces = []
+        with patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            body, attached = run._attach_numbered_links(summary, numbered)
+        self.assertEqual(attached, 1)
+        for gone in ("hint_picked", "hints_used", "cat_dedup"):
+            self.assertNotIn(gone, body, gone)
+        self.assertIn("- 正常標題 [🔗](http://example.com/1)", body)
+        self.assertIn("**💻 科技**", body)                    # header preserved
+        dropped = [f for e, f in traces if e == "section_noise_dropped"]
+        self.assertEqual(len(dropped), 1, traces)
+        self.assertEqual(dropped[0].get("count"), 3)
+
+    def test_attach_numbered_links_output_markdown_safe_after_dropping_markers(self):
+        # The whole point: after dropping the noise the chunk must pass the
+        # markdown-safety probe, so delivery stays Markdown (links collapse to 🔗)
+        # instead of falling back to plaintext (raw URLs).
+        # Exactly the production trio: 3 underscores (hint_picked, hints_used,
+        # cat_dedup) = odd count = "unmatched underscore" until they are dropped.
+        summary = "- #1 標題\n[hint_picked:none]\n[hints_used:false]\n[cat_dedup:0]"
+        numbered = {1: {"title": "標題", "link": "http://example.com/1"}}
+        with patch.object(run, "log_trace", lambda *a, **k: None):
+            body, _ = run._attach_numbered_links(summary, numbered)
+        safe, reason = run._markdown_chunk_is_safe(body)
+        self.assertTrue(safe, f"unsafe: {reason} :: {body!r}")
+
     def test_full_digest_no_unescaped_asterisks_in_bullets(self):
         items = [{
             "title": "長科*成關鍵受惠股｜產業熱話",

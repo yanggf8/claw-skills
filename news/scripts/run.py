@@ -1302,6 +1302,13 @@ def _attach_numbered_links(
     attached = {"count": 0}
 
     marker_line = re.compile(r"^\s*(?:-\s*)?#(\d+)\b(?!,)\s*")
+    # A line that is nothing but a [bracketed:marker]. The LLM occasionally leaks
+    # instrumentation noise (e.g. [hint_picked:none], [hints_used:false],
+    # [cat_dedup:0]); its stray underscores make the chunk fail the Markdown-safety
+    # probe, which forces a plaintext fallback that expands every [🔗] link into a
+    # raw URL. Drop such lines — headers (**...**) and real #N bullets are untouched.
+    noise_marker = re.compile(r"^\s*\[[^\]]*\]\s*$")
+    dropped: list[str] = []
 
     def _linked(body: str, link: str) -> str:
         if link:
@@ -1309,9 +1316,12 @@ def _attach_numbered_links(
             return f"- {body} [🔗]({link})"
         return f"- {body}" if body else "-"
 
-    def replace_line(line: str) -> str:
+    def replace_line(line: str) -> str | None:
         match = marker_line.match(line)
         if not match:
+            if noise_marker.match(line):
+                dropped.append(line.strip())
+                return None
             return line
         num = int(match.group(1))
         item = numbered.get(num)
@@ -1334,7 +1344,11 @@ def _attach_numbered_links(
 
         return _linked(body, link)
 
-    return "\n".join(replace_line(line) for line in summary.splitlines()), attached["count"]
+    rendered = [r for r in (replace_line(line) for line in summary.splitlines()) if r is not None]
+    if dropped:
+        log_trace("section_noise_dropped", count=len(dropped),
+                  samples=[s[:120] for s in dropped[:5]])
+    return "\n".join(rendered), attached["count"]
 
 
 def _translate_single_title(title: str, date_str: str) -> str | None:
