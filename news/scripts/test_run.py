@@ -95,6 +95,56 @@ class NewsDeliveryFormattingTests(unittest.TestCase):
         safe, reason = run._markdown_chunk_is_safe(body)
         self.assertTrue(safe, f"unsafe: {reason} :: {body!r}")
 
+    def test_section_strips_leaked_markers_end_to_end(self):
+        # Composition proof for the marker-leak fix: an LLM tech-section output
+        # carrying the exact production noise ([skill-result:tech], [hint_picked:none],
+        # [hints_used:false], [cat_dedup:0]) must come out of the REAL
+        # _summarize_default_section marker-free and Markdown-safe. Only precheck and
+        # paywall resolution are stubbed; _attach_numbered_links runs for real so the
+        # drop actually happens on the assembled section, not just in isolation.
+        items = [
+            _item("台積電宣布美國新廠投產", "src", "https://example.com/1"),
+            _item("記憶體報價連三月上漲", "src", "https://example.com/2"),
+            _item("聯發科發表新旗艦晶片", "src", "https://example.com/3"),
+        ]
+
+        def fake_agent(prompt, timeout_secs, variant, all_items, numbered):
+            return subprocess.CompletedProcess(
+                ["nullclaw"], 0,
+                stdout=(
+                    "[skill-result:tech]\n"
+                    "- #1 台積電宣布美國新廠投產\n"
+                    "- #2 記憶體報價連三月上漲\n"
+                    "- #3 聯發科發表新旗艦晶片\n"
+                    "[hint_picked:none]\n"
+                    "[hints_used:false]\n"
+                    "[cat_dedup:0]"
+                ),
+                stderr="",
+            )
+
+        traces = []
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "_precheck_apply",
+                          lambda summary, numbered, section: (summary, {})), \
+             patch.object(run, "_resolve_paywall_replacements", lambda *a, **k: None), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            lines, used_fallback = run._summarize_default_section(
+                "tech", items, "2026/07/21 (Tue)", {},
+            )
+
+        self.assertFalse(used_fallback)
+        body = "\n".join(lines)
+        for gone in ("skill-result", "hint_picked", "hints_used", "cat_dedup"):
+            self.assertNotIn(gone, body, gone)
+        safe, reason = run._markdown_chunk_is_safe(body)
+        self.assertTrue(safe, f"section body not markdown-safe: {reason} :: {body!r}")
+        self.assertIn("台積電宣布美國新廠投產", body)
+        self.assertEqual(body.count("[🔗]"), 3)             # all three real bullets kept + linked
+        dropped = [f for e, f in traces if e == "section_noise_dropped"]
+        self.assertEqual(len(dropped), 1, traces)
+        self.assertEqual(dropped[0].get("count"), 4)         # 4 stray markers dropped
+
     def test_full_digest_no_unescaped_asterisks_in_bullets(self):
         items = [{
             "title": "長科*成關鍵受惠股｜產業熱話",
