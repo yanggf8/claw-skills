@@ -95,15 +95,25 @@ LLM 事件去重（完整三層）：
 1. **P0 共用 `DEDUP_RULES`**：default section（tech/general）、AI substage、custom-topic 的 LLM prompt 共用「同事件合併 / 同主題不同事件保留」規則；免費源優先僅為 prompt 文字指引（`pick_representatives` / post-dedup keep 皆採 LLM 順序第一則 — Codex S4 永久 skip 程式端免費源 ranking）。
 2. **P1 soft pair hints**（pre-LLM）：對 numbered 候選用 `_topic_words` 算**獨立 pair**，**`overlap >= 4`** 才注入 `可能同事件候選：#A+#B`。hint 列表不做傳遞合群。LLM 仍最終選擇。`NEWS_LLM_DEDUP_HINTS=0` 關閉。trace：`llm_dedup_hints`。套用：default tech/general、**AI substage**、custom-topic。
 3. **P2 post-select hard dedup**（post-LLM 安全網）：marker 驗證通過後、precheck 前，**只對 LLM 已選的 `#N`** 做 hard 合併。門檻 **`overlap >= 4`**。演算法是 **greedy 保序**（依 LLM 輸出順序；與已保留則 overlap≥4 則丟），**不做** union-find / 連通分量。`NEWS_LLM_POST_DEDUP=0` 關閉。trace：`llm_post_dedup`。若砍完後則數低於 `pick` 下限且仍非空：記 `post_dedup_underfill`，再做一次 **deterministic refill**（從未被 LLM 選過的 numbered 候選補滿；與每個已保留項 overlap 皆 `<4` 才可補；**不**復活 P2 砍掉的 id、**不**二次 LLM）。trace：`post_dedup_refill`。套用：default tech/general、AI substage、custom-topic。
-4. **P3 cross-half LLM same-event dedup**（AI 區、翻譯後、跨半安全網）：兩半選稿+翻譯
-   合流後、送出前，把合流清單解析成原子 story block，用**一次 LLM 呼叫**判定哪些
-   block 報導同一事件（只回傳編號分組，不改文案/連結/順序），程式對每組保留一則、
-   原子移除其餘（含 paywall 續行）。**只做 AI 區**（tech/general/custom 不含）。判定用
-   LLM 語義（非 token overlap——確定性 overlap 在翻譯後中文標題分不出同事件 vs 同主題，
-   見 `docs/superpowers/specs/2026-07-14-...`）。安全網不變量：LLM 失敗/逾時/回應不合法/
-   崩塌熔斷（砍到低於 `min(before,5)` 或移除 >50%）→ 整段 passthrough 不變、不使 run 失敗。
-   underfill 接受變少、不 refill。`NEWS_CROSS_DEDUP=0` 關閉（call-time 讀取，honors
-   `~/.nullclaw/.env`）。trace：`cross_dedup_llm`（before/after/dropped/groups/ok）。
+4. **P3 cross-half LLM same-event vote ensemble**（AI 區、翻譯後、跨半安全網）：兩半選稿+翻譯
+   合流後、送出前，把合流清單解析成原子 story block，對**同一 prompt 併發取樣 N 次**
+   （`CROSS_DEDUP_SAMPLES=7`，受 `CROSS_DEDUP_MAX_INFLIGHT=3` 節流 + 錯開啟動以去相關），
+   各樣本獨立解析；把每個樣本的分組拆成無序 pair、跨樣本計票（一個樣本對同一 pair 至多一票），
+   只保留得票 `>= K`（`CROSS_DEDUP_VOTE_K=3`）的 pair。用 union-find **只對通過票數的 pair**
+   建連通分量（票數門檻是防 bridge 誤併的唯一守門，絕不對原始 model 分組做傳遞閉包）；每組保留
+   一則、原子移除其餘（含 paywall 續行）。保留者由**程式決定**（可存取 > paywall，再取最小索引），
+   **不採信 LLM 的 `keep`**。理由：單一樣本很不穩（實測明確重複召回僅 40–60%、20–50% 回空、
+   20–30% 含假 pair）；N=7/K=3 把明確重複召回拉到 ~68%、任一假 pair 降到 ~3%（跨語言需世界知識的
+   困難同事件仍僅 ~9% 完整合併——那是標題缺實體的資訊限制，換 embedding 實測無效）。**只做 AI 區**
+   （tech/general/custom 不含）。判定用 LLM 語義（非 token overlap——確定性 overlap 在翻譯後中文
+   標題分不出同事件 vs 同主題）。安全網不變量：壞樣本（失敗/逾時/回應不合法）貢獻零票、**不中止
+   其餘樣本**；成功樣本過少（`ok_count < min_ok = (N*(K-1))//K + 1`，N=7/K=3 即 5）→ **放棄整段
+   不去重**（併發樣本共用 provider、失敗相關，少數倖存樣本一致是弱證據，寧留重複不誤刪）；崩塌熔斷
+   （移除 > `CROSS_DEDUP_MAX_DROP_RATIO=0.40` 的 block）→ 整段 passthrough；任何情況都不使 run 失敗。
+   `NEWS_CROSS_DEDUP=0` 整層關閉、`NEWS_CROSS_DEDUP_N=1` 退回單樣本（keep 仍由程式決定，非位元級還原）
+   （call-time 讀取，honors `~/.nullclaw/.env`）。trace：`cross_dedup_llm`
+   （`n`/`k`/`ok_samples`/`samples`/`votes`/`kept`/`dropped`/`before`/`after`/`groups`/`rejected`）、
+   `cross_dedup_skipped`（`parse_failed` / `too_few_blocks`）。
 5. **語言閘**：default / AI / custom 在 post-dedup（含 refill）與 precheck 之後、送出前，皆跑 `_language_validation_passed`；不合格則 `_translate_selected_section`（避免 refill 塞入未翻譯英文 RSS 標題）。
 
 Env（去重相關）：
@@ -113,6 +123,8 @@ Env（去重相關）：
 | `NEWS_LLM_DEDUP_HINTS` | on（`!=0`） | `=0` 關閉 P1 soft pair hints |
 | `NEWS_LLM_POST_DEDUP` | on（`!=0`） | `=0` 關閉 P2 hard dedup + underfill refill |
 | `NEWS_CROSS_DEDUP` | on（`!=0`） | `=0` 關閉 P3 cross-half LLM 同事件去重（AI 區） |
+| `NEWS_CROSS_DEDUP_N` | 7 | P3 併發取樣次數；`=1` 退回單樣本；上限 `CROSS_DEDUP_MAX_SAMPLES=12` |
+| `NEWS_CROSS_DEDUP_K` | 3 | P3 一個 pair 需要的跨樣本票數門檻（成功樣本 < `min_ok` 時整段放棄） |
 
 **Codex 裁決為永久 skip**（非單方面省略；見 `docs/reviews/news-llm-dedup-codex-skips-verdict.md`）：
 
@@ -128,6 +140,7 @@ Env（去重相關）：
 - Telegram 長度以 Markdown 可見文字估算，不用原始 URL byte 數。這可避免 Google News RSS 長 URL 讓實際可讀摘要被誤判過長。
 - 若原始 Markdown 太長，腳本會依行切成多段 Telegram 訊息。`digest_delivery_split` trace 會記錄段數與原始/可見字元數。
 - Markdown 字元中和：標題中的 `*` 與 `_` 在送至 Telegram 前會換成全形 `＊` / `＿`，避免 Markdown 解析失敗（例如「長科*成關鍵受惠股」這類台股除權息標示）。僅針對新聞條目本文，不影響區段標題與連結語法。
+- 版塊雜訊行剝除：LLM 版塊輸出偶爾夾帶純 `[括號:標記]` 雜訊行（如 `[hint_picked:none]`、`[cat_dedup:0]`——非本 repo 產生，模型自發吐出）。其底線會使該分塊未配對而 Markdown 安全預檢失敗、整份降級純文字（`[🔗]` 連結攤成長 URL）。`_attach_numbered_links` 在附連結前丟棄「整行僅為 `[...]`」的行（保留 `**區段標題**`、`#N` bullet、`[🔗]` 連結語法、`　↳` paywall 續行），trace：`section_noise_dropped`（含丟棄數與樣本）。僅擋整行標記；行內或無括號雜訊仍由上述 Markdown 預檢降級兜底。
 - Markdown 預檢 + 純文字降級：送出前會檢查每個分塊是否能通過 Telegram Markdown 解析（檢查未配對的 `*` / `_` / `` ` ``、跨塊未閉合的連結括號等）。若任一分塊不安全，整份摘要會降級為純文字送出（`parse_mode=None`），確保整體交付的原子性：要嘛全部以 Markdown 送出，要嘛全部純文字，避免「分塊 1 送出成功，分塊 2 失敗導致 cron 重試又重送分塊 1」。`digest_markdown_unsafe_fallback` trace 會記錄發生降級時的不安全分塊編號。
 
 ## Failure alerts (hard rule)
