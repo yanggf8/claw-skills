@@ -1915,18 +1915,20 @@ class CrossDedupVoteEnsembleTests(unittest.TestCase):
     # b) a bad sample contributes zero votes and must not abort the run
     def test_cross_dedup_ai_bad_samples_do_not_abort_run(self):
         lines = self._filler(6)
-        # raise / rc=124 / unparseable JSON first: any one of them aborts the old
-        # all-or-nothing implementation before the good samples are ever counted.
+        # raise / rc=124 / unparseable JSON: any one aborts the old all-or-nothing
+        # implementation before the good samples are ever counted. N=10 with 7 good
+        # keeps ok_count (7) at min_ok(10,3)=7 so the merge is applied under the
+        # abstain policy -- the point here is that the 3 bad samples don't abort it.
         outputs = [self.RAISES, self.RC_FAIL, "not json at all"] + \
-                  ['{"groups":[{"members":[1,6],"keep":1}]}'] * 3
+                  ['{"groups":[{"members":[1,6],"keep":1}]}'] * 7
         fake_agent, calls = self._queued_agent(outputs)
-        self._env(NEWS_CROSS_DEDUP_N="6", NEWS_CROSS_DEDUP_K="3")
+        self._env(NEWS_CROSS_DEDUP_N="10", NEWS_CROSS_DEDUP_K="3")
         with patch.object(run, "_run_nullclaw_agent", fake_agent), \
              patch.object(run, "log_trace", lambda *a, **k: None):
             out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
         joined = "\n".join(out)
-        self.assertEqual(len(calls), 6)                 # bad samples never short-circuit the rest
-        self.assertNotIn("標題6", joined)               # 3 good votes still reach K
+        self.assertEqual(len(calls), 10)                # bad samples never short-circuit the rest
+        self.assertNotIn("標題6", joined)               # 7 good votes still reach K
         self.assertIn("標題1", joined)
         self.assertEqual(len(out), 5)
 
@@ -2113,6 +2115,58 @@ class CrossDedupVoteEnsembleTests(unittest.TestCase):
         votes = [list(v) for v in (f.get("votes") or [])]  # [member_a, member_b, count]
         self.assertIn([1, 6, 3], votes)
         self.assertEqual(f.get("kept"), [1])               # deterministic survivor
+
+    # Limitation 2: concurrent samples share one host+provider, so their failures
+    # are correlated and a small surviving set can be a correlated cluster that made
+    # the same mistake. Below min_ok successes, abstain entirely rather than let the
+    # old proportional rule dilute K toward 1. min_ok(N=7,K=3)=5.
+    def test_cross_dedup_ai_abstains_when_too_few_samples_succeed(self):
+        lines = self._filler(6)
+        # 4 failures + 3 votes for (1,6): ok_count=3 < min_ok=5 -> abstain, nothing dropped.
+        outputs = [self.RC_FAIL] * 4 + ['{"groups":[{"members":[1,6],"keep":1}]}'] * 3
+        fake_agent, calls = self._queued_agent(outputs)
+        traces = []
+        self._env(NEWS_CROSS_DEDUP_N="7", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        self.assertEqual(out, lines)                       # unchanged: no merge applied
+        self.assertIn("標題6", "\n".join(out))
+        summary = [f for e, f in traces if e == "cross_dedup_llm"]
+        self.assertEqual(len(summary), 1, traces)
+        self.assertEqual(summary[0].get("rejected"), "insufficient_samples")
+        self.assertEqual(summary[0].get("ok_samples"), 3)
+
+    def test_cross_dedup_ai_applies_at_exactly_min_ok_samples(self):
+        lines = self._filler(6)
+        # 2 failures + 5 votes for (1,6): ok_count=5 == min_ok -> not abstained, merges.
+        outputs = [self.RC_FAIL] * 2 + ['{"groups":[{"members":[1,6],"keep":1}]}'] * 5
+        fake_agent, calls = self._queued_agent(outputs)
+        self._env(NEWS_CROSS_DEDUP_N="7", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out = run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        self.assertNotIn("標題6", "\n".join(out))          # 5 votes >= K and ok >= min_ok
+        self.assertEqual(len(out), 5)
+
+    # Limitation B: a single-vote pair must survive into the trace tally so a future
+    # near-miss pass can see the edges the K threshold rejected. The old floor of
+    # max(1, k_eff-1) hid every 1-vote pair at the default K=3.
+    def test_cross_dedup_ai_tally_retains_single_vote_pairs(self):
+        lines = self._filler(6)
+        # (1,6) gets 5 votes and merges; (2,3) gets exactly 1 vote -- a near-miss.
+        outputs = ['{"groups":[{"members":[2,3],"keep":2}]}'] * 1 + \
+                  ['{"groups":[{"members":[1,6],"keep":1}]}'] * 5
+        fake_agent, calls = self._queued_agent(outputs)
+        traces = []
+        self._env(NEWS_CROSS_DEDUP_N="6", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            run._cross_dedup_ai(list(lines), "2026/07/14 (Tue)", {}, {})
+        summary = [f for e, f in traces if e == "cross_dedup_llm"][0]
+        votes = [list(v) for v in (summary.get("votes") or [])]
+        self.assertIn([2, 3, 1], votes)                    # single-vote near-miss retained
+        self.assertIn([1, 6, 5], votes)
 
     # g) N=1 restores single-sample behaviour; default N is > 1
     def test_cross_dedup_ai_default_multi_sample_and_env_n1_restores_single(self):

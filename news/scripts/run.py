@@ -2403,23 +2403,43 @@ def _cross_dedup_ai(final: list[str], date_str: str, all_items: dict, numbered: 
     outcomes = [outcome for _, outcome in settled]
 
     ok_count = sum(1 for o in outcomes if o == "ok")
-    # K was calibrated as a FRACTION of N (3 of 7) over independent sequential runs.
-    # These samples share one host and one provider quota, so their failures are
-    # correlated — holding K fixed against a shrunken sample set makes the threshold
-    # unreachable and would dedup LESS than the single-sample code this replaced.
-    # Scale K to the samples that actually returned groups instead; with one survivor
-    # this degrades to exactly the old single-call behaviour, never worse.
-    k_eff = max(1, -(-k * ok_count // n)) if ok_count else k
+    # Require the full K real votes — do NOT downscale K to the surviving sample
+    # count. The ensemble's whole value is INDEPENDENT corroboration, but these
+    # samples share one host and one provider quota, so their failures are
+    # correlated: when few come back, the survivors can be a correlated cluster that
+    # made the same mistake. The earlier proportional rule lowered K toward 1 exactly
+    # then (ok_count=2 → K=1, letting a single sample merge unilaterally, right when
+    # the provider is least trustworthy). Instead, abstain below min_ok — the
+    # smallest success count that keeps K reachable at the calibrated ratio, which is
+    # 5 for the default N=7/K=3.
+    #
+    # This is a deliberate recall-for-precision trade that is BROADER than the K=1
+    # panic case: at ok_count 3–4 of 7 the old rule used k_eff=2 and would still
+    # merge a pair that all survivors agreed on, whereas we now abstain and leave
+    # that (possibly real) duplicate in the digest until a healthier run. Accepted
+    # because a correlated remnant agreeing is weak evidence, and a leftover
+    # duplicate is a lighter failure than a wrong merge that deletes a distinct story.
+    # All 22 measured runs had ok_count >= 6, so this changes no observed run; it only
+    # engages under real provider degradation.
+    k_eff = k
+    min_ok = (n * (k - 1)) // k + 1
 
     votes = _cross_dedup_pair_votes([g for g, _ in settled if g is not None])
-    components = _cross_dedup_components(sorted(p for p, c in votes.items() if c >= k_eff),
-                                         len(blocks))
+    # Retain EVERY voted pair, single votes included: a 1-vote pair is a near-miss a
+    # future pass may want to re-examine, and the old max(1, k_eff-1) floor hid all of
+    # them at the default K=3. Cheap — a ~10-block section yields only a few pairs.
+    tally = [[a, b, c] for (a, b), c in sorted(votes.items()) if c >= 1]
+
+    insufficient = ok_count < min_ok
+    if insufficient:
+        components = []      # abstain: too few independent samples to trust a merge
+    else:
+        components = _cross_dedup_components(
+            sorted(p for p, c in votes.items() if c >= k_eff), len(blocks))
     groups = [{"members": comp, "keep": _cross_dedup_survivor(comp, blocks)}
               for comp in components]
     dropped = sorted(m for g in groups for m in g["members"] if m != g["keep"])
     kept = [g["keep"] for g in groups]
-    # surviving pairs plus near-misses, so ops can see how close a tuning change is
-    tally = [[a, b, c] for (a, b), c in sorted(votes.items()) if c >= max(1, k_eff - 1)]
 
     # Block numbers alone are undiagnosable after the fact: a dropped block is gone
     # from the delivered digest, and the prompt that held its text is never logged.
@@ -2444,6 +2464,9 @@ def _cross_dedup_ai(final: list[str], date_str: str, all_items: dict, numbered: 
             fields["rejected"] = rejected
         log_trace("cross_dedup_llm", **fields)
 
+    if insufficient:
+        _trace(len(blocks), False, rejected="insufficient_samples")
+        return final
     if not groups:
         _trace(len(blocks), False)
         return final
