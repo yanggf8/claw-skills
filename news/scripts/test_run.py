@@ -1283,6 +1283,159 @@ class ForbiddenEnglishAdverbTests(unittest.TestCase):
         self.assertFalse(run._language_validation_passed(summary))
 
 
+class SkillWallclockTests(unittest.TestCase):
+    """Read-only scheduler wall-clock view for timing traces (Limitation 3).
+    Must NOT share code with _llm_retry_budget_secs, whose 2s-reserve retry gate
+    stays byte-for-byte."""
+
+    def _clear(self):
+        for v in ("NULLCLAW_SKILL_TIMEOUT", "NULLCLAW_SKILL_STARTED"):
+            os.environ.pop(v, None)
+
+    def test_wallclock_elapsed_and_remaining_from_started_and_timeout(self):
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(run.time, "monotonic", lambda: 130.0):
+            os.environ["NULLCLAW_SKILL_STARTED"] = "100"   # elapsed = 130-100 = 30
+            os.environ["NULLCLAW_SKILL_TIMEOUT"] = "90"     # remaining = 90-30 = 60 (NO 2s reserve)
+            elapsed, remaining = run._skill_wallclock()
+        self.assertAlmostEqual(elapsed, 30.0)
+        self.assertAlmostEqual(remaining, 60.0)
+
+    def test_wallclock_none_when_no_env(self):
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear()
+            self.assertEqual(run._skill_wallclock(), (None, None))
+
+    def test_wallclock_remaining_none_without_started(self):
+        # timeout alone can't give proximity-to-kill: elapsed is unknown -> don't guess
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear()
+            os.environ["NULLCLAW_SKILL_TIMEOUT"] = "90"
+            self.assertEqual(run._skill_wallclock(), (None, None))
+
+    def test_wallclock_elapsed_only_without_timeout(self):
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(run.time, "monotonic", lambda: 150.0):
+            self._clear()
+            os.environ["NULLCLAW_SKILL_STARTED"] = "100"
+            elapsed, remaining = run._skill_wallclock()
+        self.assertAlmostEqual(elapsed, 50.0)
+        self.assertIsNone(remaining)
+
+    def test_llm_retry_budget_secs_unchanged_golden(self):
+        # Regression guard: the retry gate keeps its 2s reserve and its
+        # started-absent / no-timeout semantics. If a refactor ever touched it,
+        # these goldens break.
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear()
+            self.assertIsNone(run._llm_retry_budget_secs())          # no timeout -> None
+            os.environ["NULLCLAW_SKILL_TIMEOUT"] = "5"
+            self.assertAlmostEqual(run._llm_retry_budget_secs(), 3.0)  # 5 - 2 reserve, no started
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(run.time, "monotonic", lambda: 130.0):
+            self._clear()
+            os.environ["NULLCLAW_SKILL_TIMEOUT"] = "90"
+            os.environ["NULLCLAW_SKILL_STARTED"] = "100"             # elapsed 30
+            self.assertAlmostEqual(run._llm_retry_budget_secs(), 58.0)  # 90 - 30 - 2
+
+
+class NewsTimingTests(unittest.TestCase):
+    """Limitation 3: section + whole-run wall-clock traces. The whole-run trace
+    MUST fire even on the exit-1 paths (that is where the kill-window pressure is),
+    so it lives in a finally with an outcome field."""
+
+    def _ctx(self):
+        return run.AlertContext(deliver_to=None, account="main", job_id="interactive")
+
+    def test_summarize_llm_emits_section_timing_each_section(self):
+        traces = []
+        with patch.object(run, "_summarize_default_ai_substaged",
+                          lambda items, date_str, ctx: ["- 標題A"]), \
+             patch.object(run, "_summarize_default_section",
+                          lambda key, items, date_str, link_map: (["- 標題" + key], False)), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            run.summarize_llm(
+                {"ai": [{"title": "a", "link": "http://a"}],
+                 "tech": [{"title": "b", "link": "http://b"}],
+                 "general": [{"title": "c", "link": "http://c"}]}, self._ctx())
+        st = [f for e, f in traces if e == "section_timing"]
+        self.assertEqual(sorted(f["section"] for f in st), ["ai", "general", "tech"])
+        for f in st:
+            self.assertIsInstance(f["elapsed_ms"], int)
+
+    def test_summarize_llm_section_timing_fires_on_ai_exhausted(self):
+        def boom(items, date_str, ctx):
+            raise run._AiSubstageExhausted("x")
+        traces = []
+        with patch.object(run, "_summarize_default_ai_substaged", boom), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            with self.assertRaises(run._AiSubstageExhausted):
+                run.summarize_llm({"ai": [{"title": "a", "link": "http://a"}]}, self._ctx())
+        st = [f for e, f in traces if e == "section_timing" and f["section"] == "ai"]
+        self.assertEqual(len(st), 1)   # finally fired even though the section raised
+
+    def _main_patches(self, traces, summarize):
+        return [
+            patch("sys.argv", ["run.py", "--deliver-to", "chat"]),
+            patch.object(run, "load_env", lambda *a, **k: None),
+            patch.object(run, "_news_cache_sweep", lambda *a, **k: None),
+            patch.object(run, "_resolve_topics", lambda args: []),
+            patch.object(run, "fetch_feed", lambda *a, **k: [{"title": "t", "link": "http://x"}]),
+            patch.object(run, "summarize_llm", summarize),
+            patch.object(run, "_deliver_news_or_fail", lambda *a, **k: None),
+            patch.object(run, "_alert_failure", lambda *a, **k: None),
+            patch.object(run, "emit_skill_status", lambda *a, **k: None),
+            patch.object(run, "emit_trace", lambda *a, **k: None),
+            patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))),
+        ]
+
+    def test_main_emits_run_timing_on_success(self):
+        import contextlib
+        traces = []
+        with contextlib.ExitStack() as es:
+            for p in self._main_patches(traces, lambda all_items, ctx: "digest"):
+                es.enter_context(p)
+            run.main()
+        rt = [f for e, f in traces if e == "news_run_timing"]
+        self.assertEqual(len(rt), 1, traces)
+        self.assertEqual(rt[0]["outcome"], "ok")
+        for field in ("total_ms", "feeds_ms", "summarize_ms", "deliver_ms"):
+            self.assertIsInstance(rt[0][field], int, field)
+
+    def test_main_emits_run_timing_on_ai_exhausted_exit1(self):
+        import contextlib
+        traces = []
+
+        def boom(all_items, ctx):
+            raise run._AiSubstageExhausted("x")
+
+        with contextlib.ExitStack() as es:
+            for p in self._main_patches(traces, boom):
+                es.enter_context(p)
+            with self.assertRaises(SystemExit) as cm:
+                run.main()
+        self.assertEqual(cm.exception.code, 1)          # exit-1 contract preserved
+        rt = [f for e, f in traces if e == "news_run_timing"]
+        self.assertEqual(len(rt), 1, traces)            # finally still fired on the exit path
+        self.assertEqual(rt[0]["outcome"], "ai_exhausted")
+
+    def test_main_run_timing_feeds_empty_keeps_outcome(self):
+        # feeds_empty sets outcome then sys.exit(1) -> caught by except SystemExit,
+        # whose `if outcome == "ok"` guard must NOT relabel it delivery_exit.
+        import contextlib
+        traces = []
+        with contextlib.ExitStack() as es:
+            for p in self._main_patches(traces, lambda all_items, ctx: "digest"):
+                es.enter_context(p)
+            es.enter_context(patch.object(run, "fetch_feed", lambda *a, **k: []))  # empty -> outage
+            with self.assertRaises(SystemExit) as cm:
+                run.main()
+        self.assertEqual(cm.exception.code, 1)
+        rt = [f for e, f in traces if e == "news_run_timing"]
+        self.assertEqual(len(rt), 1, traces)
+        self.assertEqual(rt[0]["outcome"], "feeds_empty")   # guard kept it, not delivery_exit
+
+
 class LLMRetryOnTimeoutTests(unittest.TestCase):
     """Change 1: _run_nullclaw_agent retries ONCE on rc=124, with a budget guard."""
 
@@ -2109,6 +2262,25 @@ class CrossDedupVoteEnsembleTests(unittest.TestCase):
             groups = [{"members": list(range(1, drops + 2)), "keep": 1}]
             self.assertIsNone(run._apply_cross_dedup(lines, blocks, groups),
                               f"n={n} must still reject {drops} drops")
+
+    # Limitation 3 timing: cross_dedup_llm must carry P3 wall-clock + budget +
+    # abandoned-worker fields so a day of cron traces can tell "healthy 26s" from
+    # "sat on the 120s ceiling" and attribute budget burn to P3.
+    def test_cross_dedup_llm_trace_carries_timing_fields(self):
+        lines = self._filler(6)
+        fake_agent, calls = self._fixed_agent('{"groups":[]}')
+        traces = []
+        self._env(NEWS_CROSS_DEDUP_N="3", NEWS_CROSS_DEDUP_K="3")
+        with patch.object(run, "_run_nullclaw_agent", fake_agent), \
+             patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            run._cross_dedup_ai(list(lines), "2026/07/21 (Tue)", {}, {})
+        t = [f for e, f in traces if e == "cross_dedup_llm"][0]
+        self.assertIsInstance(t.get("elapsed_ms"), int)
+        self.assertGreaterEqual(t["elapsed_ms"], 0)
+        self.assertEqual(t.get("ensemble_timeout_secs"), run.CROSS_DEDUP_TOTAL_TIMEOUT_SECS)
+        self.assertEqual(t.get("abandoned"), 0)            # all samples finished
+        self.assertIn("remaining_to_kill_at_start", t)     # present (None without cron env)
+        self.assertIn("remaining_to_kill_at_end", t)
 
     # Measured on the 2026-07-18 input over 14 real N=7 runs. Drops per run were mostly
     # 0-3, but one run bridged an unrelated story into a true group and cut the section

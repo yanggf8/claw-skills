@@ -1052,6 +1052,32 @@ def _llm_retry_budget_secs() -> float | None:
     return max(0.0, timeout - 2.0)
 
 
+def _skill_wallclock() -> tuple[float | None, float | None]:
+    """Read-only scheduler wall-clock view for TIMING TRACES only — deliberately
+    separate from _llm_retry_budget_secs so its 2s-reserve retry gate stays intact.
+    Returns (elapsed_since_skill_start, remaining_to_kill), raw and with NO reserve.
+    Either is None when the scheduler env can't supply it: elapsed needs
+    NULLCLAW_SKILL_STARTED; remaining needs a valid NULLCLAW_SKILL_TIMEOUT AND a
+    known elapsed (timeout alone can't give proximity-to-kill, so we don't guess)."""
+    elapsed = None
+    raw_started = os.environ.get("NULLCLAW_SKILL_STARTED")
+    if raw_started:
+        try:
+            elapsed = max(0.0, time.monotonic() - float(raw_started))
+        except ValueError:
+            elapsed = None
+    remaining = None
+    raw_timeout = os.environ.get("NULLCLAW_SKILL_TIMEOUT")
+    if raw_timeout and elapsed is not None:
+        try:
+            timeout = float(raw_timeout)
+            if timeout > 0:
+                remaining = max(0.0, timeout - elapsed)
+        except ValueError:
+            remaining = None
+    return elapsed, remaining
+
+
 def _run_nullclaw_agent(prompt: str, timeout_secs: int, variant: str, all_items: dict[str, list[dict]], numbered: dict[int, dict]):
     """Run one agent call; on a synthetic timeout (rc=124) retry ONCE with a
     shorter budget. Only rc=124 is retried — validation failures, empty stdout,
@@ -2380,6 +2406,9 @@ def _cross_dedup_ai(final: list[str], date_str: str, all_items: dict, numbered: 
     k = min(_cross_dedup_env_int("NEWS_CROSS_DEDUP_K", CROSS_DEDUP_VOTE_K), n)
     prompt = _cross_dedup_prompt(blocks, date_str)
 
+    p3_start = time.monotonic()
+    _, rem_start = _skill_wallclock()   # scheduler budget left when P3 began
+
     # N independent samples of the SAME prompt, concurrently. Each writes its own
     # slot, so one slow or failing sample cannot abort or reorder the others.
     # Concurrency is capped and staggered: N simultaneous agent subprocesses on a
@@ -2388,6 +2417,7 @@ def _cross_dedup_ai(final: list[str], date_str: str, all_items: dict, numbered: 
     # failed — manufacturing the very contention it dies of.
     results: list = [(None, "no_result")] * n
     inflight = threading.Semaphore(CROSS_DEDUP_MAX_INFLIGHT)
+    workers: list = []
 
     def _sample(slot: int) -> None:
         if slot:
@@ -2402,7 +2432,6 @@ def _cross_dedup_ai(final: list[str], date_str: str, all_items: dict, numbered: 
         # A sample still running at the deadline is abandoned (daemon thread; its
         # subprocess carries its own timeout) and simply contributes no votes.
         deadline = time.monotonic() + CROSS_DEDUP_TOTAL_TIMEOUT_SECS
-        workers = []
         for i in range(n):
             w = threading.Thread(target=_sample, args=(i,), daemon=True)
             try:
@@ -2415,6 +2444,7 @@ def _cross_dedup_ai(final: list[str], date_str: str, all_items: dict, numbered: 
     # Snapshot before tallying: an abandoned thread may still land in its slot.
     settled = list(results)
     outcomes = [outcome for _, outcome in settled]
+    abandoned = sum(1 for w in workers if w.is_alive())   # workers past the join deadline
 
     ok_count = sum(1 for o in outcomes if o == "ok")
     # Require the full K real votes — do NOT downscale K to the surviving sample
@@ -2467,12 +2497,18 @@ def _cross_dedup_ai(final: list[str], date_str: str, all_items: dict, numbered: 
         headlines[str(m)] = text if len(text) <= 80 else text[:79] + "…"
 
     def _trace(after: int, applied: bool, rejected: str | None = None) -> None:
+        _, rem_end = _skill_wallclock()   # scheduler budget left when P3 finished
         fields = {
             "ok": any(o == "ok" for o in outcomes),
             "n": n, "k": k_eff, "k_target": k, "ok_samples": ok_count,
             "samples": outcomes, "votes": tally, "headlines": headlines,
             "kept": kept, "dropped": dropped if applied else [],
             "before": len(blocks), "after": after, "groups": groups,
+            "elapsed_ms": int((time.monotonic() - p3_start) * 1000),
+            "ensemble_timeout_secs": CROSS_DEDUP_TOTAL_TIMEOUT_SECS,
+            "abandoned": abandoned,
+            "remaining_to_kill_at_start": rem_start,
+            "remaining_to_kill_at_end": rem_end,
         }
         if rejected:
             fields["rejected"] = rejected
@@ -2599,6 +2635,7 @@ def summarize_llm(all_items: dict[str, list[dict]], ctx: "AlertContext") -> str:
     degraded_sections: list[str] = []  # sections that fell back to non-LLM
 
     for key in section_keys:
+        _sec_start = time.monotonic()
         try:
             if key == "ai":
                 # Substaged path: Level 2 (always) → Level 3 (per failed half)
@@ -2631,6 +2668,12 @@ def summarize_llm(all_items: dict[str, list[dict]], ctx: "AlertContext") -> str:
                 f"section_{key}_exception",
                 f"section {key} raised {type(e).__name__}: {e}",
             )
+        finally:
+            # section wall clock = LLM call + precheck + paywall + translate + P3
+            # (for ai) — NOT just the agent elapsed_ms. Fires even when the ai
+            # section re-raises _AiSubstageExhausted.
+            log_trace("section_timing", section=key,
+                      elapsed_ms=int((time.monotonic() - _sec_start) * 1000))
 
     if degraded_sections:
         # News still goes out, but quality is degraded. Per the hard rule
@@ -3039,10 +3082,15 @@ def main():
         job_id=os.environ.get("NULLCLAW_JOB_ID"),
     )
 
+    run_start = time.monotonic()
+    outcome = "ok"
+    feeds_ms = summarize_ms = deliver_ms = None
+
     try:
         # Deliver news (default command or explicit "deliver")
         topics = _resolve_topics(args)
 
+        _t = time.monotonic()
         if topics:
             all_items = _fetch_custom_topics(topics)
         else:
@@ -3058,6 +3106,7 @@ def main():
                 "tech": dedup(tech),
                 "general": dedup(general),
             }
+        feeds_ms = int((time.monotonic() - _t) * 1000)
 
         # Decide "feed outage" on the RAW deduped feeds, BEFORE Tier-1 filtering —
         # a deny-list that empties every section is a filter outcome, not a feed
@@ -3067,6 +3116,7 @@ def main():
         if not has_items:
             # Every RSS feed returned 0 items. There is no news to send.
             # Per the hard rule, alert and exit non-zero.
+            outcome = "feeds_empty"
             _alert_failure(
                 ctx,
                 "all_feeds_empty",
@@ -3076,21 +3126,26 @@ def main():
             emit_trace()
             sys.exit(1)
 
+        _t = time.monotonic()
         if topics:
             summary = summarize_llm_custom(all_items, topics, ctx)
         else:
             summary = summarize_llm(all_items, ctx)
+        summarize_ms = int((time.monotonic() - _t) * 1000)
 
         if ctx.job_id and ctx.job_id != "interactive":
             summary += f"\n\n`{ctx.job_id}`"
 
+        _t = time.monotonic()
         _deliver_news_or_fail(args.deliver_to, summary, args.account)
+        deliver_ms = int((time.monotonic() - _t) * 1000)
         emit_skill_status("ok")
         emit_trace()
 
     except _AiSubstageExhausted:
         # Alert was already sent from inside _summarize_default_ai_substaged.
         # Exit 1 so cron records the failure; do NOT deliver a partial digest.
+        outcome = "ai_exhausted"
         emit_skill_status("failed")
         emit_trace()
         sys.exit(1)
@@ -3100,7 +3155,9 @@ def main():
         # The body was printed to stdout for cron capture but the message did
         # NOT reach Telegram. Per the hard rule, alert before propagating.
         # The on-disk failure log catches this even when Telegram is the
-        # dead channel.
+        # dead channel. (feeds_empty also exits here with outcome already set.)
+        if outcome == "ok" and se.code not in (0, None):
+            outcome = "delivery_exit"
         if se.code not in (0, None):
             _alert_failure(
                 ctx,
@@ -3110,6 +3167,8 @@ def main():
         raise
 
     except Exception as e:
+        if outcome == "ok":
+            outcome = "exception"
         import traceback
         _alert_failure(
             ctx,
@@ -3119,6 +3178,25 @@ def main():
         emit_skill_status("failed")
         emit_trace()
         raise
+
+    finally:
+        # Whole-run wall clock + scheduler proximity, on EVERY path (success, exit-1,
+        # delivery failure) so a day of cron traces can answer how close the run got
+        # to NULLCLAW_SKILL_TIMEOUT and how much was feeds/summarize/deliver. A hard
+        # SIGKILL leaves NO news_run_timing — treat a missing one near the timeout as
+        # a probable kill.
+        _elapsed, _remaining = _skill_wallclock()
+        log_trace(
+            "news_run_timing",
+            outcome=outcome,
+            total_ms=int((time.monotonic() - run_start) * 1000),
+            feeds_ms=feeds_ms,
+            summarize_ms=summarize_ms,
+            deliver_ms=deliver_ms,
+            skill_timeout=os.environ.get("NULLCLAW_SKILL_TIMEOUT"),
+            elapsed_since_skill_start=_elapsed,
+            remaining_to_kill=_remaining,
+        )
 
 
 if __name__ == "__main__":
