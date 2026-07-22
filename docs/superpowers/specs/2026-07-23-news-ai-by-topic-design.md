@@ -2,246 +2,302 @@
 
 **Date:** 2026-07-23
 **Skill:** `news` (Telegram AI/tech/general daily digest)
-**Author:** Claude (brainstormed with user; direction reviewed by Codex, granularity/taxonomy by Grok, classifier mechanism by baicode/Qwen — all cross-verified against source)
-**Status:** DRAFT — pending Codex spec review + user review before `writing-plans`.
+**Author:** Claude (brainstormed with user; direction reviewed by Codex, granularity/taxonomy by Grok, classifier mechanism by baicode/Qwen; **spec adversarially reviewed by Codex and every finding cross-verified against source** — see "Codex spec review" at the end)
+**Status:** DRAFT v2 — Codex findings resolved; pending user review before `writing-plans`.
 
 ## Problem / motivation (evidence-backed)
 
 The AI section currently renders one flat, globally-deduplicated bullet list. Same-event
 dedup (pre-translation `cluster()` → per-half LLM select → P3 cross-half vote ensemble) has
-been pushed to an **LLM same-event JUDGMENT ceiling**: four metadata augmentations plus
-embeddings were A/B-tested (N=20) on the hard cross-lingual case and none lifted recall past
-the headline-only baseline's own 5–20% run-to-run noise (see
-`docs/superpowers/specs/2026-07-14-news-cross-translate-dedup-design.md`, "Closed
-investigations", and `news/SKILL.md`). Piling more tech onto global dedup has ~zero marginal
+been pushed to an **LLM same-event JUDGMENT ceiling**: four metadata augmentations were
+A/B-tested (N=20) on the hard cross-lingual case and none lifted recall past the headline-only
+baseline's own 5–20% run-to-run noise; embedding was also tested (no lift observed, sample
+size not held to the same N=20 rigor). See
+`docs/superpowers/specs/2026-07-14-news-cross-translate-dedup-design.md` "Closed
+investigations" and `news/SKILL.md`. Piling more tech onto global dedup has ~zero marginal
 return for the hard cases.
 
 This design does **not** try to improve dedup. It asks a different question — **is the daily
-AI digest more readable when grouped by theme than as a flat list?** — and ships a
-low-cost, falsifiable experiment to answer it.
+AI digest more readable when grouped by theme than as a flat list?** — and ships a low-cost,
+falsifiable experiment to answer it.
 
 ### Reframe (locked before design)
 
 By-topic is a **presentation/readability experiment**, applied strictly AFTER the existing
 global P3 dedup, behind an `off/shadow/render` kill-switch, shadow-first. It is **not** a
-dedup replacement, and it must never regress dedup.
+dedup replacement, and it must never regress dedup or drop a story.
 
 ## Non-goals (explicit)
 
 - NOT a dedup improvement or replacement. P3 stays exactly as-is and stays global.
-- NO growing the AI section beyond its current `pick: "5-8"` for this experiment (a denser
-  section is a separate product decision with its own limit retune).
-- NO multi-label classification (a story gets exactly one primary theme).
+- NO changing AI selection size (the proportional `pick_count`, below) as part of this feature.
+- NO multi-label classification (one primary theme per story).
 - NO LLM-dynamic / free-form theme names (fixed enum only).
 - NO per-bucket dedup / no running the N=7/K=3 vote ensemble inside each theme.
 - NOT touching `cluster()`, the half-split, translation, custom topics, or the weekly
   `ainews` project.
 
-## Source constraints (verified — cite before trusting)
+## Source constraints (verified against `news/scripts/run.py`)
 
-1. **AI section is small:** `DEFAULT_SECTION_SPECS["ai"]` has `"pick": "5-8"`, `"limit": 30`,
-   and a `focus` string already listing sub-themes (研究突破/政策/產品發布/併購/國安監管).
-   `news/scripts/run.py:83-90`. At 5–8 survivors, too many buckets → singleton sections.
+1. **Post-P3 AI cardinality is `K`, NOT a fixed 5–8.** The substaged AI path ignores the
+   `pick: "5-8"` config; each half selects `pick_count = max(2, len(sub_items)//3)`
+   (`run.py:2030`), the two halves concatenate (`:2612-2614`), then P3 dedups (`:2620`). So
+   the delivered block count `K ≈ n/3` of the post-cluster item count — realistically **~8–15**,
+   occasionally more. **The classifier must operate on the ACTUAL parsed block count `K`,
+   never an assumed 5–8**, and cap its input (fail flat above `THEME_MAX_BLOCKS`, e.g. 20).
 2. **Theming MUST be post-P3.** `_parse_ai_blocks` fail-closes (returns `None`) on any line
-   that is not a `- ` bullet, blank, or valid continuation. `news/scripts/run.py:2154-2168`.
-   A theme heading inserted BEFORE P3 makes the parse fail → P3 passthrough → **cross-half
-   dedup silently stops**. Theming is strictly post-P3.
-3. **Exit-0 is not a repo-wide invariant.** Feeds-all-empty (`sys.exit(1)`,
-   `run.py:3116-3127`) and AI-substage-exhausted (`_AiSubstageExhausted` → exit 1,
-   `run.py:3145-3148`) legitimately exit non-zero. The classifier must be a refinement that
-   **never owns an exit code** — it fails open to the current flat section and leaves the
-   surrounding outcome unchanged.
-4. **Sections are computed sequentially, then rendered.** `for key in section_keys:` runs
-   ai → tech → general and stores each into `section_results[key]`
-   (`run.py:2637-2676`, ai at :2643); a SEPARATE loop assembles headers+lines
-   (`run.py:2688-2692`). So AI bullets are available for post-processing between the two
-   loops. This split is what makes the classifier's insertion point (below) clean.
-5. **LLM calls + budget:** `_run_nullclaw_agent` retries rc=124 once, budget-aware
-   (`run.py:1081-1110`); `_skill_wallclock()` exposes remaining cron budget. Concurrent
-   agent calls on one host contend (P3 caps in-flight at `CROSS_DEDUP_MAX_INFLIGHT=3`,
-   `run.py:2308`), so the classifier runs sequentially, never concurrently with P3.
+   that is not a `- ` bullet, blank, or valid continuation (`run.py:2154-2168`). A theme
+   heading inserted BEFORE P3 makes the parse fail → P3 passthrough → **cross-half dedup
+   silently stops**.
+3. **Exit-0 is not a repo-wide invariant.** Feeds-all-empty (`sys.exit(1)`, `run.py:3127`),
+   `_AiSubstageExhausted` (exit 1, `:3151`), delivery failure and uncaught exceptions
+   (`:3173`) all legitimately terminate non-zero. The classifier must be a refinement that
+   **never owns an exit code** and never converts a would-be-successful run into a failure.
+4. **Sections computed, then rendered — with an alert block between.** `for key in
+   section_keys:` computes ai→tech→general into `section_results[key]`
+   (`run.py:2637-2676`); then a `degraded_sections` alert block (`:2678-2686`); then a
+   separate render loop assembles headers+lines (`:2688-2692`); then global paywall footer
+   (`:2699-2701`) and `_trim_digest_links` (`:2703`). The theming post-processor plugs in
+   **after the degraded alert block (:2686) and before the render loop (:2688)**, replacing
+   only `section_results["ai"]`.
+5. **`_trim_digest_links` is length-sensitive and section-aware (HAZARD).** It only fires when
+   visible text > 4000 chars (`run.py:1659`) and detects the AI section by "AI 人工智慧" in a
+   line, ending it on the next line that `startswith("**")` (`:1665-1668`). Downstream
+   `_trim_lines_to_limit` can DELETE whole bullets + their paywall continuations (`:1580-1588`).
+6. **LLM/budget primitives.** `_run_nullclaw_agent` retries rc=124 once (`:1081-1110`);
+   `_run_nullclaw_agent_once` (`:1113`) is the no-retry entry. `_skill_wallclock` is
+   **trace-only, no reserve, returns `None` for remaining when start ts is absent**
+   (`:1055-1078`) — NOT usable as a budget gate; `_llm_retry_budget_secs` (`:1024-1052`) is
+   the reserve-aware pattern to copy. P3 abandons daemon workers at its deadline and returns
+   while they are still alive (`:2436-2447`, test `test_run.py:2308`) — a later step CAN
+   overlap a lingering P3 subprocess.
 
 ## Success criteria
 
 - **Primary (hypothesis, must be A/B-validated):** the themed digest is more scannable /
-  preferred over the flat list. Custom topics prove only that the renderer CAN show titled
-  sections, not that it is more readable — so readability is a claim to measure, not assume.
-- **Hard guardrail (non-negotiable):** no dedup regression. In `shadow` the delivered body is
-  **byte-equal** to the current flat digest; classification changes nothing user-visible.
-  No increase in false merges (theming never merges/drops bullets — it only groups them).
-- **Secondary guardrails:** `其他` share, bucket balance, cross-theme duplicate suspects,
-  important-story coverage, added wall-clock, malformed/fallback rate.
+  preferred over the flat list. Readability is a claim to measure, not assume.
+- **Hard guardrail (non-negotiable):** no dedup regression and no dropped story. In `shadow`
+  the delivered body is **byte-equal to the off-mode digest** (measured on the FULL digest
+  after `_trim_digest_links` and the job-id append, not just the AI section). Theming only
+  regroups blocks; it never merges, drops, or rewrites one.
+- **Secondary guardrails:** `其他` share, bucket balance, coverage, added wall-clock,
+  malformed/fail-open rate.
 
-### Shadow is the go/no-go gate (not just a safety step)
+### Shadow is the go/no-go gate
 
-At 5–8 bullets with 4 themes, many days theming collapses to near-flat (each theme a
-singleton). That is a *correct* degenerate outcome, but it also means the readability payoff
-is uncertain. `shadow` mode MEASURES whether theming fires often enough to be worth enabling.
-Only flip to `render` if, over several days:
-
-- `其他` share median ≲ 25–30%;
-- on days with ≥6 AI bullets, ≥1 theme has ≥2 stories at least ~half the time;
-- shadow body is byte-equal to the flat control on every run (proves zero dedup regression).
-
-If those thresholds are not met, the experiment concludes at `shadow` — theming is not worth
-rendering — and no render code path is enabled.
+`shadow` MEASURES whether theming fires often enough to be worth `render`. Flip to `render`
+only if, over several days: `其他` share median ≲ 25–30%; on days with `K ≥ 8`, ≥1 theme has
+≥2 stories most of the time; and shadow body is byte-equal to the off-mode control on every
+run. If not met, the experiment concludes at `shadow` and no render path is enabled.
 
 ## Taxonomy (fixed enum, single primary theme)
 
-Four primary themes + `其他`. Labels in Traditional Chinese:
+Four primary themes + `其他`, Traditional Chinese labels:
 
 | Theme | Belongs here (single primary) |
 |-------|-------------------------------|
-| **產品發布** | Concrete ship/GA/API/launch of a user-facing or API product/feature. |
-| **研究突破** | Papers, benchmarks, capability/science claims WITHOUT a clear product-ship frame. |
-| **產業資本** | M&A, funding, IPO/earnings-as-capital, strategic deals, market structure. |
-| **政策監管** | Law, regulation, government action, export controls, 國安-as-state-power (merges 政策+國安+監管 — they blur in RSS). |
-| **其他** | No clean primary fit, or genuinely multi-aspect with no dominant frame (leadership drama, lawsuits w/o reg outcome, outages, rumor, soft analysis). |
+| **產品發布** | Concrete ship/GA/API/launch of a user-facing or API product/feature; enterprise deployment/adoption of a shipped product. |
+| **研究突破** | Papers, benchmarks, capability/science claims, **and technical AI-safety/alignment reports**, without a clear product-ship frame. |
+| **產業資本** | M&A, funding, IPO/earnings-as-capital, strategic deals/partnerships, market structure. |
+| **政策監管** | Law, regulation, government action, export controls, 國安-as-state-power (merges 政策+國安+監管). |
+| **其他** | No dominant news peg among 1–4 (leadership drama, lawsuits w/o reg outcome, outages, rumor, soft trend pieces). |
 
-**Single-label tie-break (first-match priority, NOT "best fit"):**
-政策監管 → 產業資本 → 產品發布 → 研究突破 → 其他.
-Worked edges: "OpenAI ships GPT-X in ChatGPT" → 產品發布; "paper claims SOTA, no product"
-→ 研究突破; "US export curb on AI chips" → 政策監管; "Anthropic raises $X" → 產業資本;
-"CEO resigns / outage / vague trend piece" → 其他.
+**Classification rule — DOMINANT NEWS PEG, not first-match.** Assign the theme of the
+headline's *dominant* news peg; apply a priority order ONLY to break a genuine tie
+(政策監管 → 產業資本 → 產品發布 → 研究突破 → 其他). This avoids the failure Codex flagged
+where a strict first-match labels every government-backed investment or regulated product
+launch as 政策 even when capital/product is the real peg. Worked edges: "OpenAI ships GPT-X
+in ChatGPT" → 產品發布; "gov-backed $Xbn AI fund" → 產業資本 (peg is capital) unless the peg
+is the regulation itself; "US export curb on AI chips" → 政策監管; "paper claims SOTA, no
+product" → 研究突破; "safety eval finds jailbreak" → 研究突破; "CEO resigns / outage" → 其他.
 
-Rationale for 4 (not 5) primaries: the `focus` string lists 5 ideas, but 5 primaries over
-5–8 survivors averages ~1 story/theme → adaptive rendering collapses everything → theming
-adds no structure. Four is the granularity where a busy day clusters into multi-story buckets
-and a quiet day honestly degrades to flat.
+**Enterprise adoption and AI-safety reports are explicitly mapped** (to 產品發布 and 研究突破
+respectively) because the AI remit includes them (`SKILL.md:63,65`) and they would otherwise
+inflate `其他`.
+
+Rationale for 4 primaries: at the corrected cardinality (`K ≈ 8–15`), four themes average
+~2–4 stories/bucket on a normal day — enough structure to help, few enough that adaptive
+rendering rarely degenerates. Five primaries risks thin buckets; three loses useful
+structure.
 
 ## Architecture
 
 ### Insertion point (verified)
 
-Run classification + theme rendering as a **post-processing step on `section_results["ai"]`,
-AFTER the compute loop (`run.py:2637-2676`) and BEFORE the render loop
-(`run.py:2688-2692`)** — NOT inside `_summarize_default_ai_substaged`. Placing it inside the
-AI iteration would delay tech/general and eat their wall-clock budget; placing it after all
-sections are computed means it squeezes no section and its budget-gate need only watch the
-kill window. (This refinement over "right after P3" was surfaced by baicode and verified
-against the compute/render split.)
+A single post-processor `_theme_ai_section(...)` runs **between the degraded-section alert
+block (`run.py:2686`) and the render loop (`:2688`)**, replacing `section_results["ai"]`.
 
-### The classifier
+**Skip theming entirely (return the AI lines untouched) when ANY of:**
+- `NEWS_AI_THEME` is `off` or an **unrecognized value** (unknown → `off`, never `render`);
+- `"ai"` is in `degraded_sections` (fallback lines that never went through P3);
+- the AI lines are the no-news placeholder `["- 今日無相關新聞"]` (`:2618`);
+- `_parse_ai_blocks` returns `None` or fewer than 2 blocks;
+- block count `K > THEME_MAX_BLOCKS`;
+- the budget gate (below) says no.
 
-- **One cheap LLM call** over the 5–8 post-P3 AI headlines, returning one enum label per
-  headline. Keyword rules are rejected as the primary mechanism: on translated CJK titles
-  they are ~50–75% accurate and drift silently as Google-News translation varies ("launches"
-  → 發表/推出/上線…), i.e. they trade the LLM's rare timeout for a chronic, silent
-  misclassification. (Keyword pre-filtering for an unambiguous class, e.g. strong regulatory
-  terms → 政策監管, is an OPTIONAL later refinement, never the main path.)
-- **Separate call — do NOT fold into P3.** P3's prompt/response is a pair-vote contract
-  (`_cross_dedup_ai`, `run.py:2392+`); folding classification in would break it.
-- **Params:** dedicated short timeout `CLASSIFIER_TIMEOUT_SECS ≈ 8` (5–8 short titles
-  classify in ~1–3s on an idle host; 8s is generous). **No retry** (it is a refinement, not a
-  critical path — do not spend double wall-clock). **Budget-gated** via `_skill_wallclock()`:
-  if remaining cron budget is too low, skip classification and render flat.
-- **Validation:** response must yield exactly one valid enum label per input headline. Reject
-  the WHOLE response (→ flat) on: nonzero rc / empty stdout / JSON parse fail / label count ≠
-  headline count / any label outside the enum.
+### The classifier (block-based, one no-retry call)
 
-### The renderer (adaptive)
+- Reuse `_parse_ai_blocks` to get atomic **story blocks** (each a `start:end` line slice; a
+  free-replacement paywall story is 2 lines / 1 block). Classify **one block per input
+  object**, sending `headline` and optional `original_headline` — never a physical line.
+- **One cheap LLM call** via `_run_nullclaw_agent_once` (`run.py:1113`) — the no-retry entry;
+  a rc=124 retry is not worth doubling wall-clock for a refinement. Returns one enum label
+  per block. Keyword rules are NOT the primary mechanism: on translated CJK titles they drift
+  silently as Google-News translation varies; a rules-only path trades a rare timeout for
+  chronic misclassification. (Keyword pre-tagging of an unambiguous class is an OPTIONAL later
+  refinement.)
+- **Do NOT fold into P3** — P3's prompt/response is a pair-vote contract (`_cross_dedup_ai`,
+  `:2392`); folding classification in would break it.
+- **Params:** dedicated short timeout `CLASSIFIER_TIMEOUT_SECS` (benchmark against realistic
+  `K≈8–20` short headlines, not 5–8; start ~10s). No retry (uses `_once`).
+- **Validation → whole-response reject (→ flat):** nonzero rc / empty stdout / JSON parse
+  fail / label count ≠ block count / any label outside the enum / duplicate or missing block
+  ids (if ids are used).
+
+### Budget gate (dedicated helper, not `_skill_wallclock`)
+
+Add `_theme_budget_ok()` modeled on `_llm_retry_budget_secs`: it must reserve
+`CLASSIFIER_TIMEOUT_SECS` **plus a delivery reserve** (Telegram spends up to 15s/attempt
+`lib/telegram.py:19`, delivery ~1s to exit `lib/delivery.py:95,101`). When a cron timeout is
+configured but a reliable remaining time is unavailable (no `NULLCLAW_SKILL_STARTED`), **skip**
+(fail flat). Because the post-processor runs after all sections, the gate need only protect
+finalization+delivery, not tech/general.
+
+### The renderer (adaptive, block-atomic, non-`**` headings)
 
 ```
-labels = classify(ai_bullets)            # post-compute, pre-render
-for theme in [產品發布, 研究突破, 產業資本, 政策監管]:   # fixed order
-    if count(theme) >= 2:
-        emit heading + that theme's bullets   # within-theme = post-P3 order
-    else:
-        queue theme's singleton bullets to the flat tail
-if count(其他) >= 2:
-    emit 其他 heading + bullets      # 其他 always last among headed groups
-elif count(其他) == 1:
-    append to flat tail
-emit flat tail (unheaded) if non-empty   # tail keeps post-P3 relative order
+blocks = _parse_ai_blocks(ai_lines); labels = classify(blocks)
+groups = {theme: [blocks with that label] preserving post-P3 order}
+if no theme reaches >=2:  return ai_lines UNCHANGED   # exact bytes, incl. blanks
+out = []
+for theme in [產品發布, 研究突破, 產業資本, 政策監管]:      # fixed order
+    if len(groups[theme]) >= 2:
+        out += [THEME_HEADING(theme)] + [lines[b.start:b.end] for b in groups[theme]]
+    else: tail += singleton block slices
+if len(groups[其他]) >= 2: out += [THEME_HEADING(其他)] + 其他 block slices   # 其他 last
+else: tail += 其他 singleton slices
+out += tail (unheaded, post-P3 order)
 ```
 
-- **Cross-theme order:** fixed (產品→研究→產業→政策→其他), never by today's bucket size
-  (avoids day-to-day thrash).
-- **Within-theme order:** preserve post-P3 order (the significance-ish ranking already paid
-  for). No re-sort by source/recency, no second significance LLM.
-- **Every theme a singleton → output is today's flat list (zero headings).** This is a
-  successful degenerate case, not a bug.
-- **Layout folding ≠ reclassification:** a singleton dropped to the tail keeps its true
-  assigned label in the trace (`theme_assigned` vs `theme_rendered`) so shadow distribution
-  metrics are not poisoned.
+- **Heading format MUST NOT start with `**`** (e.g. use `▸ 產品發布` or an emoji prefix) —
+  a `**`-prefixed line makes `_trim_digest_links` think the AI section ended and strip links
+  from the rest of the AI bullets (`run.py:1667`). Add a test asserting the chosen format does
+  not set `in_ai = False`.
+- **Move `lines[start:end]` slices intact** — never reconstruct a headline/link, never split a
+  paywall pair across a heading.
+- **Length/trim guard (no-drop invariant):** headings add bytes and can push the digest over
+  the 4000-char `_trim_digest_links` threshold, which can strip AI links and (via
+  `_trim_lines_to_limit`) drop whole blocks — and the paywall footer is counted BEFORE
+  trimming (`:2699` vs `:2703`), so a trim-drop leaves a stale count. Therefore: if the
+  themed full digest (headings + footer) would exceed the trim threshold, **render unthemed
+  (flat)** for that run rather than risk a dropped story or stale footer. (This keeps the
+  no-drop guarantee absolute; a later version may refine finalization ordering.)
 
-### Kill-switch & modes
+### Kill-switch, modes, failure semantics
 
-`NEWS_AI_THEME` (call-time env read, honors `~/.nullclaw/.env`), default **`off`**:
+`NEWS_AI_THEME` (call-time env read; `load_env()` runs before summarization `run.py:3057`, so
+`~/.nullclaw/.env` is honored), default **`off`**:
 
-- **`off`** (default) — skip the classifier entirely; identical to today. Deploying this
-  feature changes NOTHING until the operator explicitly opts in — no extra LLM call, no added
-  wall-clock, no risk on the production cron.
-- **`shadow`** — classify, compute the themed layout, TRACE everything, but deliver the
-  **byte-equal flat body**. Pure measurement window, zero user-visible change. Operator turns
-  this on when ready to gather the go/no-go data.
-- **`render`** — deliver the adaptive themed layout. Enabled only after shadow thresholds met.
+- **`off`** (default) — post-processor not invoked; identical to today. Deploying changes
+  nothing until the operator opts in (no LLM call, no latency, no risk).
+- **`shadow`** — classify + compute the themed layout from a COPY, TRACE everything, but
+  deliver the untouched flat AI lines. Pure measurement.
+- **`render`** — deliver the adaptive themed layout (only after shadow thresholds met).
 
-> Decision note (Codex/Grok split, resolved by author): Grok proposed default `shadow`; Codex
-> proposed default `off`. Chosen `off` — deploying the code should be a behavioral no-op that
-> adds no LLM call until the operator opts into the measurement window. Flagged for Codex spec
-> review.
+> Decision note (Codex/Grok split, resolved): Grok proposed default `shadow`, Codex `off`.
+> Chosen `off` (Codex concurred): shadow still spends an LLM call, trace writes, latency, and
+> possible P3-subprocess contention, so deploying should be a no-op until opt-in.
 
-### Failure semantics (binary — no middle state)
-
-Whole-classifier failure → **flat section unchanged** (= `off` behavior) on: rc=124 /
-nonzero rc / empty stdout / JSON parse fail / label-count mismatch / illegal label / any
-exception / insufficient budget. Never partial ("3 themed + 2 flat"). A missing/illegal label
-for one story means the whole response is invalid → flat (a single story is only labeled
-`其他` when the LLM SUCCEEDS and actively assigns 其他). This keeps shadow byte-equal
-verification simple.
+**Total fail-open.** The entire post-processor (mode parse, block parse, prompt build,
+subprocess, validation, render, trace) is wrapped in ONE top-level `try/except` that returns
+the untouched flat AI lines on ANY exception — because the insertion point is outside the
+section loop's handler and an escaped exception would otherwise reach `main`'s exit-1 path
+(`run.py:3173`). Fail-open triggers: rc=124 / nonzero rc / empty / parse fail / label
+mismatch / illegal label / budget skip / any exception. **No partial render** ("3 themed + 2
+flat" never happens); `其他` appears only when the LLM SUCCEEDS and actively assigns it.
 
 ### Trace / telemetry
 
-Emit `ai_theme` with: mode (off/shadow/render), per-story `theme_assigned`, `theme_rendered`
-(heading vs tail), `其他` share, bucket balance, cross-theme duplicate suspects, classifier
-`ok`/`error`/`elapsed_ms`, and whether the budget-gate skipped it. In shadow, also assert the
-themed vs flat body relationship for the byte-equal invariant.
+Emit `ai_theme` with: mode, `K`, per-block `theme_assigned` and `theme_rendered`
+(heading vs tail), `其他` share, bucket balance, classifier `ok`/`error`/`elapsed_ms`, and
+budget-gate/length-guard skip reasons. **Drop the earlier "cross-theme duplicate suspects"
+field** — P3 returns only rendered lines and its votes/headlines live in a separate trace
+(`run.py:2499,2528`), so the post-processor has no structured near-miss data to compute it
+without re-plumbing P3. (If wanted later, derive it from P3's own trace, not here.)
 
 ## Later optimization (out of scope for v1)
 
-If `render` wins on readability, fold the single-primary theme code into the existing
-half-select LLM responses (Codex's "Approach B") to remove the extra call's wall-clock. That
-changes the failure-sensitive select contract and requires an `AI_SUBSTAGE_CACHE_VARIANT`
-bump (`run.py:40, 2012`), so it is deliberately deferred until v1 proves value.
+If `render` wins, fold the single theme code into the existing half-select LLM responses
+(Codex's "Approach B") to remove the extra call; that changes the failure-sensitive select
+contract and needs an `AI_SUBSTAGE_CACHE_VARIANT` bump (`run.py:40,2012`), so it is deferred.
 
-## Testing (TDD — RED first)
+## Testing (TDD — RED first). LLM stubbed; existing suite stays green.
 
-Real fixtures, LLM stubbed (monkeypatch the classify agent call to return canned labels):
+1. Classify parse/validate: valid one-label-per-block; reject each of non-JSON, label-count
+   mismatch, illegal label, empty, nonzero rc, duplicate/missing ids → whole-response reject.
+2. Adaptive render — clustered day (`K≈12`, ≥2 in a theme) → heading; within-theme order =
+   post-P3 order.
+3. Adaptive render — all singletons → output **byte-equals** the flat input (zero headings).
+4. Singleton folding: lone theme + lone `其他` → unheaded tail in post-P3 order; assigned
+   labels still in trace.
+5. Fixed cross-theme order regardless of bucket sizes; `其他` last.
+6. **Atomic two-line paywall block:** classified as one story; no heading between parent and
+   continuation; moved intact; global paywall count unchanged.
+7. **Heading format:** chosen heading does NOT trip `_trim_digest_links`'s `in_ai` reset (no
+   `**` prefix); AI links survive a >4000 digest.
+8. **Length/trim guard:** a themed digest that would cross the 4000 threshold → renders flat
+   (no dropped block, no stale footer).
+9. Kill-switch `off`: not invoked, identical output. Unknown mode value → treated as `off`.
+10. Kill-switch `shadow`: classifier called; delivered FULL digest (after `_trim_digest_links`
+    + job-id append) byte-equals the off-mode golden; trace has labels.
+11. Fail-open: rc=124 (assert exactly ONE agent call via `_once`) / illegal response /
+    renderer exception / trace exception / budget skip → flat, exit code unaffected.
+12. Skip paths: AI in `degraded_sections`; no-news placeholder; `<2` blocks; `K > THEME_MAX_BLOCKS`.
+13. Insertion point: runs on `section_results["ai"]` after all sections computed; tech/general
+    content unaffected.
+14. P3-abandoned-worker overlap: theming still fails open / completes without corrupting output.
+15. Trace shape: `ai_theme` with mode + K + assigned/rendered + `其他` share.
 
-1. **Classify parse/validate:** valid one-label-per-headline; reject each of — non-JSON,
-   label-count mismatch, illegal label, empty stdout, nonzero rc → whole-response rejection.
-2. **Adaptive render — clustered day:** ≥2 in a theme → heading emitted; within-theme order =
-   input order.
-3. **Adaptive render — all singletons:** output byte-equals the flat input (zero headings).
-4. **Singleton folding:** a lone theme and a lone `其他` go to the unheaded tail, in post-P3
-   order; assigned labels still recorded in trace.
-5. **Fixed cross-theme order** regardless of bucket sizes; `其他` last.
-6. **Kill-switch off:** classifier not called; output identical to flat.
-7. **Kill-switch shadow:** classifier called, body delivered = flat (byte-equal), trace has
-   labels.
-8. **Classifier failure safe:** rc=124 / illegal response / exception / budget-gate skip →
-   flat section unchanged, exit code unaffected.
-9. **Budget-gate:** low `_skill_wallclock()` remaining → classifier skipped, flat rendered.
-10. **Insertion point:** classification runs on `section_results["ai"]` after all sections
-    computed; tech/general sections unaffected in content and not delayed by classify in the
-    `off` path.
-11. **Trace shape:** `ai_theme` with mode + theme_assigned/theme_rendered + 其他 share.
+## Companion doc fixes (independent; do alongside)
 
-Tests in `news/scripts/test_run.py`. Existing suite must stay green.
-
-## Companion doc fixes (independent of this feature; do alongside)
-
-1. `news/SKILL.md:107` says the hard same-event case is an "資訊限制" (information limitation);
-   the newer experiment-specific conclusion is that it is a JUDGMENT limit (the decoded slug
-   supplied the entity "kimi" and the model still would not merge). Correct the wording to
-   "judgment 限制" for consistency with the closed-investigation addendum and memory.
-2. The cross-dedup addendum states embedding "gave no lift" without the N=20 rigor recorded
-   for the other four augmentations. Soften to "embedding also tested; no lift observed
-   (sample size not held to the N=20 of the four metadata augmentations)".
+1. `news/SKILL.md:107` "資訊限制" → "judgment 限制" (consistent with the closed-investigation
+   addendum: the decoded slug supplied the entity and the model still would not merge).
+2. Soften the cross-dedup addendum's embedding claim to "also tested; no lift observed (sample
+   size not held to the N=20 of the four metadata augmentations)".
 
 ## Out of scope
 
-- Any dedup change; growing the AI section; multi-label; dynamic themes; per-bucket ensemble.
-- Custom-topic theming; tech/general theming; `ainews`.
-- Approach B (fold theme code into half-select calls) — deferred until v1 proves value.
+- Any dedup change; changing AI selection size; multi-label; dynamic themes; per-bucket
+  ensemble; custom-topic/tech/general theming; `ainews`; Approach B (deferred).
+
+---
+
+# Codex spec review (2026-07-23) — findings verified against source & resolved
+
+All findings below were re-checked line-by-line against `run.py`/`test_run.py` before folding
+in; every one held.
+
+- **#2 (High) — "5–8" premise wrong.** Verified `pick_count = max(2, len//3)` per half
+  (`:2030`); real `K≈8–15`. → Rewrote §Source-constraint 1, taxonomy rationale, and shadow
+  thresholds around actual `K`; added `THEME_MAX_BLOCKS`.
+- **#3 (High) — insertion clean only on the successful path.** Verified degraded fallback
+  (`:2662`) and no-news placeholder (`:2618`) bypass P3; alert block sits between the loops
+  (`:2678`). → Insert after `:2686`; skip degraded/placeholder/parse-fail/`<2`.
+- **#4 (High) — block atomicity + trim/paywall/`**`-heading hazards.** Verified
+  `_trim_digest_links` `in_ai` reset on `**` (`:1667`), 4000 threshold (`:1659`),
+  block-drop (`:1580-1588`), footer-before-trim (`:2699` vs `:2703`). → Block-atomic renderer,
+  non-`**` headings, length/trim guard → render flat rather than risk a drop.
+- **#5 (High) — fail-open/budget.** Verified `_skill_wallclock` is trace-only/no-reserve
+  (`:1055-1078`) and `_run_nullclaw_agent_once` exists (`:1113`). → Dedicated `_theme_budget_ok`
+  with delivery reserve; `_once` for no-retry; one top-level try/except; unknown mode → off.
+- **#6 (Med) — "never concurrent with P3" false.** Verified P3 abandons live daemon workers
+  (`:2436-2447`, test `:2308`). → Dropped the guarantee; short-timeout + fail-open absorb it.
+- **#7 (Med) — shadow invariant.** → Compare FULL post-trim + job-id digest to an off-mode
+  golden (not themed==flat).
+- **#8 (Med) — taxonomy.** → Dominant-peg rule (priority only for ties); enterprise + safety
+  explicitly mapped to curb `其他`.
+- **#9 (Med) — tests/telemetry.** → Added atomic-paywall, heading-format, length-guard,
+  degraded/placeholder, one-shot-count, invalid-mode, abandoned-worker tests; dropped the
+  unsupported cross-theme-duplicate metric.
+- **#10 — docs/default.** → Softened embedding/keyword/latency claims to hypotheses;
+  default `off` confirmed by Codex.
