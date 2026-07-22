@@ -1435,6 +1435,29 @@ class NewsTimingTests(unittest.TestCase):
         self.assertEqual(len(rt), 1, traces)
         self.assertEqual(rt[0]["outcome"], "feeds_empty")   # guard kept it, not delivery_exit
 
+    def test_main_feeds_empty_no_false_telegram_alert(self):
+        # feeds_empty already fires "all_feeds_empty"; its sys.exit(1) is caught by
+        # `except SystemExit`, which must NOT also fire the misleading
+        # "telegram_delivery_failed" alert — that path never touched delivery.
+        import contextlib
+        alerts = []
+        with contextlib.ExitStack() as es:
+            es.enter_context(patch("sys.argv", ["run.py", "--deliver-to", "chat"]))
+            es.enter_context(patch.object(run, "load_env", lambda *a, **k: None))
+            es.enter_context(patch.object(run, "_news_cache_sweep", lambda *a, **k: None))
+            es.enter_context(patch.object(run, "_resolve_topics", lambda args: []))
+            es.enter_context(patch.object(run, "fetch_feed", lambda *a, **k: []))  # every feed empty
+            es.enter_context(patch.object(run, "_alert_failure",
+                                          lambda ctx, key, msg: alerts.append(key)))
+            es.enter_context(patch.object(run, "emit_skill_status", lambda *a, **k: None))
+            es.enter_context(patch.object(run, "emit_trace", lambda *a, **k: None))
+            es.enter_context(patch.object(run, "log_trace", lambda *a, **k: None))
+            with self.assertRaises(SystemExit) as cm:
+                run.main()
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("all_feeds_empty", alerts)               # the correct alert fired
+        self.assertNotIn("telegram_delivery_failed", alerts)   # the misleading one did NOT
+
 
 class LLMRetryOnTimeoutTests(unittest.TestCase):
     """Change 1: _run_nullclaw_agent retries ONCE on rc=124, with a budget guard."""

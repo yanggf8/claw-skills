@@ -3155,10 +3155,14 @@ def main():
         # The body was printed to stdout for cron capture but the message did
         # NOT reach Telegram. Per the hard rule, alert before propagating.
         # The on-disk failure log catches this even when Telegram is the
-        # dead channel. (feeds_empty also exits here with outcome already set.)
+        # dead channel. A non-zero exit while outcome is still "ok" can ONLY come
+        # from _deliver_news_or_fail: the only other sys.exit reaching this handler
+        # is feeds_empty, which sets outcome + fires "all_feeds_empty" first (the
+        # ai_exhausted exit raises inside its own except and never lands here). So
+        # gating on "ok" stops a spurious second "telegram_delivery_failed" alert
+        # on a feed outage.
         if outcome == "ok" and se.code not in (0, None):
             outcome = "delivery_exit"
-        if se.code not in (0, None):
             _alert_failure(
                 ctx,
                 "telegram_delivery_failed",
