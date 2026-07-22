@@ -3,7 +3,7 @@
 **Date:** 2026-07-14
 **Skill:** `news` (Telegram AI/tech/general daily digest)
 **Author:** Claude (brainstormed with user)
-**Status:** v3 — LLM approach, hardened per two rounds of Codex review (v1 deterministic-overlap rejected round 1; LLM approach confirmed sound-with-fixes round 2, fixes folded in below)
+**Status:** SHIPPED, but the shipped implementation evolved past this v3 single-call design into a **vote ensemble** with an **abstain** rule — see the "Evolution (as shipped)" and "Closed investigations" addenda at the end of this doc. The sections below record the original v3 single-LLM-call design (v1 deterministic-overlap rejected round 1; LLM approach confirmed sound-with-fixes round 2). Read them for the parsing/validation/circuit-breaker rationale that still holds; read the addenda for what actually ships.
 
 ## Problem (root-caused, evidence-backed)
 
@@ -231,3 +231,91 @@ Tests in `news/scripts/test_run.py`.
 - Custom-topic cross-topic dedup.
 - Program-side free-source ranking (Codex S4 permanent-skip).
 - Touching `cluster()`, the half-split, translation, or the weekly `ainews` project.
+
+---
+
+# Evolution (as shipped) — v3 single call → vote ensemble + abstain
+
+The v3 design above ships one LLM call and trusts its single grouping. In practice **one
+sample is unreliable**: measured per-sample recall on an obvious duplicate pair is only
+40–60%, 20–50% of samples return no groups at all, and 20–30% contain a false pair. So the
+single call was replaced by a **vote ensemble** (constants + rationale in
+`news/scripts/run.py:2261,2295-2310`; source of truth is the code, not this doc).
+
+**Ensemble (`_cross_dedup_ai`, `run.py:2392`):**
+- **N=7 samples** of the SAME prompt (`CROSS_DEDUP_SAMPLES`), run concurrently but capped
+  (`CROSS_DEDUP_MAX_INFLIGHT=3`), staggered (`0.35s`) to de-correlate starts and rc=124
+  retries, per-sample timeout 45s, whole-ensemble wall-clock ceiling 120s. A sample that
+  times out / errors / answers unparseably contributes **zero votes** and never disturbs
+  its siblings (own results slot).
+- **Pair voting (`_cross_dedup_pair_votes`):** each sample's groups are decomposed into
+  unordered pairs; a pair must collect **K=3 votes** across samples (`CROSS_DEDUP_VOTE_K`)
+  to be believed. Bootstrap over recorded runs puts N=7/K=3 at recall 46%→68% and false
+  pairs 20%→3%.
+- **Union-find over VOTED pairs only (`_cross_dedup_components`):** components are built
+  from pairs that cleared K, never from a raw model group — the vote threshold is the sole
+  guard against a bridge error chaining two unrelated stories.
+- **Deterministic survivor (`_cross_dedup_survivor`):** accessible beats paywalled, then
+  lowest block index — NOT the model's `keep`. Consequence: `NEWS_CROSS_DEDUP_N=1` collapses
+  the ensemble to one call but is **not a bit-exact revert** of the v3 code (survivor is
+  policy-chosen). The real off switch is `NEWS_CROSS_DEDUP=0`.
+
+**Abstain instead of downscaling K (`run.py:2449-2482`, commit "abstain instead of
+downscaling K"):** require the FULL K real votes; do not lower K toward the surviving-sample
+count. Below `min_ok = (n*(k-1))//k + 1` (=5 for N=7/K=3) the pass **abstains** (no merges).
+Why: the samples share one host and one provider quota, so their failures are correlated —
+when few come back, the survivors can be a correlated cluster that made the same mistake.
+The earlier proportional rule lowered K toward 1 exactly then (ok_count=2 → K=1, a single
+sample merging unilaterally). This is a deliberate recall-for-precision trade that only
+engages under real provider degradation (all 22 measured runs had ok_count≥6, so it changes
+no observed run). A leftover duplicate is a lighter failure than a wrong merge that deletes a
+distinct story.
+
+**Circuit breaker retuned (`run.py:2261,2271-2286`):** the v3 `min(before,5)` floor was
+replaced by a **`CROSS_DEDUP_MAX_DROP_RATIO=0.40`** cap (`max_drops = max(1, int(blocks*0.40))`;
+whole-pass no-op if exceeded). The floor was harmful on short sections (all-or-nothing
+rejection discarded every drop of a legitimate multi-pair result); 0.40 (not the obvious
+half) is because the ensemble can't police itself — one measured run bridged an unrelated
+story and cut 10 blocks to 5, landing exactly on a half cap without tripping it.
+
+**Env levers (call-time):** `NEWS_CROSS_DEDUP=0` disables the layer (true rollback);
+`NEWS_CROSS_DEDUP_N` / `NEWS_CROSS_DEDUP_K` override N/K (N capped at
+`CROSS_DEDUP_MAX_SAMPLES=12`). **Trace `cross_dedup_llm`** carries before/after/dropped/groups
+plus the full pair tally and the headline of every touched block, so a suspected false
+positive is diagnosable from the trace without re-sampling a rolled-over feed.
+
+Shipped alongside (own commits): drop stray bracket-marker lines before attaching links;
+P3 timing instrumentation; and a fix so a feeds outage no longer fires a spurious
+`telegram_delivery_failed` alert.
+
+# Closed investigations (2026-07-22) — decided DO NOT BUILD
+
+Three follow-ups were investigated to conclusion and deliberately NOT implemented. Recorded
+so they are not re-opened blind.
+
+1. **`{5,9,10}` bridge false-merge → DO NOT FIX.** A single false voted edge chaining an
+   unrelated story into a real component via single-link union-find. **Already killed by the
+   abstain fix**: with k_eff pinned at K=3, weakly-voted bridge edges (1–2 votes) never reach
+   threshold; 0/12 real ensemble runs on the 07-18 replay formed any size≥3 component. Both
+   reviewers killed every topology fix (a "require ≥2 crossing edges" rule 4-collapses on a
+   double bridge; a triangle-witness rule still merges a correlated false TRIANGLE and
+   inverts on the modal K=3 vote tie). Any topology rule is precision-dominant but loses
+   recall on true paths — negative value for a bug that no longer occurs. Real residual =
+   false PAIRS (e.g. `{7,8}`), indistinguishable from a true pair by text/topology.
+
+2. **Hard cross-lingual same-event recall (Limitation 1) → DO NOT BUILD a fetch pipeline.**
+   The ORIGINAL reported bug: three same-event Moonshot/Kimi headlines (incl. a generic
+   "Chinese AI stuns US" whose title names no entity) fully merge only ~9% of the time. Four
+   augmentations — original English title, og:description, body-lede, decoded URL-slug —
+   were A/B-tested (N=20 each). The headline-only baseline itself swings 5–20% run to run;
+   every augmented delta lands INSIDE that noise, even when the slug reliably feeds the
+   entity ("kimi"). It is an LLM same-event JUDGMENT limit, not an information limit — the
+   model HAS the entity and still won't reliably merge "generic Chinese AI" with "Moonshot
+   Kimi". `embedding` was tested here too and gave no lift (`news/SKILL.md:107`). Only
+   consistent effect of augmentation was **precision** (fewer false merges INTO the trio) —
+   real but secondary, not worth per-item decode/fetch latency. `lib/news_quality.decode_google_news_url`
+   already exists if this is ever revisited.
+
+3. **P3 cron kill-window → NON-THREAT.** Measured P3 = ~13s of a ~49s total run, abandoned
+   samples = 0; the scheduler sets no `NULLCLAW_SKILL_TIMEOUT`, so there is no kill window to
+   race. The wall-clock ceilings above are refinement guards, not gate protection.
