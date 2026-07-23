@@ -2500,5 +2500,23 @@ class CrossDedupVoteEnsembleTests(unittest.TestCase):
         self.assertEqual(len(out), 5)
 
 
+class NewsThemeClassifyPromptTests(unittest.TestCase):
+    def test_prompt_lists_blocks_enum_and_dominant_peg(self):
+        blocks = run._parse_ai_blocks([
+            "- OpenAI 推出 GPT-6 [🔗](https://a)",
+            "- 美國擴大 AI 晶片出口管制 [🔗](https://b)",
+        ])
+        p = run._theme_classify_prompt(blocks, "2026/07/23 (Thu)")
+        self.assertIn("#1", p)
+        self.assertIn("GPT-6", p)
+        self.assertIn(run.THEME_PRODUCT, p)      # enum present
+        self.assertIn(run.THEME_POLICY, p)
+        self.assertIn("主要新聞點", p)            # dominant news peg language
+        self.assertIn("並列難分", p)              # priority is tie-break ONLY, not first-match
+        self.assertIn("企業採用", p)              # enterprise adoption mapped (curbs 其他)
+        self.assertIn("安全", p)                  # AI safety/alignment reports mapped
+        self.assertIn("labels", p)               # asks for JSON labels
+
+
 if __name__ == "__main__":
     unittest.main()
