@@ -213,6 +213,27 @@ def _parse_theme_response(stdout: str, block_count: int):
     return out
 
 
+def _theme_budget_ok(classifier_timeout: int = CLASSIFIER_TIMEOUT_SECS) -> bool:
+    raw_timeout = os.environ.get("NULLCLAW_SKILL_TIMEOUT")
+    if not raw_timeout:
+        return True                      # no cron budget → manual run, always allowed
+    try:
+        timeout = float(raw_timeout)
+    except ValueError:
+        return False                     # a budget WAS configured but is unreadable → skip
+    if timeout <= 0:
+        return False                     # non-positive configured budget → skip
+    raw_started = os.environ.get("NULLCLAW_SKILL_STARTED")
+    if not raw_started:
+        return False                     # timeout set but no reliable clock → skip
+    try:
+        started = float(raw_started)
+    except ValueError:
+        return False
+    remaining = timeout - max(0.0, time.monotonic() - started)
+    return remaining >= (classifier_timeout + THEME_DELIVERY_RESERVE_SECS)
+
+
 TRANSLATION_RULES_STRICT = (
     "英文標題必須完整翻譯成繁體中文。"
     "只有以下類別可以保留英文原文：公司名（例如 OpenAI、Google、Microsoft）、"

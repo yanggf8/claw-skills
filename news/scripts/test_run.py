@@ -2540,5 +2540,31 @@ class NewsThemeParseTests(unittest.TestCase):
             self.assertIsNone(run._parse_theme_response(b, 2), b)
 
 
+class NewsThemeBudgetTests(unittest.TestCase):
+    def test_no_cron_env_allows(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NULLCLAW_SKILL_TIMEOUT", None)
+            self.assertTrue(run._theme_budget_ok(10))
+
+    def test_timeout_without_start_skips(self):
+        with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": "120"}, clear=False):
+            os.environ.pop("NULLCLAW_SKILL_STARTED", None)
+            self.assertFalse(run._theme_budget_ok(10))
+
+    def test_malformed_or_nonpositive_timeout_skips(self):
+        for bad in ("abc", "0", "-5"):
+            with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": bad}, clear=False):
+                self.assertFalse(run._theme_budget_ok(10), bad)  # configured-but-unreliable → skip
+
+    def test_ample_budget_allows_low_budget_skips(self):
+        now = run.time.monotonic()
+        with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": "120",
+                                     "NULLCLAW_SKILL_STARTED": str(now)}, clear=False):
+            self.assertTrue(run._theme_budget_ok(10))   # ~120s left, need 10+16
+        with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": "120",
+                                     "NULLCLAW_SKILL_STARTED": str(now - 100)}, clear=False):
+            self.assertFalse(run._theme_budget_ok(10))  # ~20s left, need 26
+
+
 if __name__ == "__main__":
     unittest.main()
