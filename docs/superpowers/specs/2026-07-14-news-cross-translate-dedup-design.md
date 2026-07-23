@@ -311,7 +311,7 @@ so they are not re-opened blind.
    every augmented delta lands INSIDE that noise, even when the slug reliably feeds the
    entity ("kimi"). It is an LLM same-event JUDGMENT limit, not an information limit — the
    model HAS the entity and still won't reliably merge "generic Chinese AI" with "Moonshot
-   Kimi". `embedding` was tested here too and gave no lift (`news/SKILL.md:107`). Only
+   Kimi". `embedding` also tested; no lift observed (sample size not held to the N=20 of the four metadata augmentations) (`news/SKILL.md:107`). Only
    consistent effect of augmentation was **precision** (fewer false merges INTO the trio) —
    real but secondary, not worth per-item decode/fetch latency. `lib/news_quality.decode_google_news_url`
    already exists if this is ever revisited.

@@ -104,7 +104,7 @@ LLM 事件去重（完整三層）：
    一則、原子移除其餘（含 paywall 續行）。保留者由**程式決定**（可存取 > paywall，再取最小索引），
    **不採信 LLM 的 `keep`**。理由：單一樣本很不穩（實測明確重複召回僅 40–60%、20–50% 回空、
    20–30% 含假 pair）；N=7/K=3 把明確重複召回拉到 ~68%、任一假 pair 降到 ~3%（跨語言需世界知識的
-   困難同事件仍僅 ~9% 完整合併——那是標題缺實體的資訊限制，換 embedding 實測無效）。**只做 AI 區**
+   困難同事件仍僅 ~9% 完整合併——那是標題缺實體的 judgment 限制，換 embedding 實測無效）。**只做 AI 區**
    （tech/general/custom 不含）。判定用 LLM 語義（非 token overlap——確定性 overlap 在翻譯後中文
    標題分不出同事件 vs 同主題）。安全網不變量：壞樣本（失敗/逾時/回應不合法）貢獻零票、**不中止
    其餘樣本**；成功樣本過少（`ok_count < min_ok = (N*(K-1))//K + 1`，N=7/K=3 即 5）→ **放棄整段
@@ -115,6 +115,11 @@ LLM 事件去重（完整三層）：
    （`n`/`k`/`ok_samples`/`samples`/`votes`/`kept`/`dropped`/`before`/`after`/`groups`/`rejected`）、
    `cross_dedup_skipped`（`parse_failed` / `too_few_blocks`）。
 5. **語言閘**：default / AI / custom 在 post-dedup（含 refill）與 precheck 之後、送出前，皆跑 `_language_validation_passed`；不合格則 `_translate_selected_section`（避免 refill 塞入未翻譯英文 RSS 標題）。
+6. **AI 主題分區（P3 之後、渲染前、AI 區、實驗性）**：對 P3 去重後的 AI bullet 用一次 LLM
+   分類到固定主題（產品發布／研究突破／產業資本／政策監管／其他），每主題 ≥2 則才印 `▸` 標題，
+   單則歸無標題平列尾。**只做 AI 區**，只重排不去重、不丟稿。分類失敗/逾時/預算不足/長度超限
+   → 整段回平列。`NEWS_AI_THEME=off|shadow|render`（預設 off；shadow 送平列僅記錄；render 才分區）。
+   trace：`ai_theme`。
 
 Env（去重相關）：
 
@@ -125,6 +130,7 @@ Env（去重相關）：
 | `NEWS_CROSS_DEDUP` | on（`!=0`） | `=0` 關閉 P3 cross-half LLM 同事件去重（AI 區） |
 | `NEWS_CROSS_DEDUP_N` | 7 | P3 併發取樣次數；`=1` 退回單樣本；上限 `CROSS_DEDUP_MAX_SAMPLES=12` |
 | `NEWS_CROSS_DEDUP_K` | 3 | P3 一個 pair 需要的跨樣本票數門檻（成功樣本 < `min_ok` 時整段放棄） |
+| `NEWS_AI_THEME` | `off` | `shadow`=分類但送平列（量測）；`render`=依主題分區。預設 off |
 
 **Codex 裁決為永久 skip**（非單方面省略；見 `docs/reviews/news-llm-dedup-codex-skips-verdict.md`）：
 
