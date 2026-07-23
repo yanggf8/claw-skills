@@ -2566,5 +2566,68 @@ class NewsThemeBudgetTests(unittest.TestCase):
             self.assertFalse(run._theme_budget_ok(10))  # ~20s left, need 26
 
 
+class NewsThemeRenderTests(unittest.TestCase):
+    def _blocks(self, lines):
+        return run._parse_ai_blocks(lines)
+
+    def test_clustered_emits_heading_in_order(self):
+        lines = [
+            "- OpenAI 推出 A [🔗](https://a)",
+            "- Google 推出 B [🔗](https://b)",
+            "- 某論文 SOTA [🔗](https://c)",
+        ]
+        blocks = self._blocks(lines)
+        labels = {1: run.THEME_PRODUCT, 2: run.THEME_PRODUCT, 3: run.THEME_RESEARCH}
+        out = run._theme_render(lines, blocks, labels)
+        self.assertEqual(out[0], run.THEME_HEADINGS[run.THEME_PRODUCT])
+        self.assertIn("OpenAI 推出 A", out[1])
+        self.assertIn("Google 推出 B", out[2])
+        # research is a singleton -> unheaded tail, no heading
+        self.assertNotIn(run.THEME_HEADINGS[run.THEME_RESEARCH], out)
+        self.assertIn("某論文 SOTA", out[-1])
+
+    def test_all_singletons_returns_same_object(self):
+        lines = ["- A [🔗](https://a)", "- B [🔗](https://b)"]
+        blocks = self._blocks(lines)
+        labels = {1: run.THEME_PRODUCT, 2: run.THEME_POLICY}
+        out = run._theme_render(lines, blocks, labels)
+        self.assertIs(out, lines)             # exact same object, byte-identical
+
+    def test_blank_separator_fails_flat(self):
+        lines = [
+            "- A [🔗](https://a)",
+            "",                                # blank separator not covered by any block
+            "- B [🔗](https://b)",
+        ]
+        blocks = self._blocks(lines)          # 2 blocks; blank is skipped, not in a range
+        labels = {1: run.THEME_PRODUCT, 2: run.THEME_PRODUCT}
+        out = run._theme_render(lines, blocks, labels)
+        self.assertIs(out, lines)             # coverage != len -> no-drop guard -> flat
+
+    def test_paywall_pair_moved_atomically(self):
+        lines = [
+            "- 產品甲 [🔗](https://a)",
+            "- 產品乙 [🔗](https://b)",
+            "- 免費替代 [🔗](https://c)",
+            "　↳ 原文：某原始 [🔗](https://c2)  ⚠️ 付費牆（原文需訂閱）",
+        ]
+        blocks = self._blocks(lines)   # 3 blocks; block #3 spans 2 lines
+        labels = {1: run.THEME_PRODUCT, 2: run.THEME_PRODUCT, 3: run.THEME_PRODUCT}
+        out = run._theme_render(lines, blocks, labels)
+        joined = "\n".join(out)
+        # continuation immediately follows its parent, never split by a heading
+        self.assertIn("免費替代 [🔗](https://c)\n　↳ 原文：某原始", joined)
+        self.assertEqual(out[0], run.THEME_HEADINGS[run.THEME_PRODUCT])
+
+    def test_other_is_last_and_headed_only_if_two(self):
+        lines = [f"- S{i} [🔗](https://{i})" for i in range(4)]
+        blocks = self._blocks(lines)
+        labels = {1: run.THEME_PRODUCT, 2: run.THEME_PRODUCT,
+                  3: run.THEME_OTHER, 4: run.THEME_OTHER}
+        out = run._theme_render(lines, blocks, labels)
+        self.assertEqual(out[0], run.THEME_HEADINGS[run.THEME_PRODUCT])
+        self.assertEqual(out[3], run.THEME_HEADINGS[run.THEME_OTHER])  # 其他 headed & last
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -234,6 +234,47 @@ def _theme_budget_ok(classifier_timeout: int = CLASSIFIER_TIMEOUT_SECS) -> bool:
     return remaining >= (classifier_timeout + THEME_DELIVERY_RESERVE_SECS)
 
 
+def _theme_layout_plan(blocks: list[dict], labels: dict[int, str]) -> dict:
+    groups: dict[str, list[int]] = {t: [] for t in THEME_RENDER_ORDER}
+    for b in blocks:
+        groups[labels.get(b["idx"] + 1, THEME_OTHER)].append(b["idx"])
+    headed: list[str] = []
+    tail: list[int] = []
+    for theme in THEME_RENDER_ORDER:      # 其他 is last in RENDER_ORDER → last among headed
+        if len(groups[theme]) >= 2:
+            headed.append(theme)
+        else:
+            tail.extend(groups[theme])
+    tail.sort()                           # restore post-P3 (block) order among singletons
+    placement = {bi: "heading" for t in headed for bi in groups[t]}
+    placement.update({bi: "tail" for bi in tail})
+    return {"headed": headed, "groups": groups, "tail": tail, "placement": placement}
+
+
+def _theme_render(ai_lines: list[str], blocks: list[dict], labels: dict[int, str]) -> list[str]:
+    # No-drop guard: _parse_ai_blocks skips blank separators, so block [start:end) slices
+    # may not cover every physical line. If they don't, regrouping would delete those lines
+    # — fail flat (return the exact same object) rather than drop anything.
+    if sum(b["end"] - b["start"] for b in blocks) != len(ai_lines):
+        return ai_lines
+    plan = _theme_layout_plan(blocks, labels)
+    if not plan["headed"]:                # nothing clusters -> theming adds nothing
+        return ai_lines
+
+    def slice_of(bi: int) -> list[str]:
+        b = blocks[bi]
+        return ai_lines[b["start"]:b["end"]]
+
+    out: list[str] = []
+    for theme in plan["headed"]:
+        out.append(THEME_HEADINGS[theme])
+        for bi in plan["groups"][theme]:
+            out.extend(slice_of(bi))
+    for bi in plan["tail"]:
+        out.extend(slice_of(bi))
+    return out
+
+
 TRANSLATION_RULES_STRICT = (
     "英文標題必須完整翻譯成繁體中文。"
     "只有以下類別可以保留英文原文：公司名（例如 OpenAI、Google、Microsoft）、"
