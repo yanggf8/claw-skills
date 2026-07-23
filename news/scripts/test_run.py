@@ -2792,5 +2792,61 @@ class NewsThemeOrchestratorTests(unittest.TestCase):
         self.assertFalse(themed)
 
 
+class NewsThemeWiringTests(unittest.TestCase):
+    _PAYLOAD = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
+                '{"id":3,"theme":"政策監管"},{"id":4,"theme":"政策監管"}]}')
+
+    def setUp(self):
+        for k in ("NULLCLAW_SKILL_TIMEOUT", "NULLCLAW_SKILL_STARTED"):
+            os.environ.pop(k, None)
+
+    def _ctx(self):
+        return run.AlertContext(deliver_to=None, account="main", job_id="interactive")
+
+    def _run_assembly(self, mode, calls=None):
+        flat_ai = [
+            "- OpenAI 推出 A [🔗](https://a)",
+            "- Google 推出 B [🔗](https://b)",
+            "- 美國 AI 出口管制 [🔗](https://c)",
+            "- 歐盟 AI 法案 [🔗](https://d)",
+        ]
+        def fake_theme_agent(*a, **k):
+            if calls is not None:
+                calls["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout=self._PAYLOAD, stderr="")
+        with patch.object(run, "_summarize_default_ai_substaged",
+                          lambda items, date_str, ctx: list(flat_ai)), \
+             patch.object(run, "_summarize_default_section",
+                          lambda key, items, date_str, link_map: ([], False)), \
+             patch.object(run, "_run_nullclaw_agent_once", fake_theme_agent), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": mode}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            return run.summarize_llm(
+                {"ai": [{"title": "x", "link": "http://x"}], "tech": [], "general": []},
+                self._ctx())
+
+    def test_render_shows_headings(self):
+        digest = self._run_assembly("render")
+        self.assertIn(run.THEME_HEADINGS[run.THEME_PRODUCT], digest)
+        self.assertIn(run.THEME_HEADINGS[run.THEME_POLICY], digest)
+
+    def test_shadow_classifies_but_body_equals_off(self):
+        scalls, ocalls = {"n": 0}, {"n": 0}
+        shadow = self._run_assembly("shadow", calls=scalls)
+        off = self._run_assembly("off", calls=ocalls)
+        self.assertEqual(shadow, off)          # delivered body byte-equal
+        self.assertEqual(scalls["n"], 1)       # shadow DID classify (fails at RED = correct)
+        self.assertEqual(ocalls["n"], 0)       # off never calls the classifier
+
+    def test_length_guard_reverts_to_off(self):
+        # Force the guard with a tiny threshold: any themed digest exceeds it, so render
+        # must rebuild flat and equal off exactly (title/date, blanks, footer included).
+        with patch.object(run, "THEME_TRIM_THRESHOLD", 5):
+            reverted = self._run_assembly("render")
+        off = self._run_assembly("off")
+        self.assertEqual(reverted, off)
+        self.assertNotIn(run.THEME_HEADINGS[run.THEME_PRODUCT], reverted)
+
+
 if __name__ == "__main__":
     unittest.main()

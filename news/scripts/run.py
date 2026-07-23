@@ -2828,13 +2828,29 @@ def _summarize_default_ai_substaged(
     return final
 
 
+def _assemble_ai_digest(date_str: str, section_keys, section_results: dict) -> tuple[str, int]:
+    """Build the full digest (title + section headers/content + paywall footer).
+    Byte-identical to the original inline assembly; shared by the normal path and the
+    theming length-guard revert."""
+    lines = [f"\U0001f4f0 早安新聞摘要 — {date_str}\n"]
+    for key in section_keys:
+        spec = DEFAULT_SECTION_SPECS[key]
+        lines.append(spec["header"])
+        lines.extend(section_results[key])
+        lines.append("")
+    digest = "\n".join(lines)
+    paywall_count = digest.count(PAYWALL_NOTE)
+    if paywall_count:
+        digest += f"\nℹ️ 本次含 {paywall_count} 則付費牆新聞（原文需訂閱）"
+    return digest, paywall_count
+
+
 def summarize_llm(all_items: dict[str, list[dict]], ctx: "AlertContext") -> str:
     """Ask the nullclaw agent to curate and summarize news for significance."""
     tw_now = datetime.now(timezone(timedelta(hours=8)))
     date_str = tw_now.strftime("%Y/%m/%d (%a)")
 
     link_map = _build_link_map(all_items)
-    lines = [f"\U0001f4f0 早安新聞摘要 — {date_str}\n"]
     section_keys = ("ai", "tech", "general")
     section_results: dict[str, list[str]] = {}
     degraded_sections: list[str] = []  # sections that fell back to non-LLM
@@ -2890,21 +2906,27 @@ def summarize_llm(all_items: dict[str, list[dict]], ctx: "AlertContext") -> str:
             f"sections delivered using non-LLM fallback: {degraded_sections}",
         )
 
-    for key in section_keys:
-        spec = DEFAULT_SECTION_SPECS[key]
-        lines.append(spec["header"])
-        lines.extend(section_results[key])
-        lines.append("")
+    themed_ai_applied = False
+    flat_ai_lines = section_results.get("ai")
+    if flat_ai_lines is not None and "ai" not in degraded_sections:
+        section_results["ai"], themed_ai_applied = _theme_ai_section(
+            flat_ai_lines, date_str, all_items)
 
-    digest = "\n".join(lines)
-    # Footer: the PAYWALL_NOTE marker appears exactly once per paywalled STORY
-    # (both the replacement-pair and the degraded single-bullet forms carry one),
-    # so counting it counts stories, not rendered bullets. Not a failure — never
-    # routes through _alert_failure.
-    paywall_count = digest.count(PAYWALL_NOTE)
+    digest, paywall_count = _assemble_ai_digest(date_str, section_keys, section_results)
     if paywall_count:
-        digest += f"\nℹ️ 本次含 {paywall_count} 則付費牆新聞（原文需訂閱）"
+        # Footer: the PAYWALL_NOTE marker appears exactly once per paywalled STORY
+        # (both the replacement-pair and the degraded single-bullet forms carry one),
+        # so counting it counts stories, not rendered bullets. Not a failure — never
+        # routes through _alert_failure.
         log_trace("paywall_notice", count=paywall_count)
+
+    if themed_ai_applied and len(_markdown_visible_text(digest)) > THEME_TRIM_THRESHOLD:
+        # Headings pushed the digest into the trim path (could drop a block or stale the
+        # footer). Theming is never worth a drop — rebuild flat, byte-identical to off.
+        section_results["ai"] = flat_ai_lines
+        digest, paywall_count = _assemble_ai_digest(date_str, section_keys, section_results)
+        _theme_trace(mode="render", length_revert=True,
+                     visible_len=len(_markdown_visible_text(digest)))
     return _trim_digest_links(digest)
 
 
