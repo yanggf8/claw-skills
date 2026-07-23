@@ -2629,5 +2629,168 @@ class NewsThemeRenderTests(unittest.TestCase):
         self.assertEqual(out[3], run.THEME_HEADINGS[run.THEME_OTHER])  # 其他 headed & last
 
 
+class NewsThemeOrchestratorTests(unittest.TestCase):
+    def setUp(self):
+        # These tests assume a manual (no-cron-budget) run so the budget gate never
+        # skips. Clear scheduler vars the CI host might have set (matches the existing
+        # `os.environ.pop(...)` convention in this file).
+        for k in ("NULLCLAW_SKILL_TIMEOUT", "NULLCLAW_SKILL_STARTED"):
+            os.environ.pop(k, None)
+
+    def _lines(self):
+        return [
+            "- OpenAI 推出 A [🔗](https://a)",
+            "- Google 推出 B [🔗](https://b)",
+            "- 美國 AI 出口管制 [🔗](https://c)",
+            "- 歐盟 AI 法案 [🔗](https://d)",
+        ]
+
+    def _fake(self, payload, rc=0):
+        def f(*a, **k):
+            return subprocess.CompletedProcess(["nullclaw"], rc, stdout=payload, stderr="")
+        return f
+
+    def test_off_is_noop_and_no_call(self):
+        called = {"n": 0}
+        def fake(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout="{}", stderr="")
+        with patch.object(run, "_run_nullclaw_agent_once", fake), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "off"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertEqual(out, self._lines())
+        self.assertFalse(themed)
+        self.assertEqual(called["n"], 0)
+
+    def test_unknown_mode_treated_as_off(self):
+        called = {"n": 0}
+        def fake(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout="{}", stderr="")
+        with patch.object(run, "_run_nullclaw_agent_once", fake), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "banana"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertFalse(themed)
+        self.assertEqual(out, self._lines())
+        self.assertEqual(called["n"], 0)      # unknown mode never calls the classifier
+
+    def test_render_groups_by_theme(self):
+        payload = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
+                   '{"id":3,"theme":"政策監管"},{"id":4,"theme":"政策監管"}]}')
+        with patch.object(run, "_run_nullclaw_agent_once", self._fake(payload)), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertTrue(themed)
+        self.assertIn(run.THEME_HEADINGS[run.THEME_PRODUCT], out)
+        self.assertIn(run.THEME_HEADINGS[run.THEME_POLICY], out)
+
+    def test_shadow_delivers_flat_but_classifies(self):
+        called = {"n": 0}
+        payload = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
+                   '{"id":3,"theme":"政策監管"},{"id":4,"theme":"政策監管"}]}')
+        def fake(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout=payload, stderr="")
+        with patch.object(run, "_run_nullclaw_agent_once", fake), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "shadow"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertFalse(themed)
+        self.assertEqual(out, self._lines())    # flat delivered
+        self.assertEqual(called["n"], 1)         # but classifier ran
+
+    def test_failopen_on_timeout_one_call(self):
+        called = {"n": 0}
+        def fake(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 124, stdout="", stderr="t")
+        with patch.object(run, "_run_nullclaw_agent_once", fake), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertFalse(themed)
+        self.assertEqual(out, self._lines())
+        self.assertEqual(called["n"], 1)         # no retry
+
+    def test_failopen_on_exception(self):
+        def boom(*a, **k):
+            raise RuntimeError("x")
+        with patch.object(run, "_run_nullclaw_agent_once", boom), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertEqual(out, self._lines())
+        self.assertFalse(themed)
+
+    def test_skip_placeholder_and_short(self):
+        called = {"n": 0}
+        def fake(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout="{}", stderr="")
+        with patch.object(run, "_run_nullclaw_agent_once", fake), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out1, t1 = run._theme_ai_section(["- 今日無相關新聞"], "d", {"ai": []})
+            short = ["- only one [🔗](https://a)"]
+            out2, t2 = run._theme_ai_section(short, "d", {"ai": []})
+        self.assertFalse(t1); self.assertEqual(out1, ["- 今日無相關新聞"])
+        self.assertFalse(t2); self.assertEqual(out2, short)
+        self.assertEqual(called["n"], 0)      # neither placeholder nor <2 blocks calls the LLM
+
+    def test_skip_when_too_many_blocks(self):
+        many = [f"- S{i} [🔗](https://{i})" for i in range(run.THEME_MAX_BLOCKS + 1)]
+        called = {"n": 0}
+        def fake(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout="{}", stderr="")
+        with patch.object(run, "_run_nullclaw_agent_once", fake), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out, themed = run._theme_ai_section(many, "d", {"ai": []})
+        self.assertFalse(themed); self.assertEqual(out, many)
+        self.assertEqual(called["n"], 0)
+
+    def test_budget_skip(self):
+        payload = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
+                   '{"id":3,"theme":"政策監管"},{"id":4,"theme":"政策監管"}]}')
+        with patch.object(run, "_run_nullclaw_agent_once", self._fake(payload)), \
+             patch.object(run, "_theme_budget_ok", lambda *a, **k: False), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertFalse(themed)
+        self.assertEqual(out, self._lines())
+
+    def test_trace_failure_is_swallowed_render_still_succeeds(self):
+        # log_trace raises on every call, but _theme_trace swallows it (blocker: log_trace
+        # only catches OSError). Render must still complete and not escape.
+        def boom_trace(*a, **k):
+            raise RuntimeError("trace down")
+        payload = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
+                   '{"id":3,"theme":"政策監管"},{"id":4,"theme":"政策監管"}]}')
+        with patch.object(run, "_run_nullclaw_agent_once", self._fake(payload)), \
+             patch.object(run, "log_trace", boom_trace), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertTrue(themed)
+        self.assertIn(run.THEME_HEADINGS[run.THEME_PRODUCT], out)
+
+    def test_failopen_even_when_handler_trace_also_raises(self):
+        # Exception in the main path AND the except-handler's trace raises → still flat, no escape.
+        def boom_agent(*a, **k):
+            raise RuntimeError("agent down")
+        def boom_trace(*a, **k):
+            raise RuntimeError("trace down")
+        with patch.object(run, "_run_nullclaw_agent_once", boom_agent), \
+             patch.object(run, "log_trace", boom_trace), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertEqual(out, self._lines())
+        self.assertFalse(themed)
+
+
 if __name__ == "__main__":
     unittest.main()

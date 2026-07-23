@@ -275,6 +275,74 @@ def _theme_render(ai_lines: list[str], blocks: list[dict], labels: dict[int, str
     return out
 
 
+def _theme_trace(**fields) -> None:
+    """Best-effort trace: theming must never fail the run because a trace raised.
+    (log_trace only catches OSError at run.py:169, so a serialization/injected error
+    would otherwise escape.)"""
+    try:
+        log_trace("ai_theme", **fields)
+    except Exception:
+        pass
+
+
+def _theme_ai_section(ai_lines: list[str], date_str: str, all_items: dict):
+    """Post-P3 theme grouping for the AI section. Returns (lines, themed_applied).
+    Never raises; any failure path returns the untouched flat lines. The ENTIRE body
+    (incl. mode parse and every trace) is inside the top-level try."""
+    mode = "off"
+    try:
+        mode = os.environ.get("NEWS_AI_THEME", "off")
+        if mode not in ("shadow", "render"):
+            return ai_lines, False            # off / unknown -> no-op, no classifier call
+        if ai_lines == ["- 今日無相關新聞"]:
+            _theme_trace(mode=mode, skipped="placeholder")
+            return ai_lines, False
+        blocks = _parse_ai_blocks(ai_lines)
+        if not blocks or len(blocks) < 2:
+            _theme_trace(mode=mode, skipped="too_few_blocks",
+                         blocks=(len(blocks) if blocks else 0))
+            return ai_lines, False
+        if len(blocks) > THEME_MAX_BLOCKS:
+            _theme_trace(mode=mode, skipped="too_many_blocks", blocks=len(blocks))
+            return ai_lines, False
+        if not _theme_budget_ok(CLASSIFIER_TIMEOUT_SECS):
+            _theme_trace(mode=mode, skipped="budget", blocks=len(blocks))
+            return ai_lines, False
+
+        prompt = _theme_classify_prompt(blocks, date_str)
+        started = time.monotonic()
+        result = _run_nullclaw_agent_once(
+            prompt, CLASSIFIER_TIMEOUT_SECS, "ai_theme", all_items, {})
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if getattr(result, "returncode", 1) != 0 or not (result.stdout or "").strip():
+            _theme_trace(mode=mode, error="bad_result",
+                         returncode=getattr(result, "returncode", None),
+                         blocks=len(blocks), elapsed_ms=elapsed_ms)
+            return ai_lines, False
+        labels = _parse_theme_response(result.stdout, len(blocks))
+        if labels is None:
+            _theme_trace(mode=mode, error="invalid_labels",
+                         blocks=len(blocks), elapsed_ms=elapsed_ms)
+            return ai_lines, False
+
+        plan = _theme_layout_plan(blocks, labels)
+        assigned = {b["idx"] + 1: labels[b["idx"] + 1] for b in blocks}
+        placement = {b["idx"] + 1: plan["placement"][b["idx"]] for b in blocks}
+        balance = {t: len(plan["groups"][t]) for t in THEME_RENDER_ORDER}
+        other_share = round(balance[THEME_OTHER] / len(blocks), 3)
+        themed_lines = _theme_render(ai_lines, blocks, labels)
+        headed = themed_lines is not ai_lines
+        _theme_trace(mode=mode, ok=True, blocks=len(blocks), elapsed_ms=elapsed_ms,
+                     assigned=assigned, placement=placement, balance=balance,
+                     other_share=other_share, headed_themes=plan["headed"], headed=headed)
+        if mode == "shadow":
+            return ai_lines, False            # measure only; deliver flat
+        return (themed_lines, True) if headed else (ai_lines, False)
+    except Exception as exc:                  # never fail the run
+        _theme_trace(mode=mode, error=f"exception:{type(exc).__name__}")
+        return ai_lines, False
+
+
 TRANSLATION_RULES_STRICT = (
     "英文標題必須完整翻譯成繁體中文。"
     "只有以下類別可以保留英文原文：公司名（例如 OpenAI、Google、Microsoft）、"
