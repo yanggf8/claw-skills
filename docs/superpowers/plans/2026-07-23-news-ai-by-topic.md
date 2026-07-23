@@ -53,7 +53,10 @@ class NewsThemeClassifyPromptTests(unittest.TestCase):
         self.assertIn("GPT-6", p)
         self.assertIn(run.THEME_PRODUCT, p)      # enum present
         self.assertIn(run.THEME_POLICY, p)
-        self.assertIn("主要", p)                  # dominant-peg language
+        self.assertIn("主要新聞點", p)            # dominant news peg language
+        self.assertIn("並列難分", p)              # priority is tie-break ONLY, not first-match
+        self.assertIn("企業採用", p)              # enterprise adoption mapped (curbs 其他)
+        self.assertIn("安全", p)                  # AI safety/alignment reports mapped
         self.assertIn("labels", p)               # asks for JSON labels
 ```
 
@@ -76,7 +79,11 @@ THEME_ALL = set(THEME_RENDER_ORDER)
 THEME_HEADINGS = {t: "▸ " + t for t in THEME_RENDER_ORDER}
 CLASSIFIER_TIMEOUT_SECS = 10
 THEME_MAX_BLOCKS = 20
-THEME_DELIVERY_RESERVE_SECS = 16   # Telegram up to 15s/attempt + ~1s exit reserve
+# Reserve the FULL delivery deadline, not one attempt: telegram DEFAULT_DEADLINE_S=30
+# (lib/telegram.py:24, covers 1 retry) and delivery may send multiple chunks
+# sequentially (run.py:1789). Under-reserving would let the classifier push a slow
+# delivery past the cron kill window. +4s exit margin.
+THEME_DELIVERY_RESERVE_SECS = 34
 THEME_TRIM_THRESHOLD = 4000        # _trim_digest_links visible-char threshold
 
 
@@ -151,6 +158,9 @@ class NewsThemeParseTests(unittest.TestCase):
             '{"labels":[{"id":1,"theme":"產品發布"},{"id":1,"theme":"政策監管"}]}',  # dup id
             '{"labels":[{"id":1,"theme":"產品發布"},{"id":3,"theme":"政策監管"}]}',  # id out of range
             '{"labels":[{"id":1,"theme":"娛樂"},{"id":2,"theme":"政策監管"}]}',      # illegal theme
+            '{"labels":[{"id":true,"theme":"產品發布"},{"id":2,"theme":"政策監管"}]}',  # bool id
+            '{"labels":[{"id":1,"theme":["產品發布"]},{"id":2,"theme":"政策監管"}]}',   # non-str (unhashable) theme
+            '{"labels":[1,2]}',                                                          # non-dict entry
         ]
         for b in bad:
             self.assertIsNone(run._parse_theme_response(b, 2), b)
@@ -180,7 +190,9 @@ def _parse_theme_response(stdout: str, block_count: int):
         if not isinstance(entry, dict):
             return None
         cid, theme = entry.get("id"), entry.get("theme")
-        if not isinstance(cid, int) or theme not in THEME_ALL:
+        if type(cid) is not int:              # `isinstance(True, int)` is True — reject bool ids
+            return None
+        if not isinstance(theme, str) or theme not in THEME_ALL:  # str check before set membership (unhashable raises)
             return None
         if cid < 1 or cid > block_count or cid in out:
             return None
@@ -229,6 +241,11 @@ class NewsThemeBudgetTests(unittest.TestCase):
             os.environ.pop("NULLCLAW_SKILL_STARTED", None)
             self.assertFalse(run._theme_budget_ok(10))
 
+    def test_malformed_or_nonpositive_timeout_skips(self):
+        for bad in ("abc", "0", "-5"):
+            with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": bad}, clear=False):
+                self.assertFalse(run._theme_budget_ok(10), bad)  # configured-but-unreliable → skip
+
     def test_ample_budget_allows_low_budget_skips(self):
         now = run.time.monotonic()
         with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": "120",
@@ -254,9 +271,9 @@ def _theme_budget_ok(classifier_timeout: int = CLASSIFIER_TIMEOUT_SECS) -> bool:
     try:
         timeout = float(raw_timeout)
     except ValueError:
-        return True
+        return False                     # a budget WAS configured but is unreadable → skip
     if timeout <= 0:
-        return True
+        return False                     # non-positive configured budget → skip
     raw_started = os.environ.get("NULLCLAW_SKILL_STARTED")
     if not raw_started:
         return False                     # timeout set but no reliable clock → skip
@@ -292,7 +309,17 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `_parse_ai_blocks` blocks; `{block_id: theme}` from Task 2; Task 1 constants.
-- Produces: `_theme_render(ai_lines: list[str], blocks: list[dict], labels: dict[int, str]) -> list[str]` — regroups block line-slices under `▸` headings; a theme heading is emitted only when that theme has ≥2 blocks; singleton themes and a lone `其他` go to an unheaded tail in post-P3 order; `其他` heading (if any) is last among headed groups. Returns `ai_lines` UNCHANGED (same objects) when no theme reaches ≥2. Never drops or rewrites a line.
+- Produces:
+  - `_theme_layout_plan(blocks: list[dict], labels: dict[int, str]) -> dict` — the shared
+    grouping decision (used by the renderer AND Task 5 telemetry, so grouping logic is not
+    duplicated). Returns `{"headed":[theme,...] in render order, "groups":{theme:[block_idx,...]},
+    "tail":[block_idx,...] post-P3 order, "placement":{block_idx:"heading"|"tail"}}`.
+  - `_theme_render(ai_lines: list[str], blocks: list[dict], labels: dict[int, str]) -> list[str]`
+    — regroups block line-slices under `▸` headings; heading emitted only when a theme has ≥2
+    blocks; singletons and a lone `其他` go to an unheaded tail in post-P3 order; `其他` heading
+    (if any) last among headed groups. Returns the SAME `ai_lines` object UNCHANGED when no theme
+    reaches ≥2 OR when the blocks do not cover every physical line (blank-separator guard).
+    Never drops or rewrites a line.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -317,12 +344,23 @@ class NewsThemeRenderTests(unittest.TestCase):
         self.assertNotIn(run.THEME_HEADINGS[run.THEME_RESEARCH], out)
         self.assertIn("某論文 SOTA", out[-1])
 
-    def test_all_singletons_returns_input_unchanged(self):
+    def test_all_singletons_returns_same_object(self):
         lines = ["- A [🔗](https://a)", "- B [🔗](https://b)"]
         blocks = self._blocks(lines)
         labels = {1: run.THEME_PRODUCT, 2: run.THEME_POLICY}
         out = run._theme_render(lines, blocks, labels)
-        self.assertEqual(out, lines)
+        self.assertIs(out, lines)             # exact same object, byte-identical
+
+    def test_blank_separator_fails_flat(self):
+        lines = [
+            "- A [🔗](https://a)",
+            "",                                # blank separator not covered by any block
+            "- B [🔗](https://b)",
+        ]
+        blocks = self._blocks(lines)          # 2 blocks; blank is skipped, not in a range
+        labels = {1: run.THEME_PRODUCT, 2: run.THEME_PRODUCT}
+        out = run._theme_render(lines, blocks, labels)
+        self.assertIs(out, lines)             # coverage != len -> no-drop guard -> flat
 
     def test_paywall_pair_moved_atomically(self):
         lines = [
@@ -357,14 +395,31 @@ Expected: FAIL (`_theme_render` not defined)
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-def _theme_render(ai_lines: list[str], blocks: list[dict], labels: dict[int, str]) -> list[str]:
-    # Group block indices (into `blocks`) by theme, preserving post-P3 order.
+def _theme_layout_plan(blocks: list[dict], labels: dict[int, str]) -> dict:
     groups: dict[str, list[int]] = {t: [] for t in THEME_RENDER_ORDER}
     for b in blocks:
-        theme = labels.get(b["idx"] + 1, THEME_OTHER)
-        groups[theme].append(b["idx"])
-    # If no theme clusters (>=2), theming adds nothing — return exact input.
-    if not any(len(groups[t]) >= 2 for t in THEME_RENDER_ORDER):
+        groups[labels.get(b["idx"] + 1, THEME_OTHER)].append(b["idx"])
+    headed: list[str] = []
+    tail: list[int] = []
+    for theme in THEME_RENDER_ORDER:      # 其他 is last in RENDER_ORDER → last among headed
+        if len(groups[theme]) >= 2:
+            headed.append(theme)
+        else:
+            tail.extend(groups[theme])
+    tail.sort()                           # restore post-P3 (block) order among singletons
+    placement = {bi: "heading" for t in headed for bi in groups[t]}
+    placement.update({bi: "tail" for bi in tail})
+    return {"headed": headed, "groups": groups, "tail": tail, "placement": placement}
+
+
+def _theme_render(ai_lines: list[str], blocks: list[dict], labels: dict[int, str]) -> list[str]:
+    # No-drop guard: _parse_ai_blocks skips blank separators, so block [start:end) slices
+    # may not cover every physical line. If they don't, regrouping would delete those lines
+    # — fail flat (return the exact same object) rather than drop anything.
+    if sum(b["end"] - b["start"] for b in blocks) != len(ai_lines):
+        return ai_lines
+    plan = _theme_layout_plan(blocks, labels)
+    if not plan["headed"]:                # nothing clusters -> theming adds nothing
         return ai_lines
 
     def slice_of(bi: int) -> list[str]:
@@ -372,23 +427,11 @@ def _theme_render(ai_lines: list[str], blocks: list[dict], labels: dict[int, str
         return ai_lines[b["start"]:b["end"]]
 
     out: list[str] = []
-    tail: list[int] = []          # singleton block indices, kept in post-P3 order
-    for theme in THEME_PRIMARIES:
-        members = groups[theme]
-        if len(members) >= 2:
-            out.append(THEME_HEADINGS[theme])
-            for bi in members:
-                out.extend(slice_of(bi))
-        else:
-            tail.extend(members)
-    other = groups[THEME_OTHER]
-    if len(other) >= 2:
-        out.append(THEME_HEADINGS[THEME_OTHER])
-        for bi in other:
+    for theme in plan["headed"]:
+        out.append(THEME_HEADINGS[theme])
+        for bi in plan["groups"][theme]:
             out.extend(slice_of(bi))
-    else:
-        tail.extend(other)
-    for bi in sorted(tail):       # restore post-P3 (block) order among singletons
+    for bi in plan["tail"]:
         out.extend(slice_of(bi))
     return out
 ```
@@ -416,13 +459,31 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Test: `news/scripts/test_run.py`
 
 **Interfaces:**
-- Consumes: Tasks 1–4; `_parse_ai_blocks`, `_run_nullclaw_agent_once`, `log_trace`.
-- Produces: `_theme_ai_section(ai_lines: list[str], date_str: str, all_items: dict) -> tuple[list[str], bool]` — returns `(lines_for_ai_section, themed_applied)`. `off`/unknown → `(ai_lines, False)`. `shadow` → classifies + traces but returns `(ai_lines, False)` (deliver flat). `render` → `(themed_lines, True)` on success, `(ai_lines, False)` on any skip/fail. NEVER raises.
+- Consumes: Tasks 1–4 (incl. `_theme_layout_plan`); `_parse_ai_blocks`, `_run_nullclaw_agent_once`, `log_trace`.
+- Produces:
+  - `_theme_trace(**fields) -> None` — best-effort `log_trace("ai_theme", ...)` wrapper that
+    swallows ALL exceptions (real `log_trace` only catches `OSError`, so a serialization or
+    injected trace error would otherwise escape the post-processor into `main`'s exit-1 path).
+  - `_theme_ai_section(ai_lines: list[str], date_str: str, all_items: dict) -> tuple[list[str], bool]`
+    — returns `(lines_for_ai_section, themed_applied)`. `off`/unknown → `(ai_lines, False)`,
+    no classifier call. `shadow` → classifies + traces the full schema but returns
+    `(ai_lines, False)` (deliver flat). `render` → `(themed_lines, True)` on a clustered
+    success, `(ai_lines, False)` on any skip/fail. The WHOLE body (mode parse included) is
+    inside one top-level try; NEVER raises. Emits the spec's `ai_theme` schema via
+    `_theme_trace`: `mode, ok/error/skipped, blocks, elapsed_ms, assigned{id:theme},
+    placement{id:heading|tail}, balance{theme:count}, other_share, headed_themes, headed`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 class NewsThemeOrchestratorTests(unittest.TestCase):
+    def setUp(self):
+        # These tests assume a manual (no-cron-budget) run so the budget gate never
+        # skips. Clear scheduler vars the CI host might have set (matches the existing
+        # `os.environ.pop(...)` convention in this file).
+        for k in ("NULLCLAW_SKILL_TIMEOUT", "NULLCLAW_SKILL_STARTED"):
+            os.environ.pop(k, None)
+
     def _lines(self):
         return [
             "- OpenAI 推出 A [🔗](https://a)",
@@ -450,12 +511,17 @@ class NewsThemeOrchestratorTests(unittest.TestCase):
         self.assertEqual(called["n"], 0)
 
     def test_unknown_mode_treated_as_off(self):
-        with patch.object(run, "_run_nullclaw_agent_once", self._fake("{}")), \
+        called = {"n": 0}
+        def fake(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout="{}", stderr="")
+        with patch.object(run, "_run_nullclaw_agent_once", fake), \
              patch.dict(os.environ, {"NEWS_AI_THEME": "banana"}, clear=False), \
              patch.object(run, "log_trace", lambda *a, **k: None):
             out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
         self.assertFalse(themed)
         self.assertEqual(out, self._lines())
+        self.assertEqual(called["n"], 0)      # unknown mode never calls the classifier
 
     def test_render_groups_by_theme(self):
         payload = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
@@ -507,13 +573,32 @@ class NewsThemeOrchestratorTests(unittest.TestCase):
         self.assertFalse(themed)
 
     def test_skip_placeholder_and_short(self):
-        with patch.object(run, "_run_nullclaw_agent_once", self._fake("{}")), \
+        called = {"n": 0}
+        def fake(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout="{}", stderr="")
+        with patch.object(run, "_run_nullclaw_agent_once", fake), \
              patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False), \
              patch.object(run, "log_trace", lambda *a, **k: None):
             out1, t1 = run._theme_ai_section(["- 今日無相關新聞"], "d", {"ai": []})
-            out2, t2 = run._theme_ai_section(["- only one [🔗](https://a)"], "d", {"ai": []})
+            short = ["- only one [🔗](https://a)"]
+            out2, t2 = run._theme_ai_section(short, "d", {"ai": []})
         self.assertFalse(t1); self.assertEqual(out1, ["- 今日無相關新聞"])
-        self.assertFalse(t2)
+        self.assertFalse(t2); self.assertEqual(out2, short)
+        self.assertEqual(called["n"], 0)      # neither placeholder nor <2 blocks calls the LLM
+
+    def test_skip_when_too_many_blocks(self):
+        many = [f"- S{i} [🔗](https://{i})" for i in range(run.THEME_MAX_BLOCKS + 1)]
+        called = {"n": 0}
+        def fake(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout="{}", stderr="")
+        with patch.object(run, "_run_nullclaw_agent_once", fake), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            out, themed = run._theme_ai_section(many, "d", {"ai": []})
+        self.assertFalse(themed); self.assertEqual(out, many)
+        self.assertEqual(called["n"], 0)
 
     def test_budget_skip(self):
         payload = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
@@ -525,6 +610,33 @@ class NewsThemeOrchestratorTests(unittest.TestCase):
             out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
         self.assertFalse(themed)
         self.assertEqual(out, self._lines())
+
+    def test_trace_failure_is_swallowed_render_still_succeeds(self):
+        # log_trace raises on every call, but _theme_trace swallows it (blocker: log_trace
+        # only catches OSError). Render must still complete and not escape.
+        def boom_trace(*a, **k):
+            raise RuntimeError("trace down")
+        payload = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
+                   '{"id":3,"theme":"政策監管"},{"id":4,"theme":"政策監管"}]}')
+        with patch.object(run, "_run_nullclaw_agent_once", self._fake(payload)), \
+             patch.object(run, "log_trace", boom_trace), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertTrue(themed)
+        self.assertIn(run.THEME_HEADINGS[run.THEME_PRODUCT], out)
+
+    def test_failopen_even_when_handler_trace_also_raises(self):
+        # Exception in the main path AND the except-handler's trace raises → still flat, no escape.
+        def boom_agent(*a, **k):
+            raise RuntimeError("agent down")
+        def boom_trace(*a, **k):
+            raise RuntimeError("trace down")
+        with patch.object(run, "_run_nullclaw_agent_once", boom_agent), \
+             patch.object(run, "log_trace", boom_trace), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False):
+            out, themed = run._theme_ai_section(self._lines(), "d", {"ai": []})
+        self.assertEqual(out, self._lines())
+        self.assertFalse(themed)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -535,50 +647,71 @@ Expected: FAIL (`_theme_ai_section` not defined)
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
+def _theme_trace(**fields) -> None:
+    """Best-effort trace: theming must never fail the run because a trace raised.
+    (log_trace only catches OSError at run.py:169, so a serialization/injected error
+    would otherwise escape.)"""
+    try:
+        log_trace("ai_theme", **fields)
+    except Exception:
+        pass
+
+
 def _theme_ai_section(ai_lines: list[str], date_str: str, all_items: dict):
     """Post-P3 theme grouping for the AI section. Returns (lines, themed_applied).
-    Never raises; any failure path returns the untouched flat lines."""
-    mode = os.environ.get("NEWS_AI_THEME", "off")
-    if mode not in ("shadow", "render"):
-        return ai_lines, False           # off / unknown -> no-op
+    Never raises; any failure path returns the untouched flat lines. The ENTIRE body
+    (incl. mode parse and every trace) is inside the top-level try."""
+    mode = "off"
     try:
+        mode = os.environ.get("NEWS_AI_THEME", "off")
+        if mode not in ("shadow", "render"):
+            return ai_lines, False            # off / unknown -> no-op, no classifier call
         if ai_lines == ["- 今日無相關新聞"]:
-            log_trace("ai_theme", mode=mode, skipped="placeholder")
+            _theme_trace(mode=mode, skipped="placeholder")
             return ai_lines, False
         blocks = _parse_ai_blocks(ai_lines)
         if not blocks or len(blocks) < 2:
-            log_trace("ai_theme", mode=mode, skipped="too_few_blocks",
-                      blocks=(len(blocks) if blocks else 0))
+            _theme_trace(mode=mode, skipped="too_few_blocks",
+                         blocks=(len(blocks) if blocks else 0))
             return ai_lines, False
         if len(blocks) > THEME_MAX_BLOCKS:
-            log_trace("ai_theme", mode=mode, skipped="too_many_blocks", blocks=len(blocks))
+            _theme_trace(mode=mode, skipped="too_many_blocks", blocks=len(blocks))
             return ai_lines, False
         if not _theme_budget_ok(CLASSIFIER_TIMEOUT_SECS):
-            log_trace("ai_theme", mode=mode, skipped="budget")
+            _theme_trace(mode=mode, skipped="budget", blocks=len(blocks))
             return ai_lines, False
 
         prompt = _theme_classify_prompt(blocks, date_str)
+        started = time.monotonic()
         result = _run_nullclaw_agent_once(
             prompt, CLASSIFIER_TIMEOUT_SECS, "ai_theme", all_items, {})
+        elapsed_ms = int((time.monotonic() - started) * 1000)
         if getattr(result, "returncode", 1) != 0 or not (result.stdout or "").strip():
-            log_trace("ai_theme", mode=mode, error="bad_result", blocks=len(blocks))
+            _theme_trace(mode=mode, error="bad_result",
+                         returncode=getattr(result, "returncode", None),
+                         blocks=len(blocks), elapsed_ms=elapsed_ms)
             return ai_lines, False
         labels = _parse_theme_response(result.stdout, len(blocks))
         if labels is None:
-            log_trace("ai_theme", mode=mode, error="invalid_labels", blocks=len(blocks))
+            _theme_trace(mode=mode, error="invalid_labels",
+                         blocks=len(blocks), elapsed_ms=elapsed_ms)
             return ai_lines, False
 
+        plan = _theme_layout_plan(blocks, labels)
         assigned = {b["idx"] + 1: labels[b["idx"] + 1] for b in blocks}
-        other_share = sum(1 for t in assigned.values() if t == THEME_OTHER) / len(assigned)
+        placement = {b["idx"] + 1: plan["placement"][b["idx"]] for b in blocks}
+        balance = {t: len(plan["groups"][t]) for t in THEME_RENDER_ORDER}
+        other_share = round(balance[THEME_OTHER] / len(blocks), 3)
         themed_lines = _theme_render(ai_lines, blocks, labels)
         headed = themed_lines is not ai_lines
-        log_trace("ai_theme", mode=mode, blocks=len(blocks),
-                  assigned=assigned, other_share=round(other_share, 3), headed=headed)
+        _theme_trace(mode=mode, ok=True, blocks=len(blocks), elapsed_ms=elapsed_ms,
+                     assigned=assigned, placement=placement, balance=balance,
+                     other_share=other_share, headed_themes=plan["headed"], headed=headed)
         if mode == "shadow":
-            return ai_lines, False       # measure only; deliver flat
+            return ai_lines, False            # measure only; deliver flat
         return (themed_lines, True) if headed else (ai_lines, False)
-    except Exception as exc:             # never fail the run
-        log_trace("ai_theme", mode=mode, error=f"exception:{type(exc).__name__}")
+    except Exception as exc:                  # never fail the run
+        _theme_trace(mode=mode, error=f"exception:{type(exc).__name__}")
         return ai_lines, False
 ```
 
@@ -605,8 +738,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Test: `news/scripts/test_run.py`
 
 **Interfaces:**
-- Consumes: `_theme_ai_section` (Task 5), `_markdown_visible_text`, `THEME_TRIM_THRESHOLD`.
-- Produces: no new symbol; changes the AI section that gets rendered. Behavior: theming applied only when `"ai"` not degraded; if the themed FULL digest's visible length would cross `THEME_TRIM_THRESHOLD`, revert the AI section to flat before finalizing (no-drop guarantee).
+- Consumes: `_theme_ai_section`, `_theme_trace` (Task 5), `_markdown_visible_text`, `THEME_TRIM_THRESHOLD`.
+- Produces: `_assemble_ai_digest(date_str, section_keys, section_results) -> (digest, paywall_count)` (extracted from `summarize_llm`, used by both the normal path and the revert so they are byte-identical). Behavior change in `summarize_llm`: theming applied only when `"ai"` not degraded; if the themed FULL digest's visible length would cross `THEME_TRIM_THRESHOLD`, revert the AI section to flat before finalizing (no-drop guarantee).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -617,10 +750,17 @@ are the REAL ones (verified against `test_run.py:1350-1362`): `_summarize_defaul
 
 ```python
 class NewsThemeWiringTests(unittest.TestCase):
+    _PAYLOAD = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
+                '{"id":3,"theme":"政策監管"},{"id":4,"theme":"政策監管"}]}')
+
+    def setUp(self):
+        for k in ("NULLCLAW_SKILL_TIMEOUT", "NULLCLAW_SKILL_STARTED"):
+            os.environ.pop(k, None)
+
     def _ctx(self):
         return run.AlertContext(deliver_to=None, account="main", job_id="interactive")
 
-    def _run_assembly(self, mode, theme_payload):
+    def _run_assembly(self, mode, calls=None):
         flat_ai = [
             "- OpenAI 推出 A [🔗](https://a)",
             "- Google 推出 B [🔗](https://b)",
@@ -628,7 +768,9 @@ class NewsThemeWiringTests(unittest.TestCase):
             "- 歐盟 AI 法案 [🔗](https://d)",
         ]
         def fake_theme_agent(*a, **k):
-            return subprocess.CompletedProcess(["nullclaw"], 0, stdout=theme_payload, stderr="")
+            if calls is not None:
+                calls["n"] += 1
+            return subprocess.CompletedProcess(["nullclaw"], 0, stdout=self._PAYLOAD, stderr="")
         with patch.object(run, "_summarize_default_ai_substaged",
                           lambda items, date_str, ctx: list(flat_ai)), \
              patch.object(run, "_summarize_default_section",
@@ -641,63 +783,94 @@ class NewsThemeWiringTests(unittest.TestCase):
                 self._ctx())
 
     def test_render_shows_headings(self):
-        payload = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
-                   '{"id":3,"theme":"政策監管"},{"id":4,"theme":"政策監管"}]}')
-        digest = self._run_assembly("render", payload)
+        digest = self._run_assembly("render")
         self.assertIn(run.THEME_HEADINGS[run.THEME_PRODUCT], digest)
+        self.assertIn(run.THEME_HEADINGS[run.THEME_POLICY], digest)
 
-    def test_shadow_byte_equals_off(self):
-        payload = ('{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"產品發布"},'
-                   '{"id":3,"theme":"政策監管"},{"id":4,"theme":"政策監管"}]}')
-        shadow = self._run_assembly("shadow", payload)
-        off = self._run_assembly("off", payload)
-        self.assertEqual(shadow, off)
+    def test_shadow_classifies_but_body_equals_off(self):
+        scalls, ocalls = {"n": 0}, {"n": 0}
+        shadow = self._run_assembly("shadow", calls=scalls)
+        off = self._run_assembly("off", calls=ocalls)
+        self.assertEqual(shadow, off)          # delivered body byte-equal
+        self.assertEqual(scalls["n"], 1)       # shadow DID classify (fails at RED = correct)
+        self.assertEqual(ocalls["n"], 0)       # off never calls the classifier
+
+    def test_length_guard_reverts_to_off(self):
+        # Force the guard with a tiny threshold: any themed digest exceeds it, so render
+        # must rebuild flat and equal off exactly (title/date, blanks, footer included).
+        with patch.object(run, "THEME_TRIM_THRESHOLD", 5):
+            reverted = self._run_assembly("render")
+        off = self._run_assembly("off")
+        self.assertEqual(reverted, off)
+        self.assertNotIn(run.THEME_HEADINGS[run.THEME_PRODUCT], reverted)
 ```
 
-Implementer note: if `summarize_llm` requires cache or other stubs to run deterministically in
-this test env (e.g. `_news_cache_get`/`_news_cache_put`), add them following the existing
-`test_summarize_llm_*` tests (`test_run.py:1350`). Do NOT change the function signature.
+Implementer note: if `summarize_llm` needs cache stubs to run deterministically here
+(`_news_cache_get`/`_news_cache_put`), add them following `test_run.py:1350`. Do NOT change
+any production signature.
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeWiringTests -v`
-Expected: FAIL (headings absent / shadow≠off because theming not wired yet)
+Expected: FAIL — `test_render_shows_headings` (no headings before wiring) and
+`test_shadow_classifies_but_body_equals_off` (classifier not called before wiring) fail.
+(`test_length_guard_reverts_to_off` passes trivially until theming is wired — it guards the
+guard post-implementation.)
 
 - [ ] **Step 3: Write minimal implementation**
 
-Insert AFTER the `degraded_sections` alert block (`run.py:2686`) and BEFORE the render loop (`:2688`):
+**3a.** Extract a shared assembly helper (near the other digest helpers) so the normal path
+AND the length-guard revert build byte-identically — the revert MUST include the title/date
+line (`run.py:2632`), which the earlier plan's `lines = []` rebuild dropped:
+
+```python
+def _assemble_ai_digest(date_str: str, section_keys, section_results: dict) -> tuple[str, int]:
+    """Build the full digest (title + section headers/content + paywall footer).
+    Byte-identical to the original inline assembly; shared by the normal path and the
+    theming length-guard revert."""
+    lines = [f"\U0001f4f0 早安新聞摘要 — {date_str}\n"]
+    for key in section_keys:
+        spec = DEFAULT_SECTION_SPECS[key]
+        lines.append(spec["header"])
+        lines.extend(section_results[key])
+        lines.append("")
+    digest = "\n".join(lines)
+    paywall_count = digest.count(PAYWALL_NOTE)
+    if paywall_count:
+        digest += f"\nℹ️ 本次含 {paywall_count} 則付費牆新聞（原文需訂閱）"
+    return digest, paywall_count
+```
+
+**3b.** In `summarize_llm`, DELETE the inline `lines = [f"...早安新聞摘要 — {date_str}\n"]`
+init (`run.py:2632`) and the inline render loop + footer (`:2688-2702`), and replace the tail
+(the theming insertion after the degraded alert `:2686`, the assembly, the length guard, and
+the return) with:
 
 ```python
     themed_ai_applied = False
     flat_ai_lines = section_results.get("ai")
     if flat_ai_lines is not None and "ai" not in degraded_sections:
-        themed_ai_lines, themed_ai_applied = _theme_ai_section(
+        section_results["ai"], themed_ai_applied = _theme_ai_section(
             flat_ai_lines, date_str, all_items)
-        section_results["ai"] = themed_ai_lines
-```
 
-Then, after the paywall footer is appended (`:2701`) and BEFORE `return _trim_digest_links(digest)` (`:2703`), add the length-guard revert:
+    digest, paywall_count = _assemble_ai_digest(date_str, section_keys, section_results)
+    if paywall_count:
+        log_trace("paywall_notice", count=paywall_count)
 
-```python
     if themed_ai_applied and len(_markdown_visible_text(digest)) > THEME_TRIM_THRESHOLD:
-        # Headings pushed the digest into the trim path, which could drop a block
-        # or stale the paywall footer. Rebuild flat — theming is never worth a drop.
+        # Headings pushed the digest into the trim path (could drop a block or stale the
+        # footer). Theming is never worth a drop — rebuild flat, byte-identical to off.
         section_results["ai"] = flat_ai_lines
-        lines = []
-        for key in section_keys:
-            spec = DEFAULT_SECTION_SPECS[key]
-            lines.append(spec["header"])
-            lines.extend(section_results[key])
-            lines.append("")
-        digest = "\n".join(lines)
-        paywall_count = digest.count(PAYWALL_NOTE)
-        if paywall_count:
-            digest += f"\nℹ️ 本次含 {paywall_count} 則付費牆新聞（原文需訂閱）"
-        log_trace("ai_theme_length_revert", visible_len=len(_markdown_visible_text(digest)))
+        digest, paywall_count = _assemble_ai_digest(date_str, section_keys, section_results)
+        _theme_trace(mode="render", length_revert=True,
+                     visible_len=len(_markdown_visible_text(digest)))
     return _trim_digest_links(digest)
 ```
 
-Implementer: verify the exact variable names (`digest`, `lines`, `section_keys`, `section_results`, `date_str`, `all_items`, `DEFAULT_SECTION_SPECS`, `PAYWALL_NOTE`) at the call site and reuse them; the revert block must mirror the real render+footer code (`:2688-2701`) exactly so the flat rebuild is byte-identical to off-mode.
+Implementer: before deleting, confirm nothing between `:2632` and `:2688` reads `lines`
+(the section loop and degraded alert only touch `section_results`/`degraded_sections`), so the
+title can move into the helper safely. The full existing suite (Step 4) must stay green,
+proving `_assemble_ai_digest` reproduces the original digest byte-for-byte.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -720,15 +893,18 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `news/SKILL.md`
+- Modify: `docs/superpowers/specs/2026-07-14-news-cross-translate-dedup-design.md` (Step 2 embedding-claim fix)
 
 **Interfaces:** docs only.
 
 - [ ] **Step 1: Document the theme layer + kill-switch**
 
-After the P3 dedup-layer description and in the Env table, add:
+`news/SKILL.md` already numbers `5. 語言閘` (`SKILL.md:117`). Append the theme layer as the
+NEXT contiguous item (`6.`) after it (verify the current highest number in that list first;
+do NOT reuse `5`). Add in that list and in the Env table:
 
 ```markdown
-5. **AI 主題分區（P3 之後、渲染前、AI 區、實驗性）**：對 P3 去重後的 AI bullet 用一次 LLM
+6. **AI 主題分區（P3 之後、渲染前、AI 區、實驗性）**：對 P3 去重後的 AI bullet 用一次 LLM
    分類到固定主題（產品發布／研究突破／產業資本／政策監管／其他），每主題 ≥2 則才印 `▸` 標題，
    單則歸無標題平列尾。**只做 AI 區**，只重排不去重、不丟稿。分類失敗/逾時/預算不足/長度超限
    → 整段回平列。`NEWS_AI_THEME=off|shadow|render`（預設 off；shadow 送平列僅記錄；render 才分區）。
@@ -780,3 +956,41 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Whether the Task 6 `summarize_llm` integration test needs extra cache stubs
   (`_news_cache_get`/`_news_cache_put`) to run hermetically — copy from `test_run.py:1350` if so.
   Do NOT change any production signature to make a test pass.
+
+---
+
+# Codex plan review (2026-07-23) — findings verified against source & resolved
+
+Every finding was re-checked line-by-line against `run.py`/`test_run.py` before folding in.
+
+- **BLOCKER 1 — revert dropped the title/date.** Verified `summarize_llm` seeds
+  `lines = ["📰 早安新聞摘要 — {date_str}\n"]` at `run.py:2632` before the section loop; the old
+  `lines = []` revert would omit it. → Extracted `_assemble_ai_digest` (title+sections+footer);
+  both the normal path and the revert use it (T6 3a/3b); added `test_length_guard_reverts_to_off`.
+- **BLOCKER 2 — fail-open not total.** Verified `log_trace` catches only `OSError` (`run.py:172`).
+  → Mode parse moved inside the top-level try; added `_theme_trace` best-effort wrapper used for
+  every feature trace incl. the revert (T5, T6 3b); added `test_trace_failure_is_swallowed…` and
+  `test_failopen_even_when_handler_trace_also_raises`.
+- **3 — renderer dropped inter-block blanks.** Verified `_parse_ai_blocks` skips blanks (`:2164`),
+  block ranges start at the bullet (`:2169`). → `_theme_render` fails flat when block slices don't
+  cover every physical line (T4); added `test_blank_separator_fails_flat`; no-cluster path now
+  asserted with `assertIs`.
+- **4 — parse type holes.** `isinstance(True,int)` + unhashable theme. → `type(cid) is int` and
+  `isinstance(theme,str)` before set membership (T2); added bool-id/list-theme/non-dict tests.
+- **5 — budget contradiction + under-reserve.** Verified telegram `DEFAULT_DEADLINE_S=30`
+  (`lib/telegram.py:24`) + multi-chunk (`run.py:1789`). → Reserve bumped to 34s; malformed/
+  non-positive configured timeout now skips (not allows); added `test_malformed_or_nonpositive…`.
+- **6 — telemetry short of spec.** → `_theme_layout_plan` shared by renderer + telemetry;
+  `_theme_ai_section` now emits the full `ai_theme` schema (assigned/placement/balance/
+  other_share/elapsed_ms/headed_themes/skip reasons).
+- **Test realism.** → Scheduler vars cleared in `setUp`; unknown-mode / placeholder / short /
+  too-many-blocks assert ZERO classifier calls; shadow test asserts the classifier ran AND
+  body==off (was trivially green at RED); `THEME_MAX_BLOCKS` skip covered.
+- **Task 7 numbering/files.** → Theme layer numbered `6.` (SKILL.md already has `5. 語言閘`);
+  Task 7 Files now lists the 2026-07-14 design spec it also edits.
+- **Verified correct by Codex (kept as-is):** insertion point after `:2678`; `▸` (non-`**`)
+  headings don't flip `_trim_digest_links` `in_ai`; `_run_nullclaw_agent_once` 5-arg signature;
+  stub signatures; idx/`+1` boundary; paywall-atomic slice moves; task ordering T1→T2/3→T4→T5→T6.
+- **Env note:** Codex's read-only baseline run showed 131/135 pass; the 4 "failures" are the
+  sandbox lacking a writable tmpdir, NOT repo breakage. Implementer runs the suite in a normal
+  environment.
