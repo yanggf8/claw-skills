@@ -3,7 +3,7 @@
 **Date:** 2026-07-23
 **Skill:** `news` (Telegram AI/tech/general daily digest)
 **Author:** Claude (brainstormed with user; direction reviewed by Codex, granularity/taxonomy by Grok, classifier mechanism by baicode/Qwen; **spec adversarially reviewed by Codex and every finding cross-verified against source** — see "Codex spec review" at the end)
-**Status:** DRAFT v2 — Codex findings resolved; pending user review before `writing-plans`.
+**Status:** SHIPPED to master 2026-07-23 (commits `c3aafbe`..`69ef725`; 164 tests green). Codex-reviewed at the spec, plan, and final-whole-branch stages (final review found + fixed a non-finite budget-gate bug). Runtime default `off`; a `NEWS_AI_THEME=shadow` measurement window is active — see `news/SKILL.md`. Implementation plan: `docs/superpowers/plans/2026-07-23-news-ai-by-topic.md`.
 
 ## Problem / motivation (evidence-backed)
 

@@ -1,5 +1,10 @@
 # News AI By-Topic Theme Rendering — Implementation Plan
 
+> **Status: EXECUTED (2026-07-23).** All 7 tasks shipped to master via subagent-driven
+> development (Grok implementer per task, Claude + Codex review). Commits `c3aafbe`..`69ef725`;
+> 164 tests green; final Codex whole-branch review passed (one non-finite budget-gate fix
+> applied). Checkboxes below are marked complete for the record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Group the post-P3 AI-section bullets under a fixed 4-theme taxonomy (+`其他`) with adaptive rendering, behind an `off/shadow/render` kill-switch (default `off`), as a readability experiment that never regresses dedup or drops a story.
@@ -39,7 +44,7 @@ Test-stub conventions (copy verbatim): stub the LLM with `patch.object(run, "_ru
   - `_theme_classify_prompt(blocks: list[dict], date_str: str) -> str`
 - Consumes: `_parse_ai_blocks` output shape, `DEDUP_RULES`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class NewsThemeClassifyPromptTests(unittest.TestCase):
@@ -60,12 +65,12 @@ class NewsThemeClassifyPromptTests(unittest.TestCase):
         self.assertIn("labels", p)               # asks for JSON labels
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeClassifyPromptTests -v`
 Expected: FAIL (`AttributeError: module 'run' has no attribute '_theme_classify_prompt'`)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 THEME_PRODUCT = "產品發布"
@@ -115,12 +120,12 @@ def _theme_classify_prompt(blocks: list[dict], date_str: str) -> str:
     )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeClassifyPromptTests -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add news/scripts/run.py news/scripts/test_run.py
@@ -141,7 +146,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Consumes: Task 1 constants.
 - Produces: `_parse_theme_response(stdout: str, block_count: int) -> dict[int, str] | None` — returns `{block_id(1-based): theme}` for ALL ids `1..block_count`, or `None` (whole reject) on any defect.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class NewsThemeParseTests(unittest.TestCase):
@@ -166,12 +171,12 @@ class NewsThemeParseTests(unittest.TestCase):
             self.assertIsNone(run._parse_theme_response(b, 2), b)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeParseTests -v`
 Expected: FAIL (`_parse_theme_response` not defined)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 def _parse_theme_response(stdout: str, block_count: int):
@@ -202,12 +207,12 @@ def _parse_theme_response(stdout: str, block_count: int):
     return out
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeParseTests -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add news/scripts/run.py news/scripts/test_run.py
@@ -227,7 +232,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: `_theme_budget_ok(classifier_timeout: int = CLASSIFIER_TIMEOUT_SECS) -> bool` — True if there is room for the classifier plus a delivery reserve, or no cron budget is configured (manual runs). False when a cron timeout is set but reliable remaining time is unavailable, or the remaining budget is too small.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class NewsThemeBudgetTests(unittest.TestCase):
@@ -256,12 +261,12 @@ class NewsThemeBudgetTests(unittest.TestCase):
             self.assertFalse(run._theme_budget_ok(10))  # ~20s left, need 26
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeBudgetTests -v`
 Expected: FAIL (`_theme_budget_ok` not defined)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 def _theme_budget_ok(classifier_timeout: int = CLASSIFIER_TIMEOUT_SECS) -> bool:
@@ -285,12 +290,12 @@ def _theme_budget_ok(classifier_timeout: int = CLASSIFIER_TIMEOUT_SECS) -> bool:
     return remaining >= (classifier_timeout + THEME_DELIVERY_RESERVE_SECS)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeBudgetTests -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add news/scripts/run.py news/scripts/test_run.py
@@ -321,7 +326,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
     reaches ≥2 OR when the blocks do not cover every physical line (blank-separator guard).
     Never drops or rewrites a line.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class NewsThemeRenderTests(unittest.TestCase):
@@ -387,12 +392,12 @@ class NewsThemeRenderTests(unittest.TestCase):
         self.assertEqual(out[3], run.THEME_HEADINGS[run.THEME_OTHER])  # 其他 headed & last
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeRenderTests -v`
 Expected: FAIL (`_theme_render` not defined)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 def _theme_layout_plan(blocks: list[dict], labels: dict[int, str]) -> dict:
@@ -436,12 +441,12 @@ def _theme_render(ai_lines: list[str], blocks: list[dict], labels: dict[int, str
     return out
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeRenderTests -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add news/scripts/run.py news/scripts/test_run.py
@@ -473,7 +478,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
     `_theme_trace`: `mode, ok/error/skipped, blocks, elapsed_ms, assigned{id:theme},
     placement{id:heading|tail}, balance{theme:count}, other_share, headed_themes, headed`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 class NewsThemeOrchestratorTests(unittest.TestCase):
@@ -639,12 +644,12 @@ class NewsThemeOrchestratorTests(unittest.TestCase):
         self.assertFalse(themed)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeOrchestratorTests -v`
 Expected: FAIL (`_theme_ai_section` not defined)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 def _theme_trace(**fields) -> None:
@@ -715,12 +720,12 @@ def _theme_ai_section(ai_lines: list[str], date_str: str, all_items: dict):
         return ai_lines, False
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeOrchestratorTests -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add news/scripts/run.py news/scripts/test_run.py
@@ -741,7 +746,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Consumes: `_theme_ai_section`, `_theme_trace` (Task 5), `_markdown_visible_text`, `THEME_TRIM_THRESHOLD`.
 - Produces: `_assemble_ai_digest(date_str, section_keys, section_results) -> (digest, paywall_count)` (extracted from `summarize_llm`, used by both the normal path and the revert so they are byte-identical). Behavior change in `summarize_llm`: theming applied only when `"ai"` not degraded; if the themed FULL digest's visible length would cross `THEME_TRIM_THRESHOLD`, revert the AI section to flat before finalizing (no-drop guarantee).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add an integration test that drives the real assembly `summarize_llm(all_items, ctx)`
 (`run.py:2626`) through a themed render and asserts (a) headings appear in render mode and
@@ -809,7 +814,7 @@ Implementer note: if `summarize_llm` needs cache stubs to run deterministically 
 (`_news_cache_get`/`_news_cache_put`), add them following `test_run.py:1350`. Do NOT change
 any production signature.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeWiringTests -v`
 Expected: FAIL — `test_render_shows_headings` (no headings before wiring) and
@@ -817,7 +822,7 @@ Expected: FAIL — `test_render_shows_headings` (no headings before wiring) and
 (`test_length_guard_reverts_to_off` passes trivially until theming is wired — it guards the
 guard post-implementation.)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 **3a.** Extract a shared assembly helper (near the other digest helpers) so the normal path
 AND the length-guard revert build byte-identically — the revert MUST include the title/date
@@ -872,13 +877,13 @@ Implementer: before deleting, confirm nothing between `:2632` and `:2688` reads 
 title can move into the helper safely. The full existing suite (Step 4) must stay green,
 proving `_assemble_ai_digest` reproduces the original digest byte-for-byte.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd news/scripts && python3 -m unittest test_run.NewsThemeWiringTests -v`
 Then the FULL suite: `cd news/scripts && python3 -m unittest test_run -v`
 Expected: PASS (all)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add news/scripts/run.py news/scripts/test_run.py
@@ -897,7 +902,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:** docs only.
 
-- [ ] **Step 1: Document the theme layer + kill-switch**
+- [x] **Step 1: Document the theme layer + kill-switch**
 
 `news/SKILL.md` already numbers `5. 語言閘` (`SKILL.md:117`). Append the theme layer as the
 NEXT contiguous item (`6.`) after it (verify the current highest number in that list first;
@@ -917,13 +922,13 @@ Add to the Env table:
 | `NEWS_AI_THEME` | `off` | `shadow`=分類但送平列（量測）；`render`=依主題分區。預設 off |
 ```
 
-- [ ] **Step 2: Fix the two companion doc bugs (spec §Companion doc fixes)**
+- [x] **Step 2: Fix the two companion doc bugs (spec §Companion doc fixes)**
 
 In `news/SKILL.md`, change the hard-recall wording from "資訊限制" to "judgment 限制" (line ~107): the decoded slug supplied the entity and the model still would not merge, so it is a judgment limit, not missing information.
 
 In `docs/superpowers/specs/2026-07-14-news-cross-translate-dedup-design.md`, soften the embedding claim in the "Closed investigations" section to: "embedding also tested; no lift observed (sample size not held to the N=20 of the four metadata augmentations)".
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add news/SKILL.md docs/superpowers/specs/2026-07-14-news-cross-translate-dedup-design.md
