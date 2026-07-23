@@ -2518,5 +2518,27 @@ class NewsThemeClassifyPromptTests(unittest.TestCase):
         self.assertIn("labels", p)               # asks for JSON labels
 
 
+class NewsThemeParseTests(unittest.TestCase):
+    def test_valid(self):
+        out = '{"labels":[{"id":1,"theme":"產品發布"},{"id":2,"theme":"政策監管"}]}'
+        self.assertEqual(run._parse_theme_response(out, 2),
+                         {1: "產品發布", 2: "政策監管"})
+
+    def test_reject(self):
+        bad = [
+            "not json",
+            '{"nope":[]}',
+            '{"labels":[{"id":1,"theme":"產品發布"}]}',                 # count != 2
+            '{"labels":[{"id":1,"theme":"產品發布"},{"id":1,"theme":"政策監管"}]}',  # dup id
+            '{"labels":[{"id":1,"theme":"產品發布"},{"id":3,"theme":"政策監管"}]}',  # id out of range
+            '{"labels":[{"id":1,"theme":"娛樂"},{"id":2,"theme":"政策監管"}]}',      # illegal theme
+            '{"labels":[{"id":true,"theme":"產品發布"},{"id":2,"theme":"政策監管"}]}',  # bool id
+            '{"labels":[{"id":1,"theme":["產品發布"]},{"id":2,"theme":"政策監管"}]}',   # non-str (unhashable) theme
+            '{"labels":[1,2]}',                                                          # non-dict entry
+        ]
+        for b in bad:
+            self.assertIsNone(run._parse_theme_response(b, 2), b)
+
+
 if __name__ == "__main__":
     unittest.main()

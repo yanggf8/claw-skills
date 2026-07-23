@@ -185,6 +185,34 @@ def _theme_classify_prompt(blocks: list[dict], date_str: str) -> str:
     )
 
 
+def _parse_theme_response(stdout: str, block_count: int):
+    text = (stdout or "").strip()
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("labels"), list):
+        return None
+    out: dict[int, str] = {}
+    for entry in data["labels"]:
+        if not isinstance(entry, dict):
+            return None
+        cid, theme = entry.get("id"), entry.get("theme")
+        if type(cid) is not int:              # `isinstance(True, int)` is True — reject bool ids
+            return None
+        if not isinstance(theme, str) or theme not in THEME_ALL:  # str check before set membership (unhashable raises)
+            return None
+        if cid < 1 or cid > block_count or cid in out:
+            return None
+        out[cid] = theme
+    if len(out) != block_count:   # every block labeled exactly once
+        return None
+    return out
+
+
 TRANSLATION_RULES_STRICT = (
     "英文標題必須完整翻譯成繁體中文。"
     "只有以下類別可以保留英文原文：公司名（例如 OpenAI、Google、Microsoft）、"
