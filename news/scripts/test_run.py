@@ -2560,10 +2560,23 @@ class NewsThemeBudgetTests(unittest.TestCase):
         now = run.time.monotonic()
         with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": "120",
                                      "NULLCLAW_SKILL_STARTED": str(now)}, clear=False):
-            self.assertTrue(run._theme_budget_ok(10))   # ~120s left, need 10+16
+            self.assertTrue(run._theme_budget_ok(10))   # ~120s left, need 10+34=44
         with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": "120",
                                      "NULLCLAW_SKILL_STARTED": str(now - 100)}, clear=False):
-            self.assertFalse(run._theme_budget_ok(10))  # ~20s left, need 26
+            self.assertFalse(run._theme_budget_ok(10))  # ~20s left, need 44
+
+    def test_nonfinite_timeout_skips(self):
+        with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": "inf",
+                                     "NULLCLAW_SKILL_STARTED": "0"}, clear=False):
+            self.assertFalse(run._theme_budget_ok(10))
+
+    def test_nonfinite_started_skips(self):
+        with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": "120",
+                                     "NULLCLAW_SKILL_STARTED": "nan"}, clear=False):
+            self.assertFalse(run._theme_budget_ok(10))
+        with patch.dict(os.environ, {"NULLCLAW_SKILL_TIMEOUT": "120",
+                                     "NULLCLAW_SKILL_STARTED": "-inf"}, clear=False):
+            self.assertFalse(run._theme_budget_ok(10))
 
 
 class NewsThemeRenderTests(unittest.TestCase):
@@ -2840,12 +2853,36 @@ class NewsThemeWiringTests(unittest.TestCase):
 
     def test_length_guard_reverts_to_off(self):
         # Force the guard with a tiny threshold: any themed digest exceeds it, so render
-        # must rebuild flat and equal off exactly (title/date, blanks, footer included).
+        # must rebuild flat and equal off exactly (byte-identical; fixture has no paywall
+        # footer marker — this proves the revert, not footer preservation).
         with patch.object(run, "THEME_TRIM_THRESHOLD", 5):
             reverted = self._run_assembly("render")
         off = self._run_assembly("off")
         self.assertEqual(reverted, off)
         self.assertNotIn(run.THEME_HEADINGS[run.THEME_PRODUCT], reverted)
+
+    def test_degraded_ai_skips_theming(self):
+        # AI section-loop except path adds "ai" to degraded_sections → theming must
+        # not run (classifier never called) even with NEWS_AI_THEME=render.
+        called = {"n": 0}
+        def boom_ai(*a, **k):
+            raise RuntimeError("ai substage failed")
+        def fake_theme_agent(*a, **k):
+            called["n"] += 1
+            return subprocess.CompletedProcess(
+                ["nullclaw"], 0, stdout=self._PAYLOAD, stderr="")
+        with patch.object(run, "_summarize_default_ai_substaged", boom_ai), \
+             patch.object(run, "_summarize_default_section",
+                          lambda key, items, date_str, link_map: ([], False)), \
+             patch.object(run, "_run_nullclaw_agent_once", fake_theme_agent), \
+             patch.object(run, "_alert_failure", lambda *a, **k: None), \
+             patch.dict(os.environ, {"NEWS_AI_THEME": "render"}, clear=False), \
+             patch.object(run, "log_trace", lambda *a, **k: None):
+            digest = run.summarize_llm(
+                {"ai": [{"title": "x", "link": "http://x"}], "tech": [], "general": []},
+                self._ctx())
+        self.assertEqual(called["n"], 0)       # theming skipped for degraded AI
+        self.assertIsInstance(digest, str)     # still produces a digest via fallback
 
 
 if __name__ == "__main__":

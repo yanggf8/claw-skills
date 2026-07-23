@@ -2,6 +2,7 @@
 """News skill: fetch Google News RSS feeds and format a daily summary."""
 import argparse
 import json
+import math
 import os
 import random
 import re
@@ -221,6 +222,8 @@ def _theme_budget_ok(classifier_timeout: int = CLASSIFIER_TIMEOUT_SECS) -> bool:
         timeout = float(raw_timeout)
     except ValueError:
         return False                     # a budget WAS configured but is unreadable → skip
+    if not math.isfinite(timeout):
+        return False                     # inf/nan timeout → unreliable budget → skip
     if timeout <= 0:
         return False                     # non-positive configured budget → skip
     raw_started = os.environ.get("NULLCLAW_SKILL_STARTED")
@@ -230,6 +233,8 @@ def _theme_budget_ok(classifier_timeout: int = CLASSIFIER_TIMEOUT_SECS) -> bool:
         started = float(raw_started)
     except ValueError:
         return False
+    if not math.isfinite(started):
+        return False                     # inf/nan start clock → unreliable → skip
     remaining = timeout - max(0.0, time.monotonic() - started)
     return remaining >= (classifier_timeout + THEME_DELIVERY_RESERVE_SECS)
 
@@ -327,14 +332,21 @@ def _theme_ai_section(ai_lines: list[str], date_str: str, all_items: dict):
 
         plan = _theme_layout_plan(blocks, labels)
         assigned = {b["idx"] + 1: labels[b["idx"] + 1] for b in blocks}
-        placement = {b["idx"] + 1: plan["placement"][b["idx"]] for b in blocks}
         balance = {t: len(plan["groups"][t]) for t in THEME_RENDER_ORDER}
         other_share = round(balance[THEME_OTHER] / len(blocks), 3)
         themed_lines = _theme_render(ai_lines, blocks, labels)
         headed = themed_lines is not ai_lines
+        # When blank-coverage / singleton guard returns flat, headed=False but plan may
+        # still claim heading placement — report actual delivered layout, not the plan.
+        if headed:
+            placement = {b["idx"] + 1: plan["placement"][b["idx"]] for b in blocks}
+            headed_themes = plan["headed"]
+        else:
+            placement = {b["idx"] + 1: "tail" for b in blocks}
+            headed_themes = []
         _theme_trace(mode=mode, ok=True, blocks=len(blocks), elapsed_ms=elapsed_ms,
                      assigned=assigned, placement=placement, balance=balance,
-                     other_share=other_share, headed_themes=plan["headed"], headed=headed)
+                     other_share=other_share, headed_themes=headed_themes, headed=headed)
         if mode == "shadow":
             return ai_lines, False            # measure only; deliver flat
         return (themed_lines, True) if headed else (ai_lines, False)
@@ -2923,10 +2935,12 @@ def summarize_llm(all_items: dict[str, list[dict]], ctx: "AlertContext") -> str:
     if themed_ai_applied and len(_markdown_visible_text(digest)) > THEME_TRIM_THRESHOLD:
         # Headings pushed the digest into the trim path (could drop a block or stale the
         # footer). Theming is never worth a drop — rebuild flat, byte-identical to off.
+        # Capture the themed length that triggered the revert (before flat rebuild).
+        themed_visible_len = len(_markdown_visible_text(digest))
         section_results["ai"] = flat_ai_lines
         digest, paywall_count = _assemble_ai_digest(date_str, section_keys, section_results)
         _theme_trace(mode="render", length_revert=True,
-                     visible_len=len(_markdown_visible_text(digest)))
+                     visible_len=themed_visible_len)
     return _trim_digest_links(digest)
 
 
