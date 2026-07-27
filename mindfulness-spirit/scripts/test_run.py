@@ -123,7 +123,9 @@ class TestMindfulnessSpiritPublishHardening(unittest.TestCase):
         with patch.object(run, "run_nullclaw_agent", side_effect=agent_mock):
             run.run_writer_and_checklist("writer prompt")
 
-        self.assertNotIn("ncchoices", captured["checklist_prompt"])
+        # Assert the leaked artifact TAG is gone — not the bare word "ncchoices",
+        # which now legitimately appears in the checklist instruction text.
+        self.assertNotIn("<ncchoices>", captured["checklist_prompt"])
 
     def test_success_path_publishes_with_validation_ok(self):
         """WHY: guard test — normal publishing must keep working after the fix (this one passes even before the fix)."""
