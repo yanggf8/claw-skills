@@ -2885,5 +2885,268 @@ class NewsThemeWiringTests(unittest.TestCase):
         self.assertIsInstance(digest, str)     # still produces a digest via fallback
 
 
+class ContentShapeValidationTests(unittest.TestCase):
+    """Shape gate for section content: every non-scaffolding line must be a
+    valid #N marker bullet. Closes the hole where `_news_bullet_lines` ignores
+    narrative CoT prose, so old marker stats can pass while the digest still
+    delivers chain-of-thought to Telegram.
+    """
+
+    # Production-shaped leak: LLM CoT interleaved with valid - #N bullets.
+    LEAKED_SUMMARY = (
+        "I'll select the top tech/semiconductor news items. Let me analyze the candidates:\n"
+        "- #1 韓國研發「可程式化光子晶片」突破光運算瓶頸\n"
+        "- #2 弘塑攜手德國 Singulus 搶攻半導體先進封裝\n"
+        "7則太多了，要篩選掉。重複/相關性較低的：\n"
+        "我選5則：\n"
+        "- #5 Google 開始銷售 TPU 晶片，正式跨足半導體供應商行列\n"
+        "黃仁勳相關(#5/#6/#9)同事件，選TechNews優先級，但這裡TechNews沒有"
+    )
+
+    LEAKED_NUMBERED = {
+        1: {"title": "韓國研發「可程式化光子晶片」突破光運算瓶頸", "link": "http://ex/1"},
+        2: {"title": "弘塑攜手德國 Singulus 搶攻半導體先進封裝", "link": "http://ex/2"},
+        5: {"title": "Google 開始銷售 TPU 晶片，正式跨足半導體供應商行列", "link": "http://ex/5"},
+    }
+
+    # --- Regression: the incident ------------------------------------------------
+
+    def test_leaked_cot_shape_fails_new_gate_but_old_stats_pass(self):
+        # Cron delivered LLM chain-of-thought in the tech section: well-formed
+        # - #N bullets mixed with un-bulleted narrative. Old gate only counts
+        # lines starting with - or #N, so prose is invisible and marked==total
+        # still passes. New shape gate must reject the same input.
+        summary = self.LEAKED_SUMMARY
+        numbered = self.LEAKED_NUMBERED
+
+        self.assertFalse(run._shape_validation_passed(summary, numbered))
+
+        marked, total = run._marker_validation_stats(summary, numbered)
+        self.assertEqual(total, 3)
+        self.assertEqual(marked, total)
+
+    def test_mid_sentence_contamination_on_bullet_still_passes_shape(self):
+        # Shape validates line form (leading #N marker), not content integrity.
+        # A bullet that ends with leftover CoT text is still a marker line and
+        # must pass — catching mid-line contamination is a separate concern.
+        summary = (
+            "- #1 韓國研發光子晶片 我繼續完成新聞編輯任務，輸出科技與半導體區塊："
+        )
+        numbered = {1: {"title": "韓國研發光子晶片", "link": "http://ex/1"}}
+        self.assertTrue(run._shape_validation_passed(summary, numbered))
+
+    # --- Happy path --------------------------------------------------------------
+
+    def test_only_valid_marker_bullets_passes(self):
+        # Clean section: only - #N bullets, every N in numbered → shape OK.
+        summary = (
+            "- #1 台積電先進封裝產能擴張\n"
+            "- #2 聯發科推出新一代 5G 晶片"
+        )
+        numbered = {
+            1: {"title": "台積電先進封裝產能擴張", "link": "http://ex/1"},
+            2: {"title": "聯發科推出新一代 5G 晶片", "link": "http://ex/2"},
+        }
+        self.assertTrue(run._shape_validation_passed(summary, numbered))
+
+    def test_bullets_plus_scaffolding_passes(self):
+        # Headers, blank lines, and separators are scaffolding — they must not
+        # fail the shape gate when all real content lines are valid markers.
+        summary = (
+            "**科技 & 半導體**\n"
+            "\n"
+            "- #1 三星量產 HBM3E 記憶體\n"
+            "---\n"
+            "- #2 英特爾 18A 製程進度超前"
+        )
+        numbered = {
+            1: {"title": "三星量產 HBM3E 記憶體", "link": "http://ex/1"},
+            2: {"title": "英特爾 18A 製程進度超前", "link": "http://ex/2"},
+        }
+        self.assertTrue(run._shape_validation_passed(summary, numbered))
+
+    def test_placeholder_alone_is_empty_content_fails(self):
+        # Placeholder-only sections have nothing to deliver: content-lines list
+        # is empty → shape validation must fail (empty content → False).
+        summary = "- 今日無相關新聞"
+        numbered = {}
+        self.assertEqual(run._content_lines_for_shape_check(summary), [])
+        self.assertFalse(run._shape_validation_passed(summary, numbered))
+
+    # --- Shape-check unit tests --------------------------------------------------
+
+    def test_prose_line_is_returned_by_content_lines(self):
+        # Narrative CoT must appear in the content-lines list so the shape gate
+        # can reject it — this is the line class the old bullet counter ignored.
+        summary = (
+            "I'll select the top tech/semiconductor news items.\n"
+            "- #1 韓國研發光子晶片"
+        )
+        lines = run._content_lines_for_shape_check(summary)
+        prose = "I'll select the top tech/semiconductor news items."
+        self.assertIn(prose, [ln.strip() for ln in lines])
+
+    def test_scaffolding_classes_excluded(self):
+        # Each scaffolding class must be excluded from content lines so they
+        # never force a false shape failure on legitimate section framing.
+        summary = (
+            "   \n"
+            "---\n"
+            "--\n"
+            "***\n"
+            "**科技 & 半導體**\n"
+            "- 今日無相關新聞\n"
+            "- ...（其餘略）\n"
+            "- #1 唯一真實新聞"
+        )
+        lines = run._content_lines_for_shape_check(summary)
+        stripped = [ln.strip() for ln in lines]
+
+        self.assertNotIn("", stripped)                          # empty / whitespace
+        self.assertNotIn("---", stripped)
+        self.assertNotIn("--", stripped)
+        self.assertNotIn("***", stripped)
+        self.assertNotIn("**科技 & 半導體**", stripped)         # bold header only
+        self.assertFalse(any("今日無相關新聞" in ln for ln in stripped))
+        self.assertFalse(any(
+            (ln.lstrip("- ").startswith("...") if ln.startswith("-") else ln.startswith("..."))
+            for ln in stripped
+        ))
+        # The one real bullet remains.
+        self.assertTrue(any("#1" in ln for ln in stripped))
+        self.assertEqual(len(stripped), 1)
+
+    def test_marker_id_not_in_numbered_fails(self):
+        # A well-formed #N bullet whose N is not in the numbered map is not a
+        # deliverable marker — shape must fail.
+        summary = "- #9 幽靈新聞標題"
+        numbered = {1: {"title": "其他", "link": "http://ex/1"}}
+        self.assertFalse(run._shape_validation_passed(summary, numbered))
+
+    def test_comma_after_marker_not_valid(self):
+        # Regex guard `(?!,)` rejects `#1,` so comma-glued markers are not
+        # treated as valid source markers (same rule as _marker_validation_stats).
+        summary = "- #1, 標題被逗號黏住"
+        numbered = {1: {"title": "標題被逗號黏住", "link": "http://ex/1"}}
+        self.assertFalse(run._shape_validation_passed(summary, numbered))
+
+    # --- Non-regression on _news_bullet_lines ------------------------------------
+
+    def test_news_bullet_lines_on_leaked_input_returns_only_three_bullets(self):
+        # Existing bullet extractor must keep current semantics: only the three
+        # - #N lines, prose ignored. Documents the hole the shape gate closes.
+        bullets = run._news_bullet_lines(self.LEAKED_SUMMARY)
+        self.assertEqual(len(bullets), 3)
+        self.assertTrue(all("#" in b for b in bullets))
+        joined = "\n".join(bullets)
+        self.assertIn("#1", joined)
+        self.assertIn("#2", joined)
+        self.assertIn("#5", joined)
+        self.assertNotIn("I'll select", joined)
+        self.assertNotIn("7則太多了", joined)
+
+    def test_news_bullet_lines_cot_only_returns_empty(self):
+        # Pure CoT with zero bullets → empty list (old gate correctly rejects
+        # via (0,0); shape gate must also fail empty content).
+        summary = (
+            "I'll select the top tech items.\n"
+            "7則太多了，要篩選掉。\n"
+            "我選5則："
+        )
+        self.assertEqual(run._news_bullet_lines(summary), [])
+
+    # --- Whitelist render tests (_attach_numbered_links) -------------------------
+
+    def test_attach_drops_prose_keeps_marker_links(self):
+        # Whitelist render: unknown prose lines are dropped; valid marker lines
+        # still get [🔗](link). Current blacklist leaves prose intact — this
+        # test drives the flip to whitelist.
+        summary = (
+            "I'll select the top tech items.\n"
+            "- #1 台積電先進封裝產能擴張\n"
+            "7則太多了，要篩選掉。"
+        )
+        numbered = {1: {"title": "台積電先進封裝產能擴張", "link": "http://ex/1"}}
+        body, attached = run._attach_numbered_links(summary, numbered)
+        self.assertEqual(attached, 1)
+        self.assertIn("- 台積電先進封裝產能擴張 [🔗](http://ex/1)", body)
+        self.assertNotIn("I'll select", body)
+        self.assertNotIn("7則太多了", body)
+
+    def test_attach_keeps_header_separator_empty(self):
+        # Legitimate scaffolding must survive whitelist filtering alongside
+        # linked marker bullets: bold header, separator, and blank line.
+        summary = (
+            "**科技 & 半導體**\n"
+            "\n"
+            "- #1 聯發科推出新一代 5G 晶片\n"
+            "---"
+        )
+        numbered = {1: {"title": "聯發科推出新一代 5G 晶片", "link": "http://ex/1"}}
+        body, attached = run._attach_numbered_links(summary, numbered)
+        self.assertEqual(attached, 1)
+        self.assertIn("**科技 & 半導體**", body)
+        self.assertIn("---", body)
+        self.assertIn("- 聯發科推出新一代 5G 晶片 [🔗](http://ex/1)", body)
+        # Blank line preserved (two newlines around the empty line).
+        self.assertIn("\n\n", body)
+
+    def test_attach_still_drops_hint_picked_noise(self):
+        # Regression: pure-bracket instrumentation markers must still be
+        # dropped (and traced) under the whitelist path.
+        summary = (
+            "**💻 科技**\n"
+            "- #1 正常標題\n"
+            "[hint_picked:none]\n"
+            "[hints_used:false]\n"
+            "[cat_dedup:0]"
+        )
+        numbered = {1: {"title": "正常標題", "link": "http://example.com/1"}}
+        traces = []
+        with patch.object(run, "log_trace", lambda e, **f: traces.append((e, f))):
+            body, attached = run._attach_numbered_links(summary, numbered)
+        self.assertEqual(attached, 1)
+        for gone in ("hint_picked", "hints_used", "cat_dedup"):
+            self.assertNotIn(gone, body, gone)
+        self.assertIn("- 正常標題 [🔗](http://example.com/1)", body)
+        self.assertIn("**💻 科技**", body)
+        dropped = [f for e, f in traces if e == "section_noise_dropped"]
+        self.assertEqual(len(dropped), 1, traces)
+        self.assertEqual(dropped[0].get("count"), 3)
+
+    def test_attach_paywall_two_line_survives_intact(self):
+        # Paywall replacement emits a two-line string (replacement bullet +
+        # 　↳ 原文 continuation with PAYWALL_NOTE). Whitelist must not
+        # re-split/re-filter that pair and must keep both lines intact.
+        summary = "- #1 付費牆原標題"
+        numbered = {
+            1: {
+                "title": "付費牆原標題",
+                "link": "http://nyt/1",
+                "source_name": "NYT",
+            },
+        }
+        paywall = {
+            1: {
+                "decoded_url": "http://nyt/1",
+                "reason": "paywalled",
+                "title": "付費牆原標題",
+                "source_name": "NYT",
+                "replacement": {
+                    "title_zh": "免費替代標題",
+                    "link": "http://free/1",
+                },
+            },
+        }
+        body, attached = run._attach_numbered_links(summary, numbered, paywall)
+        lines = body.splitlines()
+        self.assertGreaterEqual(len(lines), 2)
+        self.assertEqual(lines[0], "- 免費替代標題 [🔗](http://free/1)")
+        self.assertTrue(lines[1].startswith(run.PAYWALL_CONT_PREFIX))
+        self.assertIn("付費牆原標題", lines[1])
+        self.assertIn(run.PAYWALL_NOTE, lines[1])
+        self.assertEqual(attached, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1077,6 +1077,59 @@ def _news_bullet_lines(summary: str) -> list[str]:
     return lines
 
 
+def _content_lines_for_shape_check(summary: str) -> list[str]:
+    """Return all non-empty, non-scaffolding lines for shape-gate visibility.
+
+    Separate from `_news_bullet_lines`: that helper means "news bullets that
+    should carry markers" and is used by ~9 call sites as an emptiness check
+    ("no selectable news items" → 今日無相關新聞) and for language/post-dedup
+    stats. Widening it would flip those semantics (a CoT-only response currently
+    returns [] and correctly routes to the placeholder path).
+
+    This helper means "everything the model emitted that isn't framing" and
+    exists to make un-bulleted CoT prose VISIBLE to the shape gate.
+
+    Pure ``[bracket]`` instrumentation noise is also excluded: it is dropped
+    later by ``_attach_numbered_links`` and must not fail the shape gate
+    (see end-to-end marker-leak strip test).
+    """
+    import re
+
+    noise_marker = re.compile(r"^\[[^\]]*\]$")
+    lines = []
+    for line in summary.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped in ("---", "--", "***"):
+            continue
+        if stripped.startswith("**") and stripped.endswith("**"):
+            continue
+        if noise_marker.match(stripped):
+            continue
+        body = stripped[1:].strip() if stripped.startswith("-") else stripped
+        if "今日無相關新聞" in body:
+            continue
+        if body.startswith("..."):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _shape_validation_passed(summary: str, numbered: dict) -> bool:
+    """True iff every content line has a valid leading #N marker present in numbered."""
+    import re
+
+    content = _content_lines_for_shape_check(summary)
+    if not content:
+        return False
+    for line in content:
+        match = re.match(r"^\s*(?:-\s*)?#(\d+)\b(?!,)", line)
+        if not match or int(match.group(1)) not in numbered:
+            return False
+    return True
+
+
 def _marker_validation_stats(summary: str, numbered: dict[int, dict]) -> tuple[int, int]:
     """Return (marked_bullets, total_news_bullets) for valid leading #N markers."""
     import re
@@ -1551,7 +1604,8 @@ def _attach_numbered_links(
     # probe, which forces a plaintext fallback that expands every [🔗] link into a
     # raw URL. Drop such lines — headers (**...**) and real #N bullets are untouched.
     noise_marker = re.compile(r"^\s*\[[^\]]*\]\s*$")
-    dropped: list[str] = []
+    dropped_noise: list[str] = []
+    dropped_unknown: list[str] = []
 
     def _linked(body: str, link: str) -> str:
         if link:
@@ -1562,10 +1616,25 @@ def _attach_numbered_links(
     def replace_line(line: str) -> str | None:
         match = marker_line.match(line)
         if not match:
+            stripped = line.strip()
+            # Whitelist scaffolding: keep as-is. Everything else is dropped.
+            if not stripped:
+                return line
+            if stripped in ("---", "--", "***"):
+                return line
+            if stripped.startswith("**") and stripped.endswith("**"):
+                return line
+            if "今日無相關新聞" in stripped:
+                return line
+            # PAYWALL_CONT_PREFIX begins with U+3000; strip() would remove it, so
+            # match the raw line (and the stripped form for defense in depth).
+            if line.startswith(PAYWALL_CONT_PREFIX) or stripped.startswith(PAYWALL_CONT_PREFIX):
+                return line
             if noise_marker.match(line):
-                dropped.append(line.strip())
+                dropped_noise.append(stripped)
                 return None
-            return line
+            dropped_unknown.append(stripped)
+            return None
         num = int(match.group(1))
         item = numbered.get(num)
         body = _neutralize_markdown_specials(line[match.end():].lstrip())
@@ -1580,6 +1649,7 @@ def _attach_numbered_links(
                 # Free replacement on top, original paywalled headline continues below.
                 # _linked(body, link) is evaluated exactly once per rendered line so
                 # the attach counter counts each link at most once.
+                # Whitelist is INPUT-only — do not re-filter this rendered pair.
                 orig_line = f"{PAYWALL_CONT_PREFIX}原文：{_linked(body, link)[2:]}  {PAYWALL_NOTE}"
                 return f"{_linked(rep_title, rep_link)}\n{orig_line}"
             # No replacement found — single bullet + note (degraded form).
@@ -1588,9 +1658,12 @@ def _attach_numbered_links(
         return _linked(body, link)
 
     rendered = [r for r in (replace_line(line) for line in summary.splitlines()) if r is not None]
-    if dropped:
-        log_trace("section_noise_dropped", count=len(dropped),
-                  samples=[s[:120] for s in dropped[:5]])
+    if dropped_noise:
+        log_trace("section_noise_dropped", count=len(dropped_noise),
+                  samples=[s[:120] for s in dropped_noise[:5]])
+    if dropped_unknown:
+        log_trace("section_unknown_line_dropped", count=len(dropped_unknown),
+                  samples=[s[:120] for s in dropped_unknown[:5]])
     return "\n".join(rendered), attached["count"]
 
 
@@ -2112,7 +2185,11 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
         summary = result.stdout.strip()
         if summary:
             marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
-            if total_bullets > 0 and marked_bullets == total_bullets:
+            if (
+                total_bullets > 0
+                and marked_bullets == total_bullets
+                and _shape_validation_passed(summary, numbered)
+            ):
                 # P2: collapse same-event rewrites on the selected set only,
                 # before precheck builds paywall maps from #N identities.
                 summary = _post_dedup_selected_summary(
@@ -2177,6 +2254,11 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
                         line_sample=_sample_nonempty_lines(summary, 8),
                     )
             else:
+                reason = (
+                    "marker_validation"
+                    if total_bullets == 0 or marked_bullets != total_bullets
+                    else "shape_validation"
+                )
                 _log_llm_validation_failed(
                     f"default_{key}",
                     result,
@@ -2184,7 +2266,7 @@ def _summarize_default_section(key: str, items: list[dict], date_str: str, link_
                     marked_bullets,
                     total_bullets,
                     numbered,
-                    "marker_validation",
+                    reason,
                 )
             print(
                 "[WARN] LLM section validation failed: "
@@ -2299,6 +2381,8 @@ def _run_ai_substage(
     marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
     if total_bullets == 0 or marked_bullets != total_bullets:
         return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
+    if not _shape_validation_passed(summary, numbered):
+        return False, [], "shape_validation"
 
     # P2: selected-set hard dedup before precheck (while #N identity exists).
     summary = _post_dedup_selected_summary(
@@ -3107,6 +3191,8 @@ def _run_custom_topic(
     marked_bullets, total_bullets = _marker_validation_stats(summary, numbered)
     if total_bullets == 0 or marked_bullets != total_bullets:
         return False, [], f"marker_validation marked={marked_bullets}/{total_bullets}"
+    if not _shape_validation_passed(summary, numbered):
+        return False, [], "shape_validation"
 
     summary = _post_dedup_selected_summary(
         summary,
