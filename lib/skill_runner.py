@@ -208,6 +208,43 @@ def _extract_body(output: str, body_marker: tuple[str, str] | None) -> str:
     return output.strip()
 
 
+def strip_agent_artifacts(text: str) -> str:
+    """Clean agent stdout before it is delivered to Telegram (or stdout).
+
+    Incident context: traffic/weather nest ``nullclaw agent -m`` and used to
+    deliver raw stdout verbatim. MiniMax-M3 spontaneously emits the
+    ``<ncchoices>`` inline-button protocol (and often drops the closing tag);
+    Telegram cannot render it, so users saw JSON and harness markers mixed
+    into commute/clothing advice. This runs on agent stdout *before* the
+    caller adds its own intentional ``NULLCLAW_JOB_ID`` footer, so that
+    footer is never touched.
+
+    TOKEN-SPECIFIC: only the literal ``ncchoices`` tag is stripped. Other
+    angle-bracket text (e.g. ``<25分鐘`` / ``>40分鐘``) is legitimate advice
+    and must pass through unchanged.
+    """
+    # 1. Paired <ncchoices>...</ncchoices> (multiline, case-insensitive).
+    text = re.sub(r"<ncchoices>.*?</ncchoices>", "", text, flags=re.S | re.I)
+    # 2. Unclosed <ncchoices> through EOF (model dropped the end marker).
+    text = re.sub(r"<ncchoices>.*$", "", text, flags=re.S | re.I)
+    # 3. Harness/cron marker lines (whole line only).
+    text = re.sub(
+        r"^\[(?:skill-status|trace|skill-event)[:\]].*$",
+        "",
+        text,
+        flags=re.M,
+    )
+    text = re.sub(
+        r"^\s*skill-[0-9a-f-]{8,}(?:-[0-9a-f]+)*:\d+\s*$",
+        "",
+        text,
+        flags=re.M | re.I,
+    )
+    # 4. Collapse blank-line runs left behind; strip edges.
+    text = re.sub(r"\n\n+", "\n", text)
+    return text.strip()
+
+
 def _agent_argv(prompt: str, provider: str | None, model: str | None) -> list[str]:
     """Build the `nullclaw agent` command line.
 

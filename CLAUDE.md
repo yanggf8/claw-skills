@@ -213,7 +213,7 @@ persona-core plans list
 
 | Module | Purpose |
 |--------|---------|
-| `skill_runner` | Shared agent-first skill runtime helpers (subprocess wrappers, persona-core CLI shortcut, nullclaw agent invocation, cron skill-contract markers) |
+| `skill_runner` | Shared agent-first skill runtime helpers (subprocess wrappers, persona-core CLI shortcut, nullclaw agent invocation, cron skill-contract markers). `strip_agent_artifacts()` sanitizes nested-agent stdout before delivery — strips `<ncchoices>` blocks (paired **and** unclosed) plus harness marker lines, so agent protocol noise never reaches Telegram. Any skill that delivers raw `nullclaw agent` stdout must run it through this. |
 | `cover_image` | CogView-4 image generation + dev.to cover update CLI |
 | `telegram` | Telegram message delivery (auto-detects nullclaw/openclaw config) |
 | `delivery` | **Canonical** delivery helper: `deliver_or_fail(chat_id, body, ...)`. Replaces ad-hoc `if args.deliver_to: telegram.send(...)`. On send failure, echoes body to stdout (so cron capture keeps the data) and `exit(1)`; on empty `chat_id`, prints body to stdout. New skills should use this, not `telegram.send` directly. |

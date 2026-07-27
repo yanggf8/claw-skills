@@ -9,6 +9,7 @@ import urllib.request
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
 from delivery import deliver_or_fail
+from skill_runner import strip_agent_artifacts
 
 
 def load_env():
@@ -78,13 +79,14 @@ def traffic_advice_llm(route_label: str, minutes: int) -> str:
         f"- 若時間中等（25-40分鐘）：提醒注意壅塞路段\n"
         f"- 若時間長（>40分鐘）：建議替代路線或出發時間調整\n"
         f"只回覆建議本身，不要重複路況資料。"
+        f"只回覆純文字建議，勿附加 ncchoices、按鈕、選擇清單或任何標記。"
     )
     try:
         result = subprocess.run(
             [os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw"), "agent", "-m", prompt],
             capture_output=True, text=True, timeout=30,
         )
-        advice = result.stdout.strip()
+        advice = strip_agent_artifacts(result.stdout)
         if advice:
             return f"💡 {advice}"
     except Exception as e:

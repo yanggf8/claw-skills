@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
 from delivery import deliver_or_fail
+from skill_runner import strip_agent_artifacts
 from trace_marker import emit_skill_status, emit_trace, emit_fallback
 
 HK_LOCATIONS = {"香港", "hong kong", "hk", "九龍", "新界", "港島"}
@@ -215,7 +216,8 @@ def clothing_advice_llm(weather_data: list[dict]) -> str:
     )
     prompt = (
         f"根據以下天氣資料，用繁體中文給出簡短的穿搭建議（1-2句話），"
-        f"包含具體衣物建議和是否需要雨具。只回覆建議本身，不要重複天氣資料。\n"
+        f"包含具體衣物建議和是否需要雨具。只回覆建議本身，不要重複天氣資料。"
+        f"只回覆純文字建議，勿附加 ncchoices、按鈕、選擇清單或任何標記。\n"
         f"天氣：{summary}"
     )
     try:
@@ -223,7 +225,7 @@ def clothing_advice_llm(weather_data: list[dict]) -> str:
             [os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw"), "agent", "-m", prompt],
             capture_output=True, text=True, timeout=30,
         )
-        advice = result.stdout.strip()
+        advice = strip_agent_artifacts(result.stdout)
         if advice:
             return f"👔 {advice}"
     except Exception as e:

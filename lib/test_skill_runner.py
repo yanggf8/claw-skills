@@ -132,5 +132,152 @@ class AgentArgvTests(unittest.TestCase):
         )
 
 
+class StripAgentArtifactsTests(unittest.TestCase):
+    """strip_agent_artifacts cleans agent stdout before Telegram delivery.
+
+    MiniMax-M3 (and similar harness models) routinely append interactive
+    <ncchoices> JSON blocks, drop the closing tag, and leak cron/skill
+    harness markers into the user-facing body. The traffic/weather skills
+    deliver agent advice as-is; without stripping, users see raw JSON and
+    [skill-status:ok] lines. This function is the last gate: remove only
+    known artifact patterns, keep legitimate angle-bracket advice
+    (e.g. <25分鐘), collapse blank runs, and stay idempotent."""
+
+    def test_incident_regression_ncchoices_block_removed(self):
+        # Real agent stdout that leaked into Telegram: advice + paired
+        # <ncchoices> JSON. Users must see advice only.
+        raw = (
+            "路況順暢，維持平常路線即可，行車平安。\n\n"
+            '<ncchoices>{"v":1,"options":[{"id":"ok","label":"收到，繼續出發",'
+            '"submittext":"收到"}]}</ncchoices>'
+        )
+        self.assertEqual(
+            sr.strip_agent_artifacts(raw),
+            "路況順暢，維持平常路線即可，行車平安。",
+        )
+
+    def test_unclosed_ncchoices_strips_to_eof(self):
+        # MiniMax-M3 routinely drops the end marker — strip from open tag
+        # through end-of-string so trailing garbage never reaches the user.
+        raw = (
+            "路況順暢，維持平常路線即可。\n"
+            '<ncchoices>{"v":1,"options":[{"id":"ok","label":"收到"}]}'
+        )
+        self.assertEqual(
+            sr.strip_agent_artifacts(raw),
+            "路況順暢，維持平常路線即可。",
+        )
+
+    def test_case_insensitive_ncchoices_tag(self):
+        raw = (
+            "advice here\n"
+            '<NCChoices>{"v":1}</NCChoices>\n'
+            "more advice"
+        )
+        self.assertEqual(
+            sr.strip_agent_artifacts(raw),
+            "advice here\nmore advice",
+        )
+
+    def test_multiline_json_inside_ncchoices_removed(self):
+        raw = (
+            "before\n"
+            "<ncchoices>\n"
+            "{\n"
+            '  "v": 1,\n'
+            '  "options": [{"id": "ok"}]\n'
+            "}\n"
+            "</ncchoices>\n"
+            "after"
+        )
+        self.assertEqual(
+            sr.strip_agent_artifacts(raw),
+            "before\nafter",
+        )
+
+    def test_ncchoices_in_middle_keeps_advice_before_and_after(self):
+        raw = (
+            "前半段建議，路況尚可。\n"
+            '<ncchoices>{"v":1,"options":[]}</ncchoices>\n'
+            "後半段建議，提早出門。"
+        )
+        self.assertEqual(
+            sr.strip_agent_artifacts(raw),
+            "前半段建議，路況尚可。\n後半段建議，提早出門。",
+        )
+
+    def test_legit_angle_brackets_in_advice_passthrough(self):
+        # Token-specific: only the literal ncchoices tag is stripped.
+        # Comparison advice with < / > must survive byte-identical.
+        text = "小於 <25分鐘 算順暢，>40分鐘 要提早出發"
+        self.assertEqual(sr.strip_agent_artifacts(text), text)
+
+    def test_skill_uuid_trace_line_removed(self):
+        raw = (
+            "路況順暢。\n"
+            "skill-563f90ef-d26d-4afb-a4c4-a333472e97bf:2596\n"
+            "行車平安。"
+        )
+        self.assertEqual(
+            sr.strip_agent_artifacts(raw),
+            "路況順暢。\n行車平安。",
+        )
+
+    def test_skill_status_and_trace_and_event_lines_removed(self):
+        raw = (
+            "建議維持原路線。\n"
+            "[skill-status:ok]\n"
+            "[skill-status:degraded]\n"
+            "[trace:anything]\n"
+            "[skill-event] started delivery pipeline\n"
+            "注意天氣。"
+        )
+        self.assertEqual(
+            sr.strip_agent_artifacts(raw),
+            "建議維持原路線。\n注意天氣。",
+        )
+
+    def test_artifacts_only_returns_empty_string(self):
+        raw = (
+            '<ncchoices>{"v":1}</ncchoices>\n'
+            "[skill-status:ok]\n"
+            "skill-563f90ef-d26d-4afb-a4c4-a333472e97bf:2596\n"
+            "[trace:x]\n"
+            "[skill-event] noop"
+        )
+        self.assertEqual(sr.strip_agent_artifacts(raw), "")
+
+    def test_empty_string_returns_empty(self):
+        self.assertEqual(sr.strip_agent_artifacts(""), "")
+
+    def test_idempotent_on_incident_regression(self):
+        raw = (
+            "路況順暢，維持平常路線即可，行車平安。\n\n"
+            '<ncchoices>{"v":1,"options":[{"id":"ok","label":"收到，繼續出發",'
+            '"submittext":"收到"}]}</ncchoices>'
+        )
+        once = sr.strip_agent_artifacts(raw)
+        twice = sr.strip_agent_artifacts(once)
+        self.assertEqual(once, twice)
+        self.assertEqual(once, "路況順暢，維持平常路線即可，行車平安。")
+
+    def test_clean_chinese_advice_unchanged(self):
+        text = "路況順暢，維持平常路線即可，行車平安。"
+        self.assertEqual(sr.strip_agent_artifacts(text), text)
+
+    def test_leading_artifacts_before_advice_removed(self):
+        # Artifact removal is position-independent — leading harness lines
+        # before real advice must not survive either.
+        raw = (
+            "[skill-status:ok]\n"
+            "skill-563f90ef-d26d-4afb-a4c4-a333472e97bf:2596\n"
+            "實際建議內容"
+        )
+        self.assertEqual(sr.strip_agent_artifacts(raw), "實際建議內容")
+
+    def test_whitespace_only_returns_empty(self):
+        self.assertEqual(sr.strip_agent_artifacts("  \n\n  "), "")
+
+
 if __name__ == "__main__":
     unittest.main()
