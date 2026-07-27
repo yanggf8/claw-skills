@@ -208,7 +208,7 @@ def _extract_body(output: str, body_marker: tuple[str, str] | None) -> str:
     return output.strip()
 
 
-def strip_agent_artifacts(text: str) -> str:
+def strip_agent_artifacts(text: str, *, collapse_blank_lines: bool = True) -> str:
     """Clean agent stdout before it is delivered to Telegram (or stdout).
 
     Incident context: traffic/weather nest ``nullclaw agent -m`` and used to
@@ -222,6 +222,10 @@ def strip_agent_artifacts(text: str) -> str:
     TOKEN-SPECIFIC: only the literal ``ncchoices`` tag is stripped. Other
     angle-bracket text (e.g. ``<25分鐘`` / ``>40分鐘``) is legitimate advice
     and must pass through unchanged.
+
+    collapse_blank_lines=False is the markdown-safe mode for article bodies
+    where blank lines are paragraph separators and must survive; the default
+    True is for chat/Telegram density.
     """
     # 1. Paired <ncchoices>...</ncchoices> (multiline, case-insensitive).
     text = re.sub(r"<ncchoices>.*?</ncchoices>", "", text, flags=re.S | re.I)
@@ -240,8 +244,9 @@ def strip_agent_artifacts(text: str) -> str:
         text,
         flags=re.M | re.I,
     )
-    # 4. Collapse blank-line runs left behind; strip edges.
-    text = re.sub(r"\n\n+", "\n", text)
+    # 4. Collapse blank-line runs left behind (chat density); strip edges.
+    if collapse_blank_lines:
+        text = re.sub(r"\n\n+", "\n", text)
     return text.strip()
 
 

@@ -279,5 +279,50 @@ class StripAgentArtifactsTests(unittest.TestCase):
         self.assertEqual(sr.strip_agent_artifacts("  \n\n  "), "")
 
 
+
+class StripAgentArtifactsMarkdownTests(unittest.TestCase):
+    """dev.to markdown article bodies need artifact stripping WITHOUT collapsing
+    paragraph blank lines — the chat-mode collapse destroys markdown layout.
+    """
+
+    def test_default_collapses_blank_lines(self):
+        self.assertEqual(sr.strip_agent_artifacts("a\n\n\nb"), "a\nb")  # documents current default
+
+    def test_markdown_mode_preserves_paragraph_blanks(self):
+        out = sr.strip_agent_artifacts("# T\n\n第一段。\n\n第二段。", collapse_blank_lines=False)
+        self.assertIn("\n\n第一段。", out)
+        self.assertIn("\n\n第二段。", out)
+
+    def test_markdown_mode_strips_ncchoices_paired(self):
+        raw = "- 標題\n\n<ncchoices>{\"v\":1}</ncchoices>\n\n下一段"
+        out = sr.strip_agent_artifacts(raw, collapse_blank_lines=False)
+        self.assertEqual(out, "- 標題\n\n\n\n下一段")  # ncchoices gone, BOTH paragraph blank lines preserved
+
+    def test_markdown_mode_strips_unclosed_ncchoices_to_eof(self):
+        self.assertEqual(
+            sr.strip_agent_artifacts("正文\n\n<ncchoices>{partial", collapse_blank_lines=False),
+            "正文",
+        )
+
+    def test_markdown_mode_strips_harness_marker_lines(self):
+        raw = "內容。\n[skill-status:ok]\nskill-563f90ef-d26d-4afb-a4c4-a333472e97bf:123\n結語。"
+        out = sr.strip_agent_artifacts(raw, collapse_blank_lines=False)
+        self.assertNotIn("skill-status", out)
+        self.assertNotIn("skill-563f90ef", out)
+        self.assertIn("內容。", out)
+        self.assertIn("結語。", out)
+        self.assertIn("\n\n", out)  # blank lines NOT collapsed
+
+    def test_markdown_mode_preserves_source_markers(self):
+        text = "[來源 #1] 引用文字"
+        self.assertEqual(sr.strip_agent_artifacts(text, collapse_blank_lines=False), text)  # strip rules must NOT touch [來源 #N]
+
+    def test_default_mode_unchanged_for_existing_callers(self):
+        raw = "建議維持原路線。\n\n<ncchoices>{\"v\":1}</ncchoices>\n[skill-status:ok]"
+        expected = "建議維持原路線。"
+        self.assertEqual(sr.strip_agent_artifacts(raw), expected)
+        self.assertEqual(sr.strip_agent_artifacts(raw, collapse_blank_lines=True), expected)  # explicit True == default
+
+
 if __name__ == "__main__":
     unittest.main()

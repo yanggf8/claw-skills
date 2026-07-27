@@ -8,6 +8,9 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
+SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
+sys.path.insert(0, os.path.abspath(SKILLS_LIB))
+from skill_runner import strip_agent_artifacts
 
 SKILL_NAME, STREAM_NAME, SERIES_SLUG = "mindfulness-spirit", "mindfulness", "inner-algorithm"
 HISTORY_LIMIT, TAGS = 8, ["ai", "mindfulness", "spirituality", "technology"]
@@ -140,13 +143,14 @@ def run_writer_and_checklist(writer_prompt):
         return None, None, 1
 
     writer_output = writer.stdout or ""
+    writer_output = strip_agent_artifacts(writer_output, collapse_blank_lines=False)
     checklist_template = (PROMPTS_DIR / "checklist.md.tmpl").read_text(encoding="utf-8")
     checklist_prompt = checklist_template.replace("{{WRITER_OUTPUT}}", writer_output)
     checklist = run_nullclaw_agent(checklist_prompt, 300)
     if checklist.returncode != 0:
         reason = agent_failure_reason(checklist)
         print(f"[checklist] degraded: {reason}", file=sys.stderr)
-        return writer_output, f"checklist phase degraded: {reason}", 0
+        return writer_output, f"checklist phase degraded: {reason}", checklist.returncode
 
     return checklist.stdout or "", "checklist passed", 0
 
@@ -173,6 +177,7 @@ def cmd_write(args):
     final_body, validation_summary, code = run_writer_and_checklist(paths["writer"].read_text(encoding="utf-8"))
     if code != 0:
         return code
+    final_body = strip_agent_artifacts(final_body, collapse_blank_lines=False)
     paths["body"] = work_dir / "body.md"
     paths["body"].write_text(final_body, encoding="utf-8")
 
