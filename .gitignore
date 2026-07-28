@@ -22,3 +22,9 @@ inflation-con/config.json
 
 # chipcon runtime config (local; not committed)
 chipcon/config.json
+
+# Rust build artifacts
+target/
+
+# built skill binaries (produced by tools/install-skill.sh, never committed)
+*/bin/

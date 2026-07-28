@@ -87,7 +87,11 @@ The smallest contract surface, and it has a complete Python test file to port. W
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/claw-core", "crates/doughcon"]
+# Only claw-core exists at this point. Cargo HARD-ERRORS on a workspace member
+# whose directory is absent ("failed to load manifest for workspace member"),
+# so listing crates/doughcon here would make Task 1 unbuildable. Task 8 adds it
+# when it creates the crate.
+members = ["crates/claw-core"]
 
 [workspace.package]
 edition = "2021"
@@ -1815,7 +1819,13 @@ and no body; --et-hour is not range-validated."
 
 **Argument parsing:** hand-rolled, not `clap`. The surface is four flags and `clap` would add a dependency plus its own `--help` formatting; more importantly `clap` would *validate* `--et-hour` as a range if configured naively, and the characterization test pins that it is **not** validated.
 
-- [ ] **Step 1: Create the manifest**
+- [ ] **Step 1: Register the crate in the workspace, then create the manifest**
+
+Task 1 deliberately left `crates/doughcon` out of `members` because cargo hard-errors on a member directory that does not exist. Add it back now, in the root `Cargo.toml`:
+
+```toml
+members = ["crates/claw-core", "crates/doughcon"]
+```
 
 `crates/doughcon/Cargo.toml`:
 ```toml
