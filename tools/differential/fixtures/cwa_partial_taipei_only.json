@@ -1,0 +1,50 @@
+{
+  "success": true,
+  "result": null,
+  "records": {
+    "datasetDescription": "三十六小時天氣預報",
+    "location": [
+      {
+        "locationName": "臺北市",
+        "weatherElement": [
+          {
+            "elementName": "Wx",
+            "time": [
+              {
+                "startTime": "2020-06-01 18:00:00",
+                "parameter": { "parameterName": "晴時多雲", "parameterValue": "2" }
+              }
+            ]
+          },
+          {
+            "elementName": "MinT",
+            "time": [
+              {
+                "startTime": "2020-06-01 18:00:00",
+                "parameter": { "parameterName": "23", "parameterUnit": "C" }
+              }
+            ]
+          },
+          {
+            "elementName": "MaxT",
+            "time": [
+              {
+                "startTime": "2020-06-01 18:00:00",
+                "parameter": { "parameterName": "28", "parameterUnit": "C" }
+              }
+            ]
+          },
+          {
+            "elementName": "PoP",
+            "time": [
+              {
+                "startTime": "2020-06-01 18:00:00",
+                "parameter": { "parameterName": "10", "parameterUnit": "百分比" }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+臺北市：多雲時晴，高溫 28°C，降雨機率 20%。
+建議：短袖 + 薄外套，午後可能悶熱。
+步行 <25分鐘可接受；若 >40分鐘請帶水。
+
+<ncchoices>
+{"type":"inline","choices":[{"label":"OK"}]}
+</ncchoices>
+[skill-status:ok]
+[trace:job-weather-123:1]
+skill-b8993369-96fd-4890:3801

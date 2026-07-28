@@ -70,6 +70,26 @@ The general rule: **model what the Python actually uses**, not what its values l
 - Tasks sharing a crate's `lib.rs` and `Cargo.toml` must run **sequentially**. Independent tracks (a different repo, a different language) parallelise safely.
 - A concurrent-edit race was still observed: one agent's differential run executed against a `main.rs` that another agent was mid-write on. **Re-run any whole-system check after the tree settles** — do not trust a result produced during a write window.
 
+## 5b. Found while executing Phase ② — the installer was never generic
+
+`tools/install-skill.sh` advertises `install-skill.sh <skill-name>` but its
+smoke test was hardcoded to **doughcon's** argument surface
+(`--mode record --et-hour 99`). Phase ① never ran it against a second skill, so
+the assumption held until `weather` arrived and was refused outright. The strict
+refusal was correct; the check was not.
+
+The generic replacement: feed a flag **no skill defines** and require the binary
+to load and reject it through its own parser (exit 2). That proves the artifact
+executes and its argument handling runs, without performing a real invocation —
+`weather` would make live HTTP calls, which an install step must not do.
+
+**And then `set -e` bit again.** The probe is *expected* to exit non-zero, so
+running it bare aborted the script before its own check could execute — the
+exact failure this document already records in section 3. Writing the lesson
+down did not prevent repeating it; putting the probe inside an `if` (where
+`set -e` is suspended) did. Assume any deliberately-failing command in a
+`set -e` script needs that treatment.
+
 ## 6. Still open at the end of Phase ①
 
 Recorded so Phase ② can decide whether to close them:

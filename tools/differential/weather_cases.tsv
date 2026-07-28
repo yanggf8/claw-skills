@@ -1,0 +1,16 @@
+# name	argv	hko	cwa	om	api_key	job_id	expect_exit
+# Modes for hko/cwa/om: fixture filename under fixtures/, or FAIL (HTTP 500).
+hk_only	--location 香港	hko_ok.json	empty.json	empty.json	testkey	t-hk	0
+tw_only	--location 臺北市	empty.json	cwa_taipei.json	empty.json	testkey	t-tw	0
+mixed	--location 香港 --location 臺北市	hko_ok.json	cwa_taipei.json	empty.json	testkey	t-mixed	0
+hk_aliases_b4	--location 香港 --location 九龍 --location 香港	hko_ok.json	empty.json	empty.json	testkey	t-b4	0
+cwa_total_fail	--location 臺北市	empty.json	FAIL	om_ok.json	testkey	t-cwa-fail	0
+cwa_partial_b	--location 臺北市 --location 高雄市	empty.json	cwa_partial_taipei_only.json	om_ok.json	testkey	t-partial	0
+cwa_partial_then_error_b1	--location 臺北市 --location 高雄市	empty.json	cwa_poison_b1.json	om_ok.json	testkey	t-b1	0
+om_total_fail_b2	--location 臺北市	empty.json	empty.json	FAIL		t-b2	0
+empty_api_key_b8	--location 臺北市	empty.json	empty.json	om_ok.json		t-b8	0
+location_null_b9	--location 臺北市	empty.json	cwa_location_null.json	om_ok.json	testkey	t-b9	0
+half_temp_b6	--location 臺北市	empty.json	empty.json	om_half_temp.json		t-b6	0
+zero_pop_b14	--location 臺北市	empty.json	empty.json	om_zero_pop.json		t-b14	0
+no_job_id	--location 香港	hko_ok.json	empty.json	empty.json	testkey		0
+deliver_fail	--location 香港 --deliver-to 999	hko_ok.json	empty.json	empty.json	testkey	t-del	1

@@ -1,0 +1,6 @@
+msg
+[skill-status:degraded]
+[trace:x:2]
+[skill-event:retry]
+  SKILL-B8993369-96FD:12  
+msg2

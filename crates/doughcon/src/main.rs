@@ -9,40 +9,10 @@ use std::io::Write;
 use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use claw_core::marker::SkillStatus;
 use claw_core::outcome::{finish, Finish};
+use doughcon::cli::{self, Gate};
 use doughcon::pizzint;
 use doughcon::report::{derive_index, format_body, NO_DATA};
 use jiff::{tz::TimeZone, Timestamp, Zoned};
-
-struct Args {
-    mode: String,
-    deliver_to: Option<String>,
-    account: String,
-    et_hour: Option<i32>,
-}
-
-fn parse_args() -> Result<Args, String> {
-    let mut a = Args { mode: "deliver".into(), deliver_to: None, account: "main".into(), et_hour: None };
-    let argv: Vec<String> = std::env::args().skip(1).collect();
-    let mut i = 0;
-    while i < argv.len() {
-        let need = |i: usize| -> Result<String, String> {
-            argv.get(i + 1).cloned().ok_or_else(|| format!("{} requires a value", argv[i]))
-        };
-        match argv[i].as_str() {
-            "--mode" => { a.mode = need(i)?; i += 2; }
-            "--deliver-to" => { a.deliver_to = Some(need(i)?); i += 2; }
-            "--account" => { a.account = need(i)?; i += 2; }
-            // Deliberately NOT range-validated: the Python accepts -1 and 99,
-            // which become permanent skips. Pinned by characterization test.
-            "--et-hour" => { a.et_hour = Some(need(i)?.parse().map_err(|_| "--et-hour must be an integer".to_string())?); i += 2; }
-            other => return Err(format!("unknown argument {other}")),
-        }
-    }
-    if a.mode != "deliver" && a.mode != "record" {
-        return Err(format!("--mode must be deliver or record, got {}", a.mode));
-    }
-    Ok(a)
-}
 
 fn history_log_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -75,27 +45,33 @@ fn main() {
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
 
-    let args = match parse_args() {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let args = match cli::parse_args(&argv) {
         Ok(a) => a,
         Err(e) => { let _ = writeln!(err, "[ERROR: {e}]"); std::process::exit(2); }
     };
 
     // DST gate. Fail-open: if tz data is unavailable, warn and run anyway.
+    // Clock read stays here; the pure decision is `cli::gate`.
     if let Some(target) = args.et_hour {
         match TimeZone::get("America/New_York") {
             Err(_) => { let _ = writeln!(err, "[WARN: --et-hour requires zoneinfo; running unconditionally]"); }
             Ok(ny) => {
                 let now = Timestamp::now().to_zoned(ny);
-                if now.hour() as i32 != target {
-                    // Python appends the tz abbreviation: "... != target 20 (EDT)]".
-                    // Dropping it is a live stderr change AND a guaranteed
-                    // differential diff on every gate_skip run.
-                    let _ = writeln!(
-                        err,
-                        "[skip: US-Eastern hour {:02} != target {:02} ({})]",
-                        now.hour(), target, now.strftime("%Z")
-                    );
-                    std::process::exit(finish(Finish::Marked { status: SkillStatus::Ok, exit: 0 }, &mut out));
+                let abbrev = now.strftime("%Z").to_string();
+                match cli::gate(now.hour() as i32, &abbrev, Some(target)) {
+                    Gate::Run => {}
+                    Gate::Skip { current_hour, abbrev } => {
+                        // Python appends the tz abbreviation: "... != target 20 (EDT)]".
+                        // Dropping it is a live stderr change AND a guaranteed
+                        // differential diff on every gate_skip run.
+                        let _ = writeln!(
+                            err,
+                            "[skip: US-Eastern hour {:02} != target {:02} ({})]",
+                            current_hour, target, abbrev
+                        );
+                        std::process::exit(finish(Finish::Marked { status: SkillStatus::Ok, exit: 0 }, &mut out));
+                    }
                 }
             }
         }

@@ -1,0 +1,10 @@
+{
+  "weatherForecast": [
+    {
+      "forecastWeather": "多雲",
+      "forecastMintemp": { "value": 24 },
+      "forecastMaxtemp": { "value": 30 },
+      "PSR": "高"
+    }
+  ]
+}

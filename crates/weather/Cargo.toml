@@ -1,0 +1,18 @@
+[package]
+name = "weather"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "weather"
+path = "src/main.rs"
+
+[lib]
+name = "weather"
+path = "src/lib.rs"
+
+[dependencies]
+claw-core = { path = "../claw-core" }
+ureq = "2"
+serde_json = "1"
+jiff = { version = "0.1", features = ["tzdb-bundle-always"] }

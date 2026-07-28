@@ -1,0 +1,3 @@
+start
+[skill-event] fell back to open-meteo
+end

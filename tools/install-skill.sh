@@ -26,9 +26,26 @@ cp "$built" "$stage"
 chmod +x "$stage"
 
 echo "==> smoke-testing the staged artifact"
-if ! "$stage" --mode record --et-hour 99 >/dev/null 2>&1; then
+# Generic across skills: feed a flag no skill defines and require the binary to
+# LOAD and reject it through its own argument parser (exit 2), rather than
+# crashing or hanging. A skill-specific invocation was hardcoded here in Phase 1
+# (doughcon's --et-hour), which made the installer refuse every other skill.
+# Deliberately does NOT run a real invocation: weather would make live HTTP
+# calls, which is not something an install step may do.
+# NOTE: `set -e` aborts on a non-zero command, and the probe is EXPECTED to
+# return 2 — so it must run inside an `if`, where set -e is suspended. Running
+# it bare killed the script before this very check could execute. That failure
+# mode is recorded in docs/specs/2026-07-28-phase1-lessons.md and was
+# reintroduced here anyway.
+if "$stage" --__install_smoke_probe__ >/dev/null 2>&1; then
+  smoke_rc=0
+else
+  smoke_rc=$?
+fi
+if [ "$smoke_rc" -ne 2 ]; then
   rm -f "$stage"
-  echo "FAIL: staged binary did not run cleanly (--et-hour 99 must be a no-op skip)" >&2
+  echo "FAIL: staged binary did not reject an unknown flag with exit 2 (got $smoke_rc)" >&2
+  echo "      Either it crashed, hung, or its arg parser accepts anything." >&2
   exit 1
 fi
 

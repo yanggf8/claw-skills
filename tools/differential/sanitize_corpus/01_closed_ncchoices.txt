@@ -1,0 +1,5 @@
+advice before
+<ncchoices>
+{"buttons":[1]}
+</ncchoices>
+advice after

@@ -1,0 +1,3 @@
+keep me
+[skill-status:ok]
+also keep

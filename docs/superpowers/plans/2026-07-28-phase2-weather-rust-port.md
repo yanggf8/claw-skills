@@ -674,14 +674,14 @@ fn open_meteo_rounds_half_to_even_like_python() {
 #[test]
 fn open_meteo_keeps_a_zero_rain_probability() {
     // B14: "0" is truthy in Python, so the field is rendered.
-    let body = r#"{"daily":{"weathercode":[1],"temperature_2m_max":[30.0],"temperature_2m_min":[24.0],"precipitation_probability_max":[0]}}"#;
+    let body = r#"{"daily":{"weather_code":[1],"temperature_2m_max":[30.0],"temperature_2m_min":[24.0],"precipitation_probability_max":[0]}}"#;
     let (line, _) = open_meteo::format("臺北市", &open_meteo::parse(body).unwrap());
     assert!(line.contains("降雨機率0%"), "line was {line}");
 }
 
 #[test]
 fn open_meteo_success_line_is_suffixed_as_fallback() {
-    let body = r#"{"daily":{"weathercode":[1],"temperature_2m_max":[30.0],"temperature_2m_min":[24.0],"precipitation_probability_max":[10]}}"#;
+    let body = r#"{"daily":{"weather_code":[1],"temperature_2m_max":[30.0],"temperature_2m_min":[24.0],"precipitation_probability_max":[10]}}"#;
     let (line, row) = open_meteo::format("臺北市", &open_meteo::parse(body).unwrap());
     assert!(line.ends_with("（備援）"), "line was {line}");
     assert!(row.is_some());

@@ -1,0 +1,3 @@
+keep
+[trace]
+keep2
