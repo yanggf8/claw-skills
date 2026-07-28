@@ -4,7 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Personal agent skills — Python scripts invoked as cron jobs or on-demand by the **nullclaw**, **openclaw**, or **nanoclaw** agent. Each skill lives in its own directory. Same source, same `SKILL.md` format, three hosts.
+Personal agent skills invoked as cron jobs or on-demand by the **nullclaw**, **openclaw**, or **nanoclaw** agent. Each skill lives in its own directory. Same source, same `SKILL.md` format, three hosts.
+
+**The repo is mid-port from Python to Rust** (standing instruction: the whole stack is Rust). Today it is both:
+
+- `lib/` + `<skill>/scripts/run.py` — the Python that is **live**. Every cron job still runs it.
+- `crates/` — a Cargo workspace: `claw-core` (config / telegram / delivery / markers / budget / outcome) plus one binary crate per ported skill. **`doughcon` is ported but NOT live** — its `SKILL.md` still points at the Python; cutover is one line.
+
+**The Python `lib/` cannot be deleted when a skill is ported.** `cct` (`~/a/cct/skills/cct`) and `autocli` (`~/.nullclaw/skills/autocli`) import `delivery` and `trace_marker` from it from **outside this repo**. Both implementations coexist until every consumer moves.
+
+Porting sequence and status: `docs/superpowers/plans/2026-07-28-con-family-rust-port-phase1.md` (Phase ① done). **Before porting anything else, read `docs/specs/2026-07-28-phase1-lessons.md`** — it records the test anti-patterns that produced a fully green suite protecting nothing, the Python-vs-Rust semantic traps, and toolchain facts verified by compiling rather than assuming.
 
 ## Current agent support
 
@@ -187,9 +196,29 @@ Classification, straight from that function:
 | timeout | `timeout` | 3 |
 
 Emit them **after** delivery is confirmed, and only when `NULLCLAW_JOB_ID` is
-set, so manual runs stay clean. Anything else on stdout is the message body —
+set, so manual runs stay clean. `NULLCLAW_JOB_ID` is the per-**run** trace id, and
+`classifySkillRun` compares the `[trace:]` payload to it byte for byte — read it
+fresh each run, never cache it. Anything else on stdout is the message body —
 keep diagnostics on stderr. `verified` is not a boolean: `0=unverified 1=ok
 2=degraded 3=failed_verify`.
+
+### 1b. Scheduled skills now receive a delivery budget (since 2026-07-28)
+
+`NULLCLAW_SKILL_TIMEOUT` and `NULLCLAW_SKILL_STARTED` are set on **scheduled**
+spawns as well as manual ones (nullclaw `35bca969`). Before that only the manual
+path set the timeout and `NULLCLAW_SKILL_STARTED` existed nowhere, so
+`delivery.py`'s elapsed-time branch had never executed in production and every
+scheduled delivery fell back to telegram's flat 30s cap.
+
+`NULLCLAW_SKILL_STARTED` is **CLOCK_MONOTONIC seconds** — the same clock domain
+as `time.monotonic()`. A wall-clock value makes `now - started` hugely negative,
+which `max(0.0, ...)` clamps to zero, so the budget silently does nothing while
+looking perfectly healthy. A job with no explicit timeout exports `0`, which
+`delivery.py`'s `if timeout <= 0` turns back into the 30s default.
+
+Net effect: telegram is capped at 3 attempts with 2s+5s backoff, so wall time
+stays under ~52s regardless of budget. The budget only tightens that bound; it
+never adds attempts.
 
 ### 2. Every cron job now runs `skill_contract` — there is no lax mode left
 
