@@ -159,6 +159,65 @@ nullclaw cron backup
 
 Cron expressions use UTC. Taiwan (CST) = UTC+8, EST = UTC-5.
 
+## Scheduler contract (hard constraints)
+
+Two rules any skill must satisfy, in **any** language. They bind a rewrite —
+Rust, Go, whatever — exactly as tightly as they bind the current Python.
+
+### 1. The stdout markers are matched literally
+
+`nullclaw`'s `src/cron.zig` → `classifySkillRun()` parses two exact lines out of
+stdout. Not a regex over prose, not JSON — literal marker lines:
+
+```
+[skill-status:ok|degraded|failed]
+[trace:<job id>]
+```
+
+Classification, straight from that function:
+
+| stdout | `failure_class` | `verified` |
+|--------|-----------------|------------|
+| both markers, status `ok` | — | 1 |
+| both markers, status `degraded` | `contract_degraded` | 2 |
+| both markers, status `failed` | `contract_failed` | 3 |
+| `[trace:]` present, no status line | `contract_missing` | 2 |
+| no `[trace:]` at all | `content_invalid` | 2 |
+| non-zero exit | `exec_error` | 3 |
+| timeout | `timeout` | 3 |
+
+Emit them **after** delivery is confirmed, and only when `NULLCLAW_JOB_ID` is
+set, so manual runs stay clean. Anything else on stdout is the message body —
+keep diagnostics on stderr. `verified` is not a boolean: `0=unverified 1=ok
+2=degraded 3=failed_verify`.
+
+### 2. Every cron job now runs `skill_contract` — there is no lax mode left
+
+All 38 jobs use `verification_mode = skill_contract`
+(`weather` 8, `commute` 7, `news` 6, `cct` 4, `doughcon` 4, `cct2` 2,
+`ainews` 2, one each for the rest). A skill that gets the markers wrong alerts
+the same day.
+
+This is new. The four `cct` jobs sat on `verification_mode = none` until
+2026-07-27, which passes unconditionally — that is why a dead upstream pipeline
+delivered stale reports for 50 days without a single alert. The buffer is gone,
+which is the point: mistakes are now loud instead of silent.
+
+### Related: `lib/` has dependents outside this repo
+
+`~/.nullclaw/skills/lib` symlinks to this repo's `lib/`, and two skills that do
+**not** live here resolve their imports through it:
+
+| Skill | Real location | Imports |
+|-------|---------------|---------|
+| `cct` | `~/a/cct/skills/cct` | `delivery`, `trace_marker`, via `_resolve_skills_lib()` → `../../lib` |
+| `autocli` | `~/.nullclaw/skills/autocli` (a real dir, not a symlink) | same |
+
+Removing or porting Python `lib/` breaks both at import time — non-zero exit,
+so cron records `exec_error`. Decide the compatibility story (keep a Python
+shim / move those skills too / vendor a copy) *before* the port, not after a
+cron finds out.
+
 ## Testing
 
 `lib/test_*.py` are plain `unittest` files, runnable directly with no pytest or runner:
