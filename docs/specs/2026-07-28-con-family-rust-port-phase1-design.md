@@ -6,7 +6,7 @@ Reviewers: Claude (author) → Codex (adversarial review, corroborated line-by-l
 
 ## Why
 
-The standing instruction is that the whole stack is Rust. `claw-skills` is currently ~8,400 lines of production Python across 12 skills plus a shared `lib/`, running as ~37 live nullclaw cron jobs. This document covers **Phase ① only**.
+The standing instruction is that the whole stack is Rust. `claw-skills` is currently ~8,400 lines of production Python across 12 skills plus a shared `lib/`. All 38 live nullclaw cron jobs run `verification_mode = skill_contract` — there is no lax mode left, so a skill that gets the markers wrong alerts the same day (`CLAUDE.md`, Scheduler contract). Of those 38, four (`cct`) and two (`ainews`) belong to repos outside this one; 32 are in scope across the four phases. This document covers **Phase ① only**.
 
 ## Decomposition
 
@@ -25,7 +25,7 @@ Out of scope entirely: `cct` (owned by `~/a/cct`), `ainews` (owned by `~/b/ainew
 
 ## Verified runtime facts
 
-Every claim below was read from source. Cited so the next session does not re-derive them.
+**The canonical statement of the scheduler contract is `CLAUDE.md` → "Scheduler contract (hard constraints)"** (committed `c7ccf8c`, ahead of this port). It already pins the literal stdout markers, the full classification table, and the `lib/` coupling a port would break. This section is *not* a second source of truth — it records what was re-verified against nullclaw's source while designing the port, plus the facts that commit does not cover (V1, V2, V5, V7, V9, V10, V11). Where the two overlap they agree; if they ever diverge, `CLAUDE.md` wins and this file is wrong.
 
 **V1. nullclaw executes native binaries as skills; no nullclaw change is needed to launch Rust.**
 `resolveInterpreterPrefix` (`nullclaw/src/cron.zig:1928`) returns an empty prefix when frontmatter declares `interpreter: none|native`, or when the script path does not end in `.py`. `buildSkillCommand` (`:1943`) then runs the path directly.
