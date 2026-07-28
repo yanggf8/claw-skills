@@ -1,5 +1,21 @@
 # claw-skills Rust Port — Phase ① Implementation Plan
 
+> ## ⚠ STATUS: IMPLEMENTED (commit `0ba28a1`). This plan is now a HISTORICAL RECORD.
+>
+> **The shipped code under `crates/` is the reference. Where a code block below
+> disagrees with the shipped source, the shipped source is right** — executing
+> this plan surfaced two real behaviour bugs and four test-infrastructure
+> defects that the written code blocks still contain.
+>
+> **Before starting Phase ②, read `docs/specs/2026-07-28-phase1-lessons.md`.**
+> It carries the durable findings: the test anti-patterns that produced a green
+> suite protecting nothing, the Python-vs-Rust semantic traps, and the verified
+> toolchain facts (Zig 0.16, jiff, ureq, `IFS=$'\t'`, `set -e`).
+>
+> Blocks known to be wrong below are marked **⚠ SUPERSEDED** inline.
+> Still open at the end of Phase ①: Task 10 Steps 5-7 (deploy + soak) and
+> Task 12 (cutover) were deliberately NOT executed — both change live behaviour.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the `claw-core` Rust foundation and port `doughcon` to Rust, proving that a native binary runs correctly under nullclaw cron with intact skill-contract markers and Telegram delivery.
@@ -550,6 +566,8 @@ The retry engine. Tested against an in-process stub HTTP server so no network an
 
 - [ ] **Step 1: Write the stub server**
 
+**⚠ SUPERSEDED — see `crates/claw-core/tests/support/stub_server.rs` as shipped.** Two defects in the block below: `unwrap_or(Some(200))` makes the stub **fail open**, so an unscripted request silently turns a scripted-failure test green; and `rx.try_recv().is_ok()` is false for both `Empty` and `Disconnected`, so the shutdown never fires and every stub leaks a thread.
+
 `crates/claw-core/tests/support/stub_server.rs`:
 ```rust
 //! Minimal single-purpose HTTP stub. Serves a scripted sequence of responses so
@@ -650,6 +668,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use support::stub_server;
 
+```
+**⚠ SUPERSEDED — see the shipped `tests/telegram.rs`.** One temp config path per *process* races: `File::create` truncates while another thread's `send()` reads, yielding "no token" and zero HTTP attempts. Three different tests were observed failing. The shipped version uses one file per *call* via an `AtomicUsize`.
+
+```rust
 fn cfg_with_token() -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!("claw-core-tg-{}.json", std::process::id()));
@@ -1653,6 +1675,14 @@ def fixture(name):
 
 
 class IndexDerivationTests(unittest.TestCase):
+    # ⚠ SUPERSEDED — see the shipped doughcon/tests/test_run_characterization.py.
+    # The version below RE-IMPLEMENTS the derivation and asserts against its own
+    # copy, so it passes against a deliberately broken run.py. It was the
+    # declared oracle and pinned nothing. The shipped version drives run.py's
+    # real main() and reads the index off the rendered body.
+    # Also: contextlib.redirect_stdout CANNOT capture the markers, because
+    # trace_marker binds stream=sys.stdout as a default argument at definition
+    # time. Capture at the file-descriptor level.
     """The -1 sentinel is NOT 'index == 0'."""
 
     def _index(self, data):
@@ -2008,6 +2038,10 @@ use std::time::Duration;
 /// stays visible and is never the no-data sentinel. Collapsing this to
 /// `Option<i64>` would silently turn such a payload into `degraded`, which
 /// nullclaw escalates to last_status=error plus a retry.
+```
+**⚠ SUPERSEDED — see the shipped `crates/doughcon/src/pizzint.rs`.** `Int(i64)` still gets Python's zero-ness wrong in the other direction: `raw_index == 0` is also true for `0.0`, `-0.0` and `False`. The shipped enum carries the two things Python actually uses — the rendered string and the `== 0` answer.
+
+```rust
 #[derive(Debug, Clone, PartialEq)]
 pub enum RawIndex {
     Missing,
@@ -2475,6 +2509,8 @@ list is a bug."
 - [ ] **Step 1: Add the constant and helper in cron.zig**
 
 Beside `const SKILL_TIMEOUT_ENV = "NULLCLAW_SKILL_TIMEOUT";` (`cron.zig:1520`):
+**⚠ SUPERSEDED — Zig 0.16 has no `std.posix.clock_gettime`.** Use this repo's own pattern from `src/compat.zig:274`. Also: inside `cron.zig` module functions are called unqualified (no `cron_mod` self-import), the parameter must be `u64` to accept the call site's local, and `try` will not compile inside `fn runQueueWorker(...) void`.
+
 ```zig
 const SKILL_STARTED_ENV = "NULLCLAW_SKILL_STARTED";
 
