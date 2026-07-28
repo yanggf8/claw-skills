@@ -38,3 +38,45 @@ Every entry is a deliberate decision. Anything not listed here is a bug.
 11. **Argument-parser surface differs.** The hand parser rejects `--mode=deliver`
     (space form only) and has no `--help`, where `argparse` accepts both. Error
     text differs. `--et-hour` remains deliberately un-range-checked in both.
+
+---
+
+# Phase ② (weather) — intentional differences from the Python
+
+Every entry is a deliberate decision. Anything not listed here is a bug.
+The end-to-end differential (`tools/differential/weather.sh`) applies exactly
+two masks before comparing; residual diffs after those masks are findings.
+
+12. **`HKO_BASE_URL` / `CWA_BASE_URL` / `OPEN_METEO_BASE_URL` are test seams.**
+    Same role as `DOUGHCON_BASE_URL` (entry 3): production defaults when unset.
+    The frozen Python has no equivalent env vars; the differential redirects it
+    by monkeypatching `urllib.request.Request` and routing on URL substring
+    (`hko` / `opendata.cwa` / `open-meteo`). Scheduled runs are unaffected.
+
+13. **`elapsed_ms` digits differ** in `[skill-event] … and took Nms`. Both sides
+    time only the Open-Meteo window (Python `run.py:301-303`; Rust
+    `orchestrate.rs` Instant around `open_meteo_for_locations`). The quantity
+    matches; wall-clock jitter does not. Differential mask:
+    `and took \d+ms` → `and took <MS>ms`.
+
+14. **Exception text inside CWA failure reasons and Open-Meteo WARN tails
+    differs.** Python embeds `type(e).__name__: {e}` (e.g. `HTTPError: HTTP
+    Error 500: …`); Rust embeds the `ureq` / adapter error string (e.g.
+    `Error: http status: 500`). Failure *class*, exit code, skill status, and
+    the non-exception reason strings (`CWA_API_KEY is not set…`, `CWA returned
+    an empty record list`, `CWA did not return data for N of M locations`,
+    `KeyError: 'elementName'`) match. Differential masks:
+    - `CWA request failed with \w+: .*` → `CWA request failed with <EXC>`
+    - `[WARN: Open-Meteo unavailable for … - .*]` tail → `<EXC>]`
+
+15. **Agent binary is resolved through `$HOME` on both sides.** Python:
+    `os.path.expanduser("~/nullclaw/zig-out/bin/nullclaw")`. Rust:
+    `std::env::var_os("HOME")` + the same relative path. This is the shared
+    injection seam the weather differential depends on — not a divergence.
+    Do not replace the Rust path with a constant or a bespoke env var.
+
+### Phase ② differential result (Task 10)
+
+Seam verification: both sides emit the planted fixed advice string under
+`HOME=$STAGE`. All 14 cases in `tools/differential/weather_cases.tsv` match
+after the two masks above — zero residual findings.

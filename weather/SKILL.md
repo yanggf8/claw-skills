@@ -11,15 +11,15 @@ Fetch weather forecast for one or more locations (CWA for Taiwan, HKO for Hong K
 ## Script
 
 ```
-~/.nullclaw/skills/weather/scripts/run.py
+~/.nullclaw/skills/weather/bin/weather
 ```
 
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/weather/scripts/run.py --location 新北市 --location 臺北市
-python3 ~/.nullclaw/skills/weather/scripts/run.py --location 香港
-python3 ~/.nullclaw/skills/weather/scripts/run.py --location 香港 --location 臺北市
+python3 ~/.nullclaw/skills/weather/bin/weather --location 新北市 --location 臺北市
+python3 ~/.nullclaw/skills/weather/bin/weather --location 香港
+python3 ~/.nullclaw/skills/weather/bin/weather --location 香港 --location 臺北市
 ```
 
 ## Options

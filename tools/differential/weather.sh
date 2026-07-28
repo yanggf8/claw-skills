@@ -18,6 +18,7 @@ EXPECTED_FIELDS=8
 [ -f "$PY_RUN" ] || { echo "missing $PY_RUN" >&2; exit 1; }
 
 # Shared HOME for both sides: agent plant + isolated ~/.nullclaw (no real .env).
+# Same directory skeleton for BOTH — Phase ① asymmetry (mkdir only on Python) is a defect.
 mkdir -p "$STAGE/nullclaw/zig-out/bin" "$STAGE/.nullclaw"
 cat > "$STAGE/nullclaw/zig-out/bin/nullclaw" <<EOF
 #!/bin/sh
@@ -33,7 +34,7 @@ mask() {
   sed -E \
     -e 's/and took [0-9]+ms/and took <MS>ms/g' \
     -e 's/CWA request failed with [A-Za-z_][A-Za-z0-9_]*: .*/CWA request failed with <EXC>/g' \
-    -e 's/(\[WARN: Open-Meteo unavailable for [^ -][^]]* - ).*/\1<EXC>]/g'
+    -e 's/(\[WARN: Open-Meteo unavailable for .+ - ).*/\1<EXC>]/g'
 }
 
 # ── stub: one local HTTP server; mode is FAIL or a fixture path ──
@@ -89,9 +90,7 @@ wait_port() {
 }
 
 # Common env for both implementations: isolated HOME, no host CLAW_* bleed.
-# CWA_API_KEY is set per-case (may be empty).
 base_env() {
-  # shellcheck disable=SC2086
   env -u CLAW_ENV -u CLAW_CONFIG \
     HOME="$STAGE" \
     HKO_BASE_URL="$1" \
@@ -105,42 +104,12 @@ base_env() {
 run_python() {
   local argv=$1 hko_url=$2 cwa_url=$3 om_url=$4 api_key=$5 job_id=$6 out=$7 err=$8
   base_env "$hko_url" "$cwa_url" "$om_url" "$api_key" "$job_id" \
-    python3 - "$argv" <<'PY' > "$out" 2> "$err"
-import os, sys, runpy
-import urllib.request
-
-# Route by URL substring → three local stubs (not one catch-all redirect).
-_orig = urllib.request.Request
-def patched(url, *a, **k):
-    u = url if isinstance(url, str) else str(url)
-    if "hko" in u or "weather.gov.hk" in u:
-        return _orig(os.environ["HKO_BASE_URL"], *a, **k)
-    if "opendata.cwa" in u:
-        return _orig(os.environ["CWA_BASE_URL"], *a, **k)
-    if "open-meteo" in u:
-        return _orig(os.environ["OPEN_METEO_BASE_URL"], *a, **k)
-    return _orig(url, *a, **k)
-urllib.request.Request = patched
-
-sys.argv = ["run.py"] + (sys.argv[1].split() if sys.argv[1] else [])
-runpy.run_path(
-    os.path.join(os.path.dirname(__file__) if False else "",  # placate linters
-                 ),
-    run_name="__main__",
-)
-PY
-  # The heredoc above cannot interpolate ROOT; re-invoke properly:
-}
-
-# Python runner — separate function so ROOT is in scope via env.
-run_python_real() {
-  local argv=$1 hko_url=$2 cwa_url=$3 om_url=$4 api_key=$5 job_id=$6 out=$7 err=$8
-  base_env "$hko_url" "$cwa_url" "$om_url" "$api_key" "$job_id" \
     WEATHER_RUN="$PY_RUN" \
     python3 - "$argv" <<'PY' > "$out" 2> "$err"
 import os, sys, runpy
 import urllib.request
 
+# Route by URL substring → three local stubs (not one catch-all redirect).
 _orig = urllib.request.Request
 def patched(url, *a, **k):
     u = url if isinstance(url, str) else str(url)
@@ -181,7 +150,7 @@ hko_url="http://127.0.0.1:${hko_port}/"
 cwa_url="http://127.0.0.1:${cwa_port}/"
 om_url="http://127.0.0.1:${om_port}/"
 
-run_python_real "--location 香港" "$hko_url" "$cwa_url" "$om_url" "testkey" "t-seam" \
+run_python "--location 香港" "$hko_url" "$cwa_url" "$om_url" "testkey" "t-seam" \
   "$STAGE/seam.py.out" "$STAGE/seam.py.err"
 py_seam_exit=$?
 run_rust "--location 香港" "$hko_url" "$cwa_url" "$om_url" "testkey" "t-seam" \
@@ -221,10 +190,8 @@ while IFS=$'\001' read -r name argv hko_mode cwa_mode om_mode api_key job_id exp
   case "$name" in \#*) continue ;; esac
 
   # Assert field count — empty TSV columns must not shift later fields.
-  # (read with \001 delimiter already; recount via the original line.)
-  raw_line=$(grep -E "^${name}"$'\t' "$CASES" | head -1)
-  # Count fields: tr tabs to newlines and count non-... actually include empties.
-  field_count=$(printf '%s' "$raw_line" | awk -F'\t' '{print NF}')
+  raw_line=$(grep -F "${name}"$'\t' "$CASES" | head -1)
+  field_count=$(printf '%s\n' "$raw_line" | awk -F'\t' '{print NF}')
   if [ "$field_count" != "$EXPECTED_FIELDS" ]; then
     echo "FAIL $name: TSV field count $field_count != $EXPECTED_FIELDS (line: $raw_line)"
     fail=1
@@ -249,7 +216,7 @@ while IFS=$'\001' read -r name argv hko_mode cwa_mode om_mode api_key job_id exp
   cwa_url="http://127.0.0.1:${cwa_port}/"
   om_url="http://127.0.0.1:${om_port}/"
 
-  run_python_real "$argv" "$hko_url" "$cwa_url" "$om_url" "$api_key" "$job_id" \
+  run_python "$argv" "$hko_url" "$cwa_url" "$om_url" "$api_key" "$job_id" \
     "$STAGE/$name.py.out" "$STAGE/$name.py.err"
   py_exit=$?
   run_rust "$argv" "$hko_url" "$cwa_url" "$om_url" "$api_key" "$job_id" \
