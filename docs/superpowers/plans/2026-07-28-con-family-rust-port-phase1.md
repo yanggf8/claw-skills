@@ -8,6 +8,11 @@
 
 **Tech Stack:** Rust 2021, `ureq` 2 (blocking HTTP, matches `price-cli`), `serde_json` (adapter boundary only), `jiff` with `tzdb-bundle-always` (DST), `libc` (CLOCK_MONOTONIC). Zig for the nullclaw patch. Python 3 stays as the behaviour oracle.
 
+**API surface verified by compiling a probe (2026-07-28), not assumed:**
+- `ureq`: `AgentBuilder::new().timeout(Duration).build()`, `.post(url).set(k,v).send_string(body)`. HTTP **200 → `Ok(resp)`**; **4xx/5xx → `Err(ureq::Error::Status(code, _))`**; connection failure → `Err(ureq::Error::Transport(_))`. A **non-200 2xx such as 204 arrives as `Ok`** with `resp.status() == 204`, which is why the success test is `status() == 200` and not `is_ok()`.
+- `jiff`: `TimeZone::get("America/New_York")`, `"…Z".parse::<Timestamp>()`, `ts.to_zoned(tz)`, `Zoned::hour()`, `strftime`. **`%Z` yields the DST-correct abbreviation (`EDT`/`EST`)** — do not hand-roll it from an offset. A **timezone-naive timestamp fails to parse**, which is exactly intentional difference #6.
+- `libc::clock_gettime(CLOCK_MONOTONIC)` returns seconds since boot (~1e5 on this host), confirming the "not wall clock" guard test in Task 4.
+
 **Spec:** `docs/specs/2026-07-28-con-family-rust-port-phase1-design.md` — read it before starting. The scheduler contract itself is canonical in `CLAUDE.md` → "Scheduler contract (hard constraints)".
 
 ## Global Constraints
@@ -120,10 +125,18 @@ target/
 ```rust
 use claw_core::marker::{emit_fallback, emit_skill_status, emit_trace, parse_status, SkillStatus};
 
-/// Tests mutate the process environment, so they must not run concurrently.
-/// Rust runs tests in threads by default; this file is run with --test-threads=1
-/// (see Step 6) and every test sets the variable it depends on explicitly.
+/// Tests mutate process-global environment variables. `--test-threads=1` is
+/// documented but NOT enforced by the code, so a plain `cargo test` would race
+/// and produce passes for the wrong reason. This lock makes the suite correct
+/// regardless of how it is invoked.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn with_job_id<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    let _guard = env_guard();
     match value {
         Some(v) => std::env::set_var("NULLCLAW_JOB_ID", v),
         None => std::env::remove_var("NULLCLAW_JOB_ID"),
@@ -763,7 +776,12 @@ fn backoff_is_clipped_by_remaining_budget() {
     o.deadline_s = Some(3.0);
     let t0 = std::time::Instant::now();
     let _ = send("chat", "hi", &o);
-    assert!(t0.elapsed().as_secs_f64() < 6.0, "slept past the budget");
+    let elapsed = t0.elapsed().as_secs_f64();
+    // Both halves matter. Without the lower bound and the attempt count this
+    // passes vacuously for a client that never retries and never sleeps at all.
+    assert!(s.attempts() >= 2, "must have retried at least once, got {}", s.attempts());
+    assert!(elapsed >= 2.0, "the first 2s backoff must still be slept: {elapsed:.2}s");
+    assert!(elapsed < 6.0, "slept past the 3s budget: {elapsed:.2}s");
 }
 
 #[test]
@@ -895,14 +913,25 @@ pub fn send(chat_id: &str, text: &str, opts: &SendOptions) -> bool {
                 ));
                 return false;
             }
-            Err(ureq::Error::Status(code, _)) => {
+            Err(ureq::Error::Status(code, resp)) => {
+                // Python appends up to 200 chars of the response body. That text
+                // is how a bad chat_id, a revoked token, or broken markup gets
+                // diagnosed in production — dropping it degrades ops for no gain.
+                let body = resp
+                    .into_string()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect::<String>();
                 if !is_retryable_http(code) {
-                    log(&format!("permanent HTTP {code} on attempt {attempt}/{max_attempts}"));
+                    log(&format!(
+                        "permanent HTTP {code} on attempt {attempt}/{max_attempts}: {body}"
+                    ));
                     return false;
                 }
                 let left = budget - start.elapsed().as_secs_f64();
                 log(&format!(
-                    "attempt {attempt}/{max_attempts} got HTTP {code} (remaining={left:.1}s)"
+                    "attempt {attempt}/{max_attempts} got HTTP {code} (remaining={left:.1}s): {body}"
                 ));
             }
             Err(ureq::Error::Transport(t)) => {
@@ -985,6 +1014,14 @@ cutoff are asserted without network."
 ```rust
 use claw_core::budget::{monotonic_secs, resolve_delivery_deadline, SKILL_STARTED_ENV, SKILL_TIMEOUT_ENV};
 
+/// Process-global env mutation — see the note in tests/marker.rs. Every test in
+/// this file takes the lock so the suite is sound even under a parallel harness.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn clear() {
     std::env::remove_var(SKILL_TIMEOUT_ENV);
     std::env::remove_var(SKILL_STARTED_ENV);
@@ -992,12 +1029,14 @@ fn clear() {
 
 #[test]
 fn unset_timeout_is_none() {
+    let _g = env_guard();
     clear();
     assert_eq!(resolve_delivery_deadline(), None);
 }
 
 #[test]
 fn malformed_timeout_is_none() {
+    let _g = env_guard();
     clear();
     std::env::set_var(SKILL_TIMEOUT_ENV, "not-a-number");
     assert_eq!(resolve_delivery_deadline(), None);
@@ -1006,6 +1045,7 @@ fn malformed_timeout_is_none() {
 
 #[test]
 fn non_positive_timeout_is_none() {
+    let _g = env_guard();
     clear();
     std::env::set_var(SKILL_TIMEOUT_ENV, "0");
     assert_eq!(resolve_delivery_deadline(), None);
@@ -1016,6 +1056,7 @@ fn non_positive_timeout_is_none() {
 
 #[test]
 fn timeout_without_started_reserves_one_second() {
+    let _g = env_guard();
     clear();
     std::env::set_var(SKILL_TIMEOUT_ENV, "30");
     assert_eq!(resolve_delivery_deadline(), Some(29.0));
@@ -1024,6 +1065,7 @@ fn timeout_without_started_reserves_one_second() {
 
 #[test]
 fn malformed_started_falls_back_to_timeout_minus_one() {
+    let _g = env_guard();
     clear();
     std::env::set_var(SKILL_TIMEOUT_ENV, "30");
     std::env::set_var(SKILL_STARTED_ENV, "yesterday");
@@ -1033,6 +1075,7 @@ fn malformed_started_falls_back_to_timeout_minus_one() {
 
 #[test]
 fn started_subtracts_elapsed() {
+    let _g = env_guard();
     clear();
     std::env::set_var(SKILL_TIMEOUT_ENV, "30");
     // Pretend the skill started 10 monotonic seconds ago.
@@ -1044,6 +1087,7 @@ fn started_subtracts_elapsed() {
 
 #[test]
 fn future_start_clamps_elapsed_to_zero() {
+    let _g = env_guard();
     clear();
     std::env::set_var(SKILL_TIMEOUT_ENV, "30");
     std::env::set_var(SKILL_STARTED_ENV, format!("{}", monotonic_secs() + 1000.0));
@@ -1054,6 +1098,7 @@ fn future_start_clamps_elapsed_to_zero() {
 
 #[test]
 fn exhausted_budget_floors_at_zero() {
+    let _g = env_guard();
     clear();
     std::env::set_var(SKILL_TIMEOUT_ENV, "5");
     std::env::set_var(SKILL_STARTED_ENV, format!("{}", monotonic_secs() - 999.0));
@@ -1105,14 +1150,15 @@ pub fn monotonic_secs() -> f64 {
 /// here fails loudly, matching Python.
 pub fn resolve_delivery_deadline() -> Option<f64> {
     let raw_timeout = std::env::var(SKILL_TIMEOUT_ENV).ok().filter(|v| !v.is_empty())?;
-    let timeout: f64 = raw_timeout.parse().ok()?;
+    // Python's float() strips surrounding whitespace; f64::from_str does not.
+    let timeout: f64 = raw_timeout.trim().parse().ok()?;
     if timeout <= 0.0 {
         return None;
     }
 
     if let Ok(raw_started) = std::env::var(SKILL_STARTED_ENV) {
         if !raw_started.is_empty() {
-            if let Ok(started) = raw_started.parse::<f64>() {
+            if let Ok(started) = raw_started.trim().parse::<f64>() {
                 let elapsed = (monotonic_secs() - started).max(0.0);
                 let remaining = (timeout - elapsed).max(0.0);
                 // Reserve 1s for the skill to exit cleanly after delivery.
@@ -1181,6 +1227,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use support::stub_server;
 
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn cfg() -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!("claw-core-del-{}.json", std::process::id()));
@@ -1234,6 +1282,27 @@ fn failure_default_is_fatal_and_preserves_body_on_stdout() {
     assert!(matches!(r, DeliveryOutcome::FailedFatal));
     assert_eq!(out, "hello\n", "body must survive on stdout for cron capture");
     assert!(err.contains("[delivery] telegram send failed for chat=chat9 account=main"));
+}
+
+#[test]
+fn env_budget_is_actually_passed_through_to_telegram() {
+    // budget and telegram are unit-tested separately; without this the JOIN is
+    // untested and a `deadline_s: None` regression would pass every other test.
+    // A 1s skill timeout leaves ~0s of delivery budget, so send must abandon
+    // before its first HTTP attempt against a hanging stub.
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let s = stub_server::start(vec![None], 5000);
+    std::env::set_var("NULLCLAW_SKILL_TIMEOUT", "1");
+    std::env::remove_var("NULLCLAW_SKILL_STARTED");
+    let t0 = std::time::Instant::now();
+    let (r, out, _err) = run(Some("chat"), "hello", &opts(&s.base_url));
+    std::env::remove_var("NULLCLAW_SKILL_TIMEOUT");
+    assert!(matches!(r, DeliveryOutcome::FailedFatal));
+    assert_eq!(out, "hello\n", "body still preserved on stdout");
+    assert!(
+        t0.elapsed().as_secs_f64() < 4.0,
+        "budget was not applied — delivery ran past the 1s skill timeout"
+    );
 }
 
 #[test]
@@ -1350,7 +1419,7 @@ Add `pub mod delivery;` to `lib.rs`.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p claw-core --test delivery -- --test-threads=1`
-Expected: PASS, 5 tests.
+Expected: PASS, 6 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1391,7 +1460,10 @@ Ties exit code, skill status, and marker emission into one place so no skill can
 use claw_core::marker::SkillStatus;
 use claw_core::outcome::{finish, Finish};
 
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn with_job_id<T>(v: Option<&str>, f: impl FnOnce() -> T) -> T {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     match v {
         Some(v) => std::env::set_var("NULLCLAW_JOB_ID", v),
         None => std::env::remove_var("NULLCLAW_JOB_ID"),
@@ -1486,7 +1558,7 @@ Add `pub mod outcome;` to `lib.rs`.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p claw-core -- --test-threads=1`
-Expected: PASS, all suites — marker 8 + config 7 + telegram 14 + budget 9 + delivery 5 + outcome 4 = 47 tests.
+Expected: PASS, all suites — marker 8 + config 7 + telegram 14 + budget 9 + delivery 6 + outcome 4 = 48 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1767,37 +1839,72 @@ jiff = { version = "0.1", features = ["tzdb-bundle-always"] }
 
 `crates/doughcon/tests/report.rs`:
 ```rust
+use doughcon::pizzint::{parse, RawIndex};
 use doughcon::report::{derive_index, format_body, NO_DATA};
 
 #[test]
 fn normal_index_passes_through() {
-    assert_eq!(derive_index(Some(42), &[Some(55.0), Some(12.0)]), 42);
+    assert_eq!(derive_index(&RawIndex::Int(42), &[false, false]), "42");
 }
 
 #[test]
 fn zero_with_all_null_is_no_data() {
-    assert_eq!(derive_index(Some(0), &[None, None]), NO_DATA);
+    assert_eq!(derive_index(&RawIndex::Int(0), &[true, true]), NO_DATA);
 }
 
 #[test]
 fn zero_with_real_data_stays_zero() {
     // A genuine zero is not no-data.
-    assert_eq!(derive_index(Some(0), &[Some(0.0), Some(3.0)]), 0);
+    assert_eq!(derive_index(&RawIndex::Int(0), &[false, false]), "0");
 }
 
 #[test]
 fn missing_index_is_no_data() {
-    assert_eq!(derive_index(None, &[Some(5.0)]), NO_DATA);
+    assert_eq!(derive_index(&RawIndex::Missing, &[false]), NO_DATA);
 }
 
 #[test]
 fn empty_places_counts_as_all_null() {
-    assert_eq!(derive_index(Some(0), &[]), NO_DATA);
+    assert_eq!(derive_index(&RawIndex::Int(0), &[]), NO_DATA);
+}
+
+#[test]
+fn non_numeric_popularity_is_not_null() {
+    // Python tests `is None` only. The string "x" is NOT None there, so
+    // all_null is false and a zero index stays 0 with status ok. Parsing to a
+    // number and treating failure as null would flip this to degraded, which
+    // nullclaw escalates to last_status=error plus a retry.
+    let s = parse(r#"{"overall_index":0,"data":[{"current_popularity":"x"}]}"#).unwrap();
+    assert_eq!(s.popularity_is_null, vec![false]);
+    assert_eq!(derive_index(&s.raw_index, &s.popularity_is_null), "0");
+}
+
+#[test]
+fn explicit_json_null_popularity_is_null() {
+    let s = parse(r#"{"overall_index":0,"data":[{"current_popularity":null}]}"#).unwrap();
+    assert_eq!(s.popularity_is_null, vec![true]);
+    assert_eq!(derive_index(&s.raw_index, &s.popularity_is_null), NO_DATA);
+}
+
+#[test]
+fn absent_popularity_key_is_null() {
+    let s = parse(r#"{"overall_index":0,"data":[{}]}"#).unwrap();
+    assert_eq!(s.popularity_is_null, vec![true]);
+}
+
+#[test]
+fn non_integer_index_passes_through_verbatim() {
+    // Python prints whatever it got and `== 0` is false, so it is never the
+    // sentinel. A float and a string both survive.
+    let f = parse(r#"{"overall_index":3.5,"data":[{"current_popularity":null}]}"#).unwrap();
+    assert_eq!(derive_index(&f.raw_index, &f.popularity_is_null), "3.5");
+    let s = parse(r#"{"overall_index":"12","data":[{"current_popularity":null}]}"#).unwrap();
+    assert_eq!(derive_index(&s.raw_index, &s.popularity_is_null), "12");
 }
 
 #[test]
 fn body_matches_python_layout() {
-    let b = format_body("3", 42, "2026-06-03 11:23 CST（美東 06-03 23:23 EDT）", None);
+    let b = format_body("3", "42", "2026-06-03 11:23 CST（美東 06-03 23:23 EDT）", None);
     assert_eq!(
         b,
         "🍕 DOUGHCON 情報\n目前等級：DOUGHCON 3\n指數：42\n更新：2026-06-03 11:23 CST（美東 06-03 23:23 EDT）"
@@ -1806,7 +1913,7 @@ fn body_matches_python_layout() {
 
 #[test]
 fn body_appends_job_id_when_present() {
-    let b = format_body("3", 42, "U", Some("t-1"));
+    let b = format_body("3", "42", "U", Some("t-1"));
     assert!(b.ends_with("\n\n`t-1`"));
 }
 ```
@@ -1822,25 +1929,28 @@ Expected: FAIL — crate does not build, `report` module missing.
 ```rust
 //! Index derivation and message layout.
 
-pub const NO_DATA: i64 = -1;
+use crate::pizzint::RawIndex;
+
+pub const NO_DATA: &str = "-1";
 
 /// "No data" is NOT `index == 0`. Zero collapses to the sentinel only when
 /// every place reports null popularity; an empty place list also counts as
-/// all-null. A genuine zero with real data stays zero.
-pub fn derive_index(raw_index: Option<i64>, popularity: &[Option<f64>]) -> i64 {
-    let all_null = if popularity.is_empty() {
-        true
-    } else {
-        popularity.iter().all(|p| p.is_none())
-    };
+/// all-null. A genuine zero with real data stays zero, and a non-integer index
+/// is passed through verbatim exactly as Python's f-string would.
+///
+/// Returns the rendered index string, because Python never narrows the type.
+pub fn derive_index(raw_index: &RawIndex, popularity_is_null: &[bool]) -> String {
+    let all_null = popularity_is_null.is_empty() || popularity_is_null.iter().all(|n| *n);
     match raw_index {
-        None => NO_DATA,
-        Some(0) if all_null => NO_DATA,
-        Some(v) => v,
+        RawIndex::Missing => NO_DATA.to_string(),
+        RawIndex::Int(0) if all_null => NO_DATA.to_string(),
+        RawIndex::Int(v) => v.to_string(),
+        // Present but non-integer: never zero, so never the sentinel.
+        RawIndex::Other(s) => s.clone(),
     }
 }
 
-pub fn format_body(level: &str, index: i64, updated: &str, job_id: Option<&str>) -> String {
+pub fn format_body(level: &str, index: &str, updated: &str, job_id: Option<&str>) -> String {
     let mut s = format!(
         "🍕 DOUGHCON 情報\n目前等級：DOUGHCON {level}\n指數：{index}\n更新：{updated}"
     );
@@ -1873,7 +1983,7 @@ path = "src/lib.rs"
 - [ ] **Step 5: Run report tests to verify they pass**
 
 Run: `cargo test -p doughcon --test report`
-Expected: PASS, 7 tests.
+Expected: PASS, 11 tests.
 
 - [ ] **Step 6: Implement pizzint.rs**
 
@@ -1883,10 +1993,27 @@ Expected: PASS, 7 tests.
 
 use std::time::Duration;
 
+/// `overall_index` faithfully, because Python neither coerces nor validates it:
+/// it prints the raw value and compares `== 0`. A float or string therefore
+/// stays visible and is never the no-data sentinel. Collapsing this to
+/// `Option<i64>` would silently turn such a payload into `degraded`, which
+/// nullclaw escalates to last_status=error plus a retry.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawIndex {
+    Missing,
+    Int(i64),
+    /// Present but not an integer. Rendered verbatim, never equal to zero.
+    Other(String),
+}
+
 pub struct Snapshot {
     pub level: String,
-    pub raw_index: Option<i64>,
-    pub popularity: Vec<Option<f64>>,
+    pub raw_index: RawIndex,
+    /// One entry per place: `true` when `current_popularity` is JSON null or
+    /// absent. Python tests `is None` ONLY — a non-numeric value such as the
+    /// string "x" is NOT null there, so parsing to `Option<f64>` and treating a
+    /// parse failure as null would flip a live `ok` into `degraded`.
+    pub popularity_is_null: Vec<bool>,
     pub timestamp: Option<String>,
 }
 
@@ -1921,19 +2048,37 @@ pub fn parse(body: &str) -> Result<Snapshot, String> {
         Some(serde_json::Value::Number(n)) => n.to_string(),
         _ => "?".to_string(),
     };
-    let raw_index = obj.get("overall_index").and_then(|v| v.as_i64());
-    let popularity = obj
+    let raw_index = match obj.get("overall_index") {
+        None | Some(serde_json::Value::Null) => RawIndex::Missing,
+        Some(v) => match v.as_i64() {
+            Some(i) => RawIndex::Int(i),
+            None => RawIndex::Other(match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            }),
+        },
+    };
+
+    // Nullness only — the values are never used, and matching Python means
+    // asking "is it JSON null / absent", not "does it parse as a number".
+    let popularity_is_null = obj
         .get("data")
         .and_then(|d| d.as_array())
         .map(|arr| {
             arr.iter()
-                .map(|p| p.get("current_popularity").and_then(|v| v.as_f64()))
+                .map(|p| {
+                    matches!(
+                        p.get("current_popularity"),
+                        None | Some(serde_json::Value::Null)
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
+
     let timestamp = obj.get("timestamp").and_then(|t| t.as_str()).map(String::from);
 
-    Ok(Snapshot { level, raw_index, popularity, timestamp })
+    Ok(Snapshot { level, raw_index, popularity_is_null, timestamp })
 }
 ```
 
@@ -2008,7 +2153,10 @@ fn format_updated(raw: Option<&str>) -> String {
     };
     let cst = ts.to_zoned(tpe).strftime("%Y-%m-%d %H:%M CST").to_string();
     let et: Zoned = ts.to_zoned(ny);
-    format!("{cst}（美東 {} {}）", et.strftime("%m-%d %H:%M"), et.time_zone().to_offset(et.timestamp()).1)
+    // %Z yields the DST-correct abbreviation (EDT/EST), matching Python's
+    // et.tzname(). Verified by compiling against jiff 0.1 — do not hand-roll
+    // this from an offset lookup.
+    format!("{cst}（美東 {}）", et.strftime("%m-%d %H:%M %Z"))
 }
 
 fn main() {
@@ -2023,11 +2171,18 @@ fn main() {
     // DST gate. Fail-open: if tz data is unavailable, warn and run anyway.
     if let Some(target) = args.et_hour {
         match TimeZone::get("America/New_York") {
-            Err(_) => { let _ = writeln!(err, "[WARN: --et-hour requires tz data; running unconditionally]"); }
+            Err(_) => { let _ = writeln!(err, "[WARN: --et-hour requires zoneinfo; running unconditionally]"); }
             Ok(ny) => {
                 let now = Timestamp::now().to_zoned(ny);
                 if now.hour() as i32 != target {
-                    let _ = writeln!(err, "[skip: US-Eastern hour {:02} != target {:02}]", now.hour(), target);
+                    // Python appends the tz abbreviation: "... != target 20 (EDT)]".
+                    // Dropping it is a live stderr change AND a guaranteed
+                    // differential diff on every gate_skip run.
+                    let _ = writeln!(
+                        err,
+                        "[skip: US-Eastern hour {:02} != target {:02} ({})]",
+                        now.hour(), target, now.strftime("%Z")
+                    );
                     std::process::exit(finish(Finish::Marked { status: SkillStatus::Ok, exit: 0 }, &mut out));
                 }
             }
@@ -2055,12 +2210,12 @@ fn main() {
         }
     };
 
-    let index = derive_index(snapshot.raw_index, &snapshot.popularity);
+    let index = derive_index(&snapshot.raw_index, &snapshot.popularity_is_null);
     let updated = format_updated(snapshot.timestamp.as_deref());
 
     if args.mode == "deliver" {
         let job_id = std::env::var("NULLCLAW_JOB_ID").ok().filter(|v| !v.is_empty());
-        let body = format_body(&snapshot.level, index, &updated, job_id.as_deref());
+        let body = format_body(&snapshot.level, &index, &updated, job_id.as_deref());
         let opts = DeliverOptions { account: args.account.clone(), ..Default::default() };
         let outcome = deliver(args.deliver_to.as_deref(), &body, &opts, &mut out, &mut err);
         if outcome == DeliveryOutcome::FailedFatal {
@@ -2124,8 +2279,8 @@ Two translations can share a misunderstanding, so the oracle is the running Pyth
 full_deliver_stdout	--mode deliver	full.json	t-diff-1	0
 nodata_deliver_stdout	--mode deliver	all_null.json	t-diff-2	0
 zero_with_data	--mode deliver	zero_index_with_data.json	t-diff-3	0
-no_timestamp	--mode deliver	no_timestamp.json	t-diff-4	0
 record_mode	--mode record	full.json	t-diff-5	0
+deliver_fail_exit	--mode deliver --deliver-to 999	full.json	t-diff-7	1
 no_job_id	--mode deliver	full.json		0
 gate_skip	--mode deliver --et-hour 99	full.json	t-diff-6	0
 ```
@@ -2165,8 +2320,15 @@ print(srv.server_port, flush=True)
 srv.serve_forever()
 " > "$STAGE/port.$name" &
   stub_pid=$!
-  sleep 0.4
-  port=$(head -1 "$STAGE/port.$name")
+  # Poll for the port line instead of sleeping a guessed interval: a slow start
+  # would otherwise yield an empty port and a nonsense URL.
+  port=""
+  for _ in $(seq 1 100); do
+    port=$(head -1 "$STAGE/port.$name" 2>/dev/null || true)
+    [ -n "$port" ] && break
+    sleep 0.1
+  done
+  [ -n "$port" ] || { echo "FAIL $name: stub server never reported a port"; kill $stub_pid 2>/dev/null; fail=1; continue; }
   url="http://127.0.0.1:$port/"
 
   env NULLCLAW_JOB_ID="$job_id" HOME="$STAGE/py" DOUGHCON_BASE_URL="$url" \
@@ -2189,16 +2351,24 @@ PY
 
   kill $stub_pid 2>/dev/null
 
+  case_fail=0
   if [ "$py_exit" != "$rs_exit" ]; then
-    echo "DIFF $name: exit py=$py_exit rs=$rs_exit"; fail=1
+    echo "DIFF $name: exit py=$py_exit rs=$rs_exit"; case_fail=1
+  fi
+  # The declared expectation is checked, not decorative: if BOTH sides drifted
+  # to the same wrong exit code, matching each other proves nothing.
+  if [ "$py_exit" != "$expect_exit" ]; then
+    echo "DIFF $name: python exit $py_exit != declared $expect_exit"; case_fail=1
   fi
   if ! diff -u "$STAGE/$name.py.out" "$STAGE/$name.rs.out" > "$STAGE/$name.out.diff"; then
-    echo "DIFF $name: stdout"; cat "$STAGE/$name.out.diff"; fail=1
+    echo "DIFF $name: stdout"; cat "$STAGE/$name.out.diff"; case_fail=1
   fi
   if ! diff -u "$STAGE/$name.py.err" "$STAGE/$name.rs.err" > "$STAGE/$name.err.diff"; then
-    echo "DIFF $name: stderr"; cat "$STAGE/$name.err.diff"; fail=1
+    echo "DIFF $name: stderr"; cat "$STAGE/$name.err.diff"; case_fail=1
   fi
-  [ "$fail" = 0 ] && echo "ok   $name"
+  # Per-case verdict — a sticky global flag would hide every later pass.
+  [ "$case_fail" = 0 ] && echo "ok   $name"
+  [ "$case_fail" = 0 ] || fail=1
 done < "$ROOT/tools/differential/cases.tsv"
 
 # History-log comparison for record mode.
@@ -2246,6 +2416,24 @@ Every entry is a deliberate decision. Anything not listed here is a bug.
    timestamp is rejected by `jiff` and falls back to run time, whereas Python
    would interpret it in the host's local zone. No PizzINT payload observed has
    ever been naive; recorded because it is unverified for all future payloads.
+7. **Upstream error text never matches.** `[WARN: doughcon unavailable - {e}]`
+   and `[ERROR: …]` embed the HTTP client's own message, and `urllib` and `ureq`
+   word them differently. The failure *class*, exit code, and skill status all
+   match; the string does not. This is why no differential case forces a fetch
+   failure — it could only ever report a diff that means nothing.
+8. **Transport-failure diagnostics say `transport error`** where Python names the
+   exception type (`URLError`, `timeout`, `TimeoutError`). Retry behaviour is
+   identical. Anything scraping those type names would break.
+9. **`ureq` has no generic non-retryable arm.** Python's bare `except Exception`
+   logs `non-retryable error …` and stops; `ureq::Error` is exhaustive over
+   `Status` and `Transport`, so that path has no equivalent and cannot fire.
+10. **Request JSON bytes differ.** `serde_json::Map` is a `BTreeMap`, so keys
+    serialise alphabetically and without spaces, where Python emits insertion
+    order with `json.dumps` default separators. Telegram semantics are identical;
+    the wire bytes are not.
+11. **Argument-parser surface differs.** The hand parser rejects `--mode=deliver`
+    (space form only) and has no `--help`, where `argparse` accepts both. Error
+    text differs. `--et-hour` remains deliberately un-range-checked in both.
 ```
 
 - [ ] **Step 5: Commit**
@@ -2558,7 +2746,7 @@ fallbacks, [skill-event], and semantic failed."
 
 ## Test Plan
 
-**Layer 1 — ported unit tests (Tasks 1-6).** 47 Rust tests replacing the three Python test files, written before each implementation. Coverage the Python lacked and that these add: config-schema precedence and the mixed-schema fallback, empty-token handling, HTTP 408 being permanent, non-200 2xx, budget clock-domain, budget elapsed arithmetic, marker ordering, and the `Unmarked` path.
+**Layer 1 — ported unit tests (Tasks 1-6).** 48 Rust tests replacing the three Python test files, written before each implementation. Coverage the Python lacked and that these add: config-schema precedence and the mixed-schema fallback, empty-token handling, HTTP 408 being permanent, non-200 2xx, budget clock-domain, budget elapsed arithmetic, marker ordering, and the `Unmarked` path.
 
 **Layer 2 — characterization tests (Task 7).** 15 Python tests written against the **existing** `run.py` before any Rust exists. They must pass against the Python first; if one fails, the test is wrong, not the Python.
 
