@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/claw-core", "crates/doughcon", "crates/weather"]
+members = ["crates/doughcon", "crates/weather"]
 
 [workspace.package]
 edition = "2021"

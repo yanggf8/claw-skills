@@ -9,7 +9,7 @@ Personal agent skills invoked as cron jobs or on-demand by the **nullclaw**, **o
 **The repo is mid-port from Python to Rust** (standing instruction: the whole stack is Rust). Today it is both:
 
 - `lib/` + `<skill>/scripts/run.py` — the Python that is **live**. Every cron job still runs it.
-- `crates/` — a Cargo workspace: `claw-core` (config / telegram / delivery / markers / budget / outcome) plus one binary crate per ported skill. **`doughcon` is ported but NOT live** — its `SKILL.md` still points at the Python; cutover is one line.
+- `crates/` — a Cargo workspace holding one binary crate per ported skill. **The shared `claw-core` lives in `../../b/gwebcdb/crates/claw-core`**, consumed by path dependency — gwebcdb is this ecosystem's home for cross-repo Rust crates (the same arrangement as `turso-util` → `finance-cli`), and `cct` / `autocli` will need claw-core too once they port. Building claw-skills therefore requires gwebcdb checked out beside it. **`doughcon` is ported but NOT live** — its `SKILL.md` still points at the Python; cutover is one line.
 
 **The Python `lib/` cannot be deleted when a skill is ported.** `cct` (`~/a/cct/skills/cct`) and `autocli` (`~/.nullclaw/skills/autocli`) import `delivery` and `trace_marker` from it from **outside this repo**. Both implementations coexist until every consumer moves.
 

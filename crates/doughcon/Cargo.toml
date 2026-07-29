@@ -12,7 +12,7 @@ name = "doughcon"
 path = "src/lib.rs"
 
 [dependencies]
-claw-core = { path = "../claw-core" }
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
 ureq = "2"
 serde_json = "1"
 jiff = { version = "0.1", features = ["tzdb-bundle-always"] }
