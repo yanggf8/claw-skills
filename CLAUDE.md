@@ -170,7 +170,7 @@ Cron expressions use UTC. Taiwan (CST) = UTC+8, EST = UTC-5.
 
 ## Scheduler contract (hard constraints)
 
-Two rules any skill must satisfy, in **any** language. They bind a rewrite —
+Three rules any skill must satisfy, in **any** language. They bind a rewrite —
 Rust, Go, whatever — exactly as tightly as they bind the current Python.
 
 ### 1. The stdout markers are matched literally
@@ -231,6 +231,55 @@ This is new. The four `cct` jobs sat on `verification_mode = none` until
 2026-07-27, which passes unconditionally — that is why a dead upstream pipeline
 delivered stale reports for 50 days without a single alert. The buffer is gone,
 which is the point: mistakes are now loud instead of silent.
+
+### 3. `retry_once` + deliver-before-classify = duplicate Telegram messages
+
+Observed 2026-07-29: `cct2 --mode pre-market` delivered two messages one minute
+apart, both carrying the same trace id `…:3818` — one run, retried in place:
+
+```
+run#1540  13:35:12 → 13:36:30
+          failure_class=contract_failed  repair_action=retried_ok  verified=1
+```
+
+The scheduler retries whenever a run ends `verified != 1` and the job is on
+`repair_policy = retry_once` (`cron.zig:5622`). The retry re-execs with
+**`retry_child.env_map = &skill_env`** — the same environment, so
+`NULLCLAW_JOB_ID` is byte-identical. **A skill cannot tell it is the retry.**
+There is no attempt counter to branch on.
+
+Meanwhile skills deliver *before* they classify, because that is what this file
+prescribes ("call only after delivery confirmation" — correct for marker
+accuracy). **The Rust port inherits the pattern rather than fixing it**, so this
+is a live defect in ported code, not a Python-only legacy:
+
+| Impl | Skills | Evidence |
+|------|--------|----------|
+| Rust (live) | `weather`, `doughcon` | `weather/src/main.rs:116` deliver → `:129` `Finish::Marked`; `doughcon/src/main.rs:108` → `:113` |
+| Python (live) | `cct2`, `chipcon`, `commute`, `inflation-con`, `news`, `oilcon` | `deliver_or_fail()` precedes `emit_skill_status()` |
+
+So any first attempt that delivers successfully and then reports `degraded` or
+`failed` has already put a message in front of the user when the retry fires.
+34 of 38 jobs are on `retry_once`. Prior occurrences: oilcon 2026-07-20,
+cct2 eod 2026-07-10, chipcon 2026-07-08 (×2).
+
+**Decision for the Rust port — option A: the hard-failure path must not
+deliver.** When a skill has no usable result, emit `[skill-status:failed]` and
+`[trace:]` and send nothing. The retry then becomes the only thing that can
+deliver, so a rescued run produces exactly one message — on 2026-07-29 that
+would have been the real report alone, with no "⚠️ 無法取得任何分析結果" noise.
+If both attempts fail the user gets no Telegram message at all; that is
+intended, because the cron alert is the right channel for "the skill produced
+nothing", not a report body.
+
+Still open, and **not** solved by option A: `degraded` runs are *meant* to
+deliver (a stale-but-real report still has value — see `cct` pre-market), yet
+`degraded` is also `verified != 1`, so it triggers the same retry and the same
+duplicate. Either drop `retry_once` from jobs whose skills deliver on
+`degraded`, or restrict scheduler retries to `failed` / `exec_error` /
+`timeout` — the latter is a nullclaw (Zig) change, not a skills change. Note a
+retry cannot repair `degraded` anyway: stale or empty upstream data returns
+identical on the second attempt.
 
 ### Related: `lib/` has dependents outside this repo
 
