@@ -470,6 +470,24 @@ def format_report(rows: list[dict], mode: str, tickers: list[str]) -> str:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def delivery_target(chat_id: str | None, rows: list) -> str | None:
+    """Telegram target for this run, or None to echo to stdout only.
+
+    Option A of the scheduler contract (see CLAUDE.md, "Scheduler contract"):
+    the hard-failure path must not deliver. With no rows this run reports
+    [skill-status:failed], and nullclaw retries any run that ends verified != 1
+    when the job is on repair_policy=retry_once (cron.zig:5622). The retry
+    re-execs with `retry_child.env_map = &skill_env` — an identical
+    environment — so the skill cannot tell it is the retry and cannot
+    de-duplicate afterwards. Delivering here means the retry that *rescues* the
+    run adds a second message, which is what happened on 2026-07-29.
+
+    Returning None still routes the body to stdout, so nullclaw's
+    cron_runs.output keeps the diagnostic; only Telegram is spared.
+    """
+    return chat_id if rows else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="CCT2 dual-LLM market sentiment")
     parser.add_argument("--mode", required=True, choices=["pre-market", "eod"])
@@ -503,7 +521,7 @@ def main() -> None:
     if JOB_ID:
         msg += f"\n\n`{JOB_ID}`"
 
-    deliver_or_fail(args.deliver_to, msg, account=args.account)
+    deliver_or_fail(delivery_target(args.deliver_to, rows), msg, account=args.account)
 
     emit_skill_status("ok" if rows else "failed")
     emit_trace()

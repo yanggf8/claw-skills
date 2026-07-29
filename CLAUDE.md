@@ -272,6 +272,10 @@ If both attempts fail the user gets no Telegram message at all; that is
 intended, because the cron alert is the right channel for "the skill produced
 nothing", not a report body.
 
+Reference implementation: `cct2/scripts/run.py` → `delivery_target()`, covered
+by `lib/test_cct2_run.py`. Port it forward rather than reinventing the rule;
+the remaining deliver-then-mark skills still need it.
+
 Still open, and **not** solved by option A: `degraded` runs are *meant* to
 deliver (a stale-but-real report still has value — see `cct` pre-market), yet
 `degraded` is also `verified != 1`, so it triggers the same retry and the same
