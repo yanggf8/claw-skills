@@ -1,6 +1,7 @@
-use weather::orchestrate::{run, status_of, Sources};
+use weather::orchestrate::{chat_id_for_delivery, run, status_of, Sources};
 use weather::sources::hko::{HkoData, HkoForecast};
 use weather::sources::open_meteo::OmData;
+use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use claw_core::marker::SkillStatus;
 
 fn v(a: &[&str]) -> Vec<String> {
@@ -216,6 +217,85 @@ fn failed_outranks_degraded() {
     // B2, second half. No rows => failed, even though fallback_used is true.
     let out = run(&[], &v(&["臺北市"]), "", &Fake::om_all_fail());
     assert_eq!(status_of(&out), SkillStatus::Failed);
+}
+
+/// Option A: hard-failure suppresses the chat id so deliver() never hits
+/// Telegram. Ok / Degraded must keep the chat id (degraded still delivers).
+#[test]
+fn chat_id_suppressed_only_on_failed() {
+    assert_eq!(
+        chat_id_for_delivery(SkillStatus::Failed, Some("42")),
+        None,
+        "Failed must not Telegram"
+    );
+    assert_eq!(
+        chat_id_for_delivery(SkillStatus::Ok, Some("42")),
+        Some("42"),
+        "Ok path must be unchanged"
+    );
+    assert_eq!(
+        chat_id_for_delivery(SkillStatus::Degraded, Some("42")),
+        Some("42"),
+        "Degraded still delivers by design"
+    );
+    assert_eq!(
+        chat_id_for_delivery(SkillStatus::Failed, None),
+        None
+    );
+}
+
+/// End-to-end through deliver(): Failed + --deliver-to still writes the body
+/// to stdout and never attempts a Telegram send (PrintedToStdout, empty err).
+///
+/// Why a pure chat_id assert is not enough: deliver(None) is the contract that
+/// preserves cron_runs.output; a chat_id helper could return None while main
+/// still called deliver(Some(...)). Composing both is the plumbing assertion
+/// phase-1 lessons demand.
+///
+/// Config has no bot token so a leaked chat_id fails immediately (FailedFatal
+/// + [delivery] on stderr) instead of hanging on a real network attempt.
+#[test]
+fn failed_path_echoes_body_without_telegram() {
+    let out = run(&[], &v(&["臺北市"]), "", &Fake::om_all_fail());
+    assert_eq!(status_of(&out), SkillStatus::Failed);
+    let body = out.lines.join("\n");
+    assert!(!body.is_empty(), "diagnostic body must exist to capture");
+
+    let chat = chat_id_for_delivery(status_of(&out), Some("42"));
+
+    let mut cfg = std::env::temp_dir();
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    cfg.push(format!("weather-del-{}-{}.json", std::process::id(), n));
+    std::fs::write(&cfg, br#"{"channels":{"telegram":{}}}"#).unwrap();
+
+    let opts = DeliverOptions {
+        config_path: Some(cfg.clone()),
+        // Never contacted when chat is None or token is missing.
+        base_url: Some("http://127.0.0.1:1".into()),
+        fail_on_delivery_error: true,
+        ..Default::default()
+    };
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let outcome = deliver(chat, &body, &opts, &mut stdout, &mut stderr);
+    let _ = std::fs::remove_file(&cfg);
+
+    assert_eq!(
+        outcome,
+        DeliveryOutcome::PrintedToStdout,
+        "Failed must not attempt Telegram (leaked chat_id → FailedFatal)"
+    );
+    let printed = String::from_utf8_lossy(&stdout);
+    assert!(
+        printed.contains(body.trim_end()) || printed.contains(&body),
+        "body must still reach stdout for cron_runs.output; got {printed:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&stderr).is_empty(),
+        "no [delivery] diagnostic when Telegram is never attempted; got {:?}",
+        String::from_utf8_lossy(&stderr)
+    );
 }
 
 #[test]

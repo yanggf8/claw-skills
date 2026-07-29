@@ -56,6 +56,23 @@ pub fn status_of(out: &Outcome) -> SkillStatus {
     }
 }
 
+/// Option A (scheduler contract): hard-failure must not Telegram.
+///
+/// `claw_core::delivery::deliver(None, …)` echoes the body to stdout and
+/// never calls `telegram::send` — that is how cron_runs.output still keeps
+/// the diagnostic when we suppress the chat id. Ok / Degraded pass
+/// `deliver_to` through unchanged so a stale-but-real report still reaches
+/// the user (and still trips retry_once — that is a separate open issue).
+pub fn chat_id_for_delivery<'a>(
+    status: SkillStatus,
+    deliver_to: Option<&'a str>,
+) -> Option<&'a str> {
+    match status {
+        SkillStatus::Failed => None,
+        SkillStatus::Ok | SkillStatus::Degraded => deliver_to,
+    }
+}
+
 /// Run the HK + TW orchestration against injected sources.
 ///
 /// `api_key` is the resolved `CWA_API_KEY` (empty string ≡ unset — B8).

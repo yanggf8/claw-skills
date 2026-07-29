@@ -109,24 +109,24 @@ fn main() {
         job_id.as_deref(),
     );
 
+    // Option A: classify BEFORE deliver. Failed suppresses the chat id so
+    // deliver() echoes body to stdout only — no Telegram, no duplicate on
+    // retry_once. Ok / Degraded still deliver. See chat_id_for_delivery.
+    let status = status_of(&outcome);
+    let chat = orchestrate::chat_id_for_delivery(status, args.deliver_to.as_deref());
+
     let opts = DeliverOptions {
         account: args.account.clone(),
         ..Default::default()
     };
-    let delivery = deliver(
-        args.deliver_to.as_deref(),
-        &body,
-        &opts,
-        &mut out,
-        &mut err,
-    );
+    let delivery = deliver(chat, &body, &opts, &mut out, &mut err);
     // FailedFatal exits 1 BEFORE markers — nullclaw's exit_code != 0 branch
-    // overrides marker parsing anyway.
+    // overrides marker parsing anyway. (Unreachable on the Failed path:
+    // chat is None, so deliver only prints.)
     if delivery == DeliveryOutcome::FailedFatal {
         std::process::exit(finish(Finish::Unmarked { exit: 1 }, &mut out));
     }
 
-    let status = status_of(&outcome);
     std::process::exit(finish(
         Finish::Marked { status, exit: 0 },
         &mut out,
