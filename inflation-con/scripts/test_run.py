@@ -137,6 +137,58 @@ def test_boundary_yellow_when_levels_red_but_context_easing():
     assert any("RED" in r and "context" in r for r in details["reasons"])
 
 
+def test_no_crash_when_levels_reach_red_and_breakeven_is_empty():
+    """Regression: the YELLOW boundary note read be_last[1] unguarded.
+
+    fetch_all is per-series tolerant — a failed T10YIE fetch stores an empty list
+    and only warns. So "inflation hot enough to reach the RED levels" plus "the
+    breakeven fetch failed this morning" reached an f-string that subscripted
+    None and raised TypeError. Both conditions are needed, which is why it went
+    unnoticed: neither alone shows it.
+    """
+    s = state(level_series(100.0, HOT_4PCT, 12), breakeven=[])
+    status, details = run.classify(s, "restrictive")
+    assert status == "YELLOW"
+    # The note must still be produced — the point is that it survives missing data.
+    assert any("RED" in r and "context" in r for r in details["reasons"])
+    assert details["breakeven"] is None
+    assert details["breakeven_rising"] is None
+
+
+def test_breakeven_note_reports_the_value_when_it_is_present():
+    """The normal path must keep printing the actual number, not a placeholder.
+
+    Guarding the None case is only correct if it does not degrade the case that
+    already worked.
+    """
+    s = state(level_series(100.0, HOT_4PCT, 12), breakeven=daily([2.21] * 70))
+    status, details = run.classify(s, "restrictive")
+    assert status == "YELLOW"
+    note = next(r for r in details["reasons"] if "context" in r)
+    assert "2.21" in note, note
+
+
+def test_breakeven_shorter_than_the_lookback_still_classifies() -> None:
+    """rising_over needs 64 observations; fewer must give None, not an error."""
+    s = state(level_series(100.0, HOT_4PCT, 12), breakeven=daily([2.2] * 10))
+    status, details = run.classify(s, "restrictive")
+    assert status == "YELLOW"
+    assert details["breakeven_rising"] is None
+    assert details["breakeven"] == 2.2
+
+
+def test_red_still_requires_breakeven_data_or_a_rising_trend():
+    """An empty breakeven cannot satisfy the RED context clause.
+
+    breakeven_ge is False and be_rising is None, so context_not_easing is False
+    however hot the levels are. Pins that the crash fix did not accidentally let
+    a missing series count as confirmation.
+    """
+    s = state(level_series(100.0, HOT_4PCT, 12), breakeven=[])
+    status, _ = run.classify(s, "restrictive")
+    assert status != "RED", "missing breakeven must not confirm a RED regime"
+
+
 def test_red_needs_core_cpi_confirmation():
     # Core PCE hot (>=3.5%) + breakeven high, but core CPI stays cool → not RED.
     s = state(

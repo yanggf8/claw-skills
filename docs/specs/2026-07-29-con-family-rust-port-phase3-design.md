@@ -104,6 +104,85 @@ symbol surfaces only indirectly — as `n/a`, stale, or insufficient history. Th
 what happens today. Saying so plainly is better than rev 2's contradiction, which
 promised both exact parity and a recorded warning.
 
+## inflation-con carries a reachable crash and a piece of dead code
+
+Both found 2026-07-30 while preparing Plan 2, both reproduced rather than reasoned
+about, and both need a decision before that plan can be written.
+
+### The crash
+
+`classify`'s YELLOW branch builds this string when the levels reach RED but the
+context clause does not hold:
+
+```python
+f"(breakeven {be_last[1]:.2f} < 2.5% and not clearly rising, or stance easing)"
+```
+
+`be_last` is `latest(breakeven)`, which is `None` when the breakeven series is empty.
+Reproduced with core-PCE 3-mo and 6-mo both ≈3.6% and `breakeven_10y = []`:
+
+```
+TypeError: 'NoneType' object is not subscriptable
+```
+
+**This path is reachable today.** `fetch_all` is per-series tolerant — a failed
+`T10YIE` fetch appends a warning and stores an empty list rather than raising. So
+"inflation runs hot enough to reach the RED levels" plus "the breakeven fetch failed
+that morning" crashes the run, which `main` then catches and reports as
+`INFLATION-CON failed`.
+
+It is hard to notice precisely because it needs two independent conditions at once:
+high inflation *and* a fetch failure. Neither alone shows it.
+
+### The dead code
+
+Inside the same YELLOW branch:
+
+```python
+if not core_cpi_hot_3_or_6:
+    reasons.append("core CPI not confirming yet")
+```
+
+YELLOW's own entry condition **requires** `core_cpi_hot_3_or_6` to be true, so the
+negation can never hold. That sentence has never been printed.
+
+### Resolved 2026-07-30: the Python was fixed first
+
+Of the three options — reproduce the crash faithfully, fix only in the port, or fix
+the Python first — the third was chosen and applied. A differential against an oracle
+that crashes only proves both sides crash, so Plan 2's oracle had to be correct before
+it could mean anything.
+
+The fix builds the breakeven fragment separately and falls back to
+`"breakeven unavailable this run"` when `be_last` is `None`. Four regression tests were
+added, and they deliberately cover more than the crash itself:
+
+| test | what it holds |
+|---|---|
+| `no_crash_when_levels_reach_red_and_breakeven_is_empty` | the crash, **and** that the note is still produced |
+| `breakeven_note_reports_the_value_when_it_is_present` | the working path still prints the real number, not a placeholder |
+| `breakeven_shorter_than_the_lookback_still_classifies` | fewer than 64 observations gives `None`, not an error |
+| `red_still_requires_breakeven_data_or_a_rising_trend` | an empty series must not count as RED confirmation |
+
+The second and fourth exist because guarding a `None` is only correct if it neither
+degrades the case that already worked nor loosens the judgement. With only the first
+test, deleting the whole note would also have passed.
+
+Baseline before the fix: 30 passed, 3 failed. After: 32 passed, 1 failed — the
+remaining failure is `test_chipcon_remains_copy_when_present`, a stale scope guard
+from an earlier workstream that has been failing since `~/.nullclaw/skills/chipcon`
+became a symlink on 2026-07-13. Unrelated, and not touched here.
+
+**Caveat on how that was measured.** This environment has no working `pytest` — the
+shim on `PATH` cannot import the module. The 33 tests were run through a minimal
+stand-in implementing only `approx`, `fail`, `raises`, `skip`, `monkeypatch` and
+`tmp_path`, which is all this file uses. That is not pytest, and a real pytest run has
+still not happened.
+
+The dead code should simply be dropped in the port, with a line in the
+intentional-differences record. It cannot change behaviour, and carrying it forward
+would leave the next reader of the Rust wondering what they are missing.
+
 ## Storage consolidation into `price-registry`
 
 `oilcon.oil_daily(symbol, date, close)` and `price-registry.prices(ticker, date,

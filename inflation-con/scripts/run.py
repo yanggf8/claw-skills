@@ -171,10 +171,18 @@ def classify(series_rows: dict[str, list[tuple[str, float]]], policy_stance: str
         # Note the boundary: hot on levels but RED context clause not met.
         if ge(pce3, 3.5) and ge(pce6, 3.5):
             if not context_not_easing:
+                # be_last is None when the breakeven fetch failed — fetch_all is
+                # per-series tolerant and stores an empty list. Subscripting it
+                # here used to raise TypeError, so a hot-inflation month with a
+                # failed T10YIE fetch crashed the whole run.
+                be_txt = (
+                    f"breakeven {be_last[1]:.2f} < 2.5% and not clearly rising"
+                    if be_last is not None
+                    else "breakeven unavailable this run"
+                )
                 reasons.append(
                     "levels reach RED but context clause not met "
-                    f"(breakeven {be_last[1]:.2f} < 2.5% and not clearly rising, "
-                    f"or stance easing) — human resolves via policy_stance"
+                    f"({be_txt}, or stance easing) — human resolves via policy_stance"
                 )
             if not core_cpi_hot_3_or_6:
                 reasons.append("core CPI not confirming yet")
