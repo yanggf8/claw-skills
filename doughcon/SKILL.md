@@ -17,8 +17,8 @@ Fetch PizzINT DOUGHCON level — deliver a formatted message or record to histor
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/doughcon/bin/doughcon              # deliver (default)
-python3 ~/.nullclaw/skills/doughcon/bin/doughcon --mode record
+~/.nullclaw/skills/doughcon/bin/doughcon              # deliver (default)
+~/.nullclaw/skills/doughcon/bin/doughcon --mode record
 ```
 
 ## Options

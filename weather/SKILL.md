@@ -17,9 +17,9 @@ Fetch weather forecast for one or more locations (CWA for Taiwan, HKO for Hong K
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/weather/bin/weather --location 新北市 --location 臺北市
-python3 ~/.nullclaw/skills/weather/bin/weather --location 香港
-python3 ~/.nullclaw/skills/weather/bin/weather --location 香港 --location 臺北市
+~/.nullclaw/skills/weather/bin/weather --location 新北市 --location 臺北市
+~/.nullclaw/skills/weather/bin/weather --location 香港
+~/.nullclaw/skills/weather/bin/weather --location 香港 --location 臺北市
 ```
 
 ## Options
