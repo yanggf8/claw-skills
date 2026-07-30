@@ -1,0 +1,10 @@
+[package]
+name = "oilcon"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+name = "oilcon"
+path = "src/lib.rs"
+
+[dependencies]

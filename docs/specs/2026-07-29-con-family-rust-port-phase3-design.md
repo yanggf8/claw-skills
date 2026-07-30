@@ -1,7 +1,7 @@
 # Phase ③ — chipcon, oilcon, inflation-con to Rust
 
-Status: design, revision 4 (after three Codex reviews)
-Date: 2026-07-29
+Status: design, revision 5 (after three Codex reviews and one Grok review)
+Date: 2026-07-29 (rev 5: 2026-07-30)
 
 Phases ① (claw-core + doughcon) and ② (weather) are shipped and live. This phase
 ports the remaining `con` family, retires the last two Python shared libs, and
@@ -9,7 +9,10 @@ consolidates oil storage into `price-registry`.
 
 **Revision history.** Rev 1 was reviewed and returned 8 BLOCKERs, all corroborated
 against source. Rev 2 fixed one outright and seven partially. Rev 3 closed most gaps; rev 4 fixes the four blockers the third review found —
-including two claims about chipcon that were simply false. What rev 2 had wrong:
+including two claims about chipcon that were simply false. **Rev 5 replaces the
+provenance-repair policy with a provenance filter**, after a review of Plan 3 showed
+the repair design could never converge; it also names the `price-store` read used to
+implement it. What rev 2 had wrong:
 
 - the backfill guard measured row count, which is not what the analysis needs;
 - the `chart.error` mapping is **not implementable** against `market-fetch`'s
@@ -236,16 +239,35 @@ Instead:
   matching `price-cli`'s `upsert(&conn, t, &q.date, q.close, "yahoo")` (`run.rs:64`).
 - `read_window` returns `Vec<StoredPrice>`, which carries `source`. Provenance stays
   visible even though today's caller ignores it. A tuple would make a future
-  multi-source bug invisible.
+  multi-source bug invisible. oilcon reads through
+  **`read_window_from_source(conn, ticker, "yahoo", 252)`** rather than `read_window`
+  — see the filter policy below for why the predicate has to be in the SQL.
 - `upsert` is public and accepts any source, so this is **convention, not
   enforcement**. The audit above is the evidence that convention is not enough
   in general; it is accepted here only because these three tickers have a single
   writer.
-- **oilcon validates what it reads.** Convention is only safe if something checks it,
-  so every row `read_window` returns for an oil ticker must have `source == "yahoo"`;
-  a mismatch triggers a Yahoo repair backfill, not a silent calculation over foreign
-  data. Without this check `Vec<StoredPrice>` buys visibility and nothing else,
-  because the caller would discard `source` immediately.
+- **oilcon filters what it reads; it does not repair it.** Convention is only safe if
+  something acts on it, so oilcon reads only `source = 'yahoo'` rows. Rev 4 said a
+  mismatch should trigger a Yahoo **repair backfill**. That was wrong twice over, and
+  both faults point the same way — oilcon reaching for rows that are not its own on a
+  table it shares:
+  - **It never converges.** `upsert_many` is an UPSERT. A repair writes Yahoo's dates;
+    a foreign row on a date Yahoo does not return survives untouched, so the next run
+    sees it and repairs again — a backfill on **every scheduled run, forever**. Not a
+    loop inside one process, which is why it would have passed testing; a permanent
+    daily refetch storm visible only in production.
+  - **The only convergent version is worse.** Deleting the foreign rows first would
+    have oilcon destroy another writer's data to satisfy its own reader.
+
+  So foreign rows are **invisible to oilcon, not a problem for it to solve**: coverage
+  is computed over the Yahoo-only set and `needs_backfill` fires only when *Yahoo's*
+  coverage is inadequate. `price-cli` keeps writing whatever it writes.
+- **The filter must be in SQL.** `read_window` applies `ORDER BY date DESC LIMIT ?`
+  with no source predicate, so filtering in Rust afterwards yields "the yahoo subset
+  of the newest 252 rows of any source" — for an interleaved ticker that is
+  arbitrarily shorter than 252, and coverage would look inadequate whenever another
+  writer is merely active. `price-store` owns the `prices` table and oilcon must not
+  hand-write SQL against it, hence `read_window_from_source` lands in `price-store`.
 - Note the limit of the policy: `StoredPrice` shows the **surviving** attribution
   only. When a `stooq-intraday` row overwrites a `stooq` row on the same date, the
   earlier provenance is gone. That is inherent to a canonical-value table and is
