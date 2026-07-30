@@ -1,0 +1,21 @@
+[package]
+name = "chipcon"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "chipcon"
+path = "src/main.rs"
+
+[lib]
+name = "chipcon"
+path = "src/lib.rs"
+
+[dependencies]
+# preserve_order: Map keeps JSON object key order (IndexMap), matching Python
+# dict insertion order for chipcon/config.json symbols (SMH, QQQ, SOXX).
+serde_json = { version = "1", features = ["preserve_order"] }
+market-fetch = { path = "../../../../b/gwebcdb/crates/market-fetch" }
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
+ureq = "2"
+jiff = { version = "0.1", features = ["tzdb-bundle-always"] }
