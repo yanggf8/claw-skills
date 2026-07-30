@@ -3,5 +3,6 @@
 
 pub mod analysis;
 pub mod render;
+pub mod run;
 pub mod snapshot;
 pub mod store;

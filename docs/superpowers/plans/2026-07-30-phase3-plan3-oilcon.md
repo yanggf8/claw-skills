@@ -10,6 +10,24 @@
 
 **Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (**revision 6**). Read "Storage consolidation into `price-registry`", "Backfill: completeness, not row count", "Provenance policy" and "`chart.error`" before starting. The storage decisions were reviewed five times and several of the obvious designs are wrong for reasons recorded there — rev 5 in particular replaced the provenance-**repair** policy with a provenance **filter**, so do not implement from a cached memory of rev 4.
 
+## Task 5 outcome — revision 7
+
+Task 5 is **done**: 12 contract tests, **77 in the crate**, Python oracle still 28. All nine mutations were re-applied independently and each turned its named test red. The four ported strings, the backticked job-id block, both marker lines and the history-log error line were hand-diffed against `run.py` and match verbatim. No chipcon or inflation-con message literal survives — the only occurrences are comments and the negative assertions that check those prefixes are absent.
+
+**The inherited exit-code item was answered "assert the invariant", and the test asserting it did not.** Breaking the invariant — replacing `build_symbol_snapshot`'s WTI `return Err(...)` with a `rows: None` fallthrough — left **every contract test green**. Only Task 4's `nineteen_rows_raises_for_wti_but_none_for_brent` caught it, one layer down. The contract test's two halves were a warning-free happy path and an empty-store abort, and the empty-store case resolves inside `after_failed_refresh` long before the row-count check is reached, so neither half could see the property the test is named after.
+
+The missing input is **WTI holding 1..20 rows with a working store**: the only way to reach `MIN_HISTORY_ROWS` with no warning already set, hence the only place where "WTI errors" versus "WTI returns `rows = None`" decides between exit 1 and a panic. Added as a third block in the same test — 19 stored rows, a failing history fetch so `after_failed_refresh` keeps them, then assert the run degrades to `[WARN: insufficient WTI history (19 rows)]` and never renders `WTI: $`. It now fails on the broken invariant by panicking at `render.rs:104`, which is the exit-101 path the item was about. **A test named after a property it does not exercise is worse than no test, because it reads as coverage.**
+
+**One plan mutation cannot be applied as written, and the reason is the same `expect`.** "Render the full report on a warning" was specified as calling `format_message` on the warning path. A warning snapshot is the all-or-nothing empty one, so `format_message` panics on `expect("WTI rows are required")` rather than producing a full report — the mutation fails for the wrong reason, exactly the Task 3 lesson. The implementer diagnosed this itself and re-applied it as a shape mutation (injecting a `確認：` line into the warning body), which fires the named assertion for the right reason. Both forms were re-run here to confirm the diagnosis.
+
+Three plan gaps the implementer reported, all correct:
+
+- **The `run` signature in File Structure is a sketch.** The real surface is async, takes **two** fetchers, a `&Connection`, and **three** clock strings — `now` for deliver, `now_with_seconds` for the record line, `today` for `needs_backfill`. The one-liner `run(argv, env, fetch, store, now, out, err)` predates Tasks 3 and 4.
+- **Connection failure lives in `main`, not `run`.** Python opens the DB inside `build_snapshot`; the Rust injects a `&Connection`, so credential and connect failures are handled in `main.rs` by replaying the same warning branch. Task 5 never specified that path.
+- `parse_mode` was checked rather than assumed: `DeliverOptions::default()` really is `Some("Markdown")`, matching `lib/delivery.py:24`, and a test pins the value instead of trusting `..Default::default()`.
+
+**Delivery note, not a code issue.** The delegating subagent stopped before relaying, and its monitor never reported. The work had in fact completed — the grok job log ended with a full report and a cost block — so the report was recovered by reading that job log directly, which is the sanctioned path: check the job, not the rollout.
+
 ## Task 4 outcome — revision 6
 
 Task 4 is **done**: 17 snapshot tests, **65 in the crate**, Python oracle still 28. All eight mutations were re-applied independently and each turned its named test red. `SymbolSnapshot` and `Snapshot` moved from `render.rs` to `snapshot.rs` with a re-export; the render differential from Task 2 was **re-run and is still byte-identical** (same sha256 `912b8932…`), which is how the move was confirmed behaviour-neutral rather than by reading it.
@@ -557,7 +575,7 @@ Every test above asserts Rust against Rust. Only running the Python closes the g
 | L0 | `price_store::read_window_from_source` — 2 tests ✅ **done**; limit applied after the source filter | a Rust-side filter must fail it |
 | L3 | store — 14 + 1 tests ✅ **done**; every backfill boundary, Yahoo-only coverage, the recorded sparse limit | likewise; in-memory libsql only |
 | L4 | snapshot — 17 tests ✅ **done**; the all-or-nothing model, both halves of `after_failed_refresh`, the latest observation reaching `rows` | likewise |
-| L5 | contract — oilcon's own markers, backticks, minimal-warning message | no chipcon or inflation-con literal survives |
+| L5 | contract — 12 tests ✅ **done**; oilcon's own markers, backticks, minimal-warning message, the inherited exit-code invariant | no chipcon or inflation-con literal survives |
 | L6 | differential vs Python across more than one trend state | every difference reported before it is accepted |
 | L7 | the Python oracle still passes | `python3 -m unittest discover -s lib -p 'test_oil*.py'` → 28 |
 

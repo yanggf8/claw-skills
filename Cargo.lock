@@ -1167,11 +1167,14 @@ dependencies = [
 name = "oilcon"
 version = "0.1.0"
 dependencies = [
+ "claw-core",
+ "jiff",
  "libsql",
  "market-fetch",
  "price-store",
  "tokio",
  "turso-util",
+ "ureq",
 ]
 
 [[package]]

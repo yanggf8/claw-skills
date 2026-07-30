@@ -3,6 +3,10 @@ name = "oilcon"
 version = "0.1.0"
 edition.workspace = true
 
+[[bin]]
+name = "oilcon"
+path = "src/main.rs"
+
 [lib]
 name = "oilcon"
 path = "src/lib.rs"
@@ -12,6 +16,10 @@ libsql = "0.6"
 market-fetch = { path = "../../../../b/gwebcdb/crates/market-fetch" }
 price-store = { path = "../../../../b/gwebcdb/crates/price-store" }
 turso-util = { path = "../../../../b/gwebcdb/crates/turso-util" }
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+ureq = "2"
+jiff = { version = "0.1", features = ["tzdb-bundle-always"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
