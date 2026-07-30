@@ -10,6 +10,24 @@
 
 **Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (**revision 6**). Read "Storage consolidation into `price-registry`", "Backfill: completeness, not row count", "Provenance policy" and "`chart.error`" before starting. The storage decisions were reviewed five times and several of the obvious designs are wrong for reasons recorded there — rev 5 in particular replaced the provenance-**repair** policy with a provenance **filter**, so do not implement from a cached memory of rev 4.
 
+## Task 6 outcome — revision 8
+
+Task 6 is **done**: **six fixture sets, all byte-identical** on message, record line and skill status — `live` (real Yahoo, lands in `rollover`), synthesised `uptrend`, `weakening-uptrend` and `no-uptrend`, and two forms of the fixed-point equality case. 78 tests in the crate, Python oracle still 28.
+
+**The differential is genuine, which was checked before the result was believed.** Three ways it could have been tautological, all ruled out:
+
+- `tests/differential.rs` spawns `python3 fixtures/drive_python.py` at test time and parses its stdout. The Python is executed on every run; nothing is compared against a stored expectation.
+- `drive_python.py` loads the real `run.py` via `spec_from_file_location`, substitutes the three module attributes, and calls `m.build_snapshot()`, `m.format_message()` and `m.format_record_line()`. It does not reimplement the pipeline.
+- The `live` fixture is real Yahoo data, not synthetic labelled as live: `symbol = CL=F`, `exchangeName = NYM`, `instrumentType = FUTURE`, 252 points spanning 2025-07-30 to 2026-07-30, closes 55.27–112.95 with every value non-integer.
+
+**No network, established by `strace` rather than by inspection.** Zero `connect()` and zero `AF_INET` sockets in both the Python driver and the Rust differential binary. Worth recording *how* this was checked, because the obvious check fails: running the differential behind a blackhole proxy proves nothing, since `differential.rs` calls `.env_remove("http_proxy")` and `.env_remove("https_proxy")` before spawning `python3`. A probe that the code under test defeats reads exactly like a passing probe.
+
+**One thing in the driver was removed: a reimplementation of the warning message.** The warning branch reconstructed `🛢️ OILCON 情報\n[WARN: …]\n更新：…` in Python, because `run.py` builds that string inline in `main` and there is no oracle function to call. That reconstruction would have compared one reading of the Python against another — the gap this task exists to close — and it read as coverage while proving nothing. Every set lands on `status=ok` so it was never executed; the branch now raises instead, so a mis-seeded fixture fails loudly rather than silently comparing a copy. The Rust warning message is covered by the Task 5 hand-diff against `run.py:321`, not by this differential; if the warning path ever needs differential coverage, `main` has to be driven.
+
+**What the six sets do not cover**, stated plainly so the coverage is not overread: every intentional divergence stayed untriggered, because all sets are pre-seeded with successful fetches. The history-failure fallback, the coverage-versus-presence backfill guard, the Yahoo-only source filter, and both error-message texts are unexercised here. Each is covered by unit and contract tests instead. What the differential does establish is the thing those cannot: for a given identical input series, the message body, every number in it, the record line and the skill status agree byte for byte.
+
+Two implementer notes, both correct. The probe skeleton handed over used a `day` column where `lib/oil_store.py` uses `date`; the column is internal to the stand-in so behaviour was unaffected, but the skeleton did not mirror the real schema as its comment claimed. And Step 1's "commit them" conflicts with the standing prohibition on `git add`/`git commit` — the fixtures were written to the working tree and left for review, which is the correct reading of the two instructions together.
+
 ## Task 5 outcome — revision 7
 
 Task 5 is **done**: 12 contract tests, **77 in the crate**, Python oracle still 28. All nine mutations were re-applied independently and each turned its named test red. The four ported strings, the backticked job-id block, both marker lines and the history-log error line were hand-diffed against `run.py` and match verbatim. No chipcon or inflation-con message literal survives — the only occurrences are comments and the negative assertions that check those prefixes are absent.
@@ -576,7 +594,7 @@ Every test above asserts Rust against Rust. Only running the Python closes the g
 | L3 | store — 14 + 1 tests ✅ **done**; every backfill boundary, Yahoo-only coverage, the recorded sparse limit | likewise; in-memory libsql only |
 | L4 | snapshot — 17 tests ✅ **done**; the all-or-nothing model, both halves of `after_failed_refresh`, the latest observation reaching `rows` | likewise |
 | L5 | contract — 12 tests ✅ **done**; oilcon's own markers, backticks, minimal-warning message, the inherited exit-code invariant | no chipcon or inflation-con literal survives |
-| L6 | differential vs Python across more than one trend state | every difference reported before it is accepted |
+| L6 | differential ✅ **done** — 6 sets byte-identical (live + 4 trend states + fixed-point equality) | every difference reported before it is accepted |
 | L7 | the Python oracle still passes | `python3 -m unittest discover -s lib -p 'test_oil*.py'` → 28 |
 
 ## Acceptance Criteria

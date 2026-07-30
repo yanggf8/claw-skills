@@ -1172,6 +1172,7 @@ dependencies = [
  "libsql",
  "market-fetch",
  "price-store",
+ "serde_json",
  "tokio",
  "turso-util",
  "ureq",
