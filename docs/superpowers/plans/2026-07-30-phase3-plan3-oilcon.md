@@ -8,7 +8,21 @@
 
 **Tech Stack:** Rust 2021, `market-fetch` (yahoo), `price-store`, `turso-util`, `claw-core`.
 
-**Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (revision 4). Read "Storage consolidation into `price-registry`", "Backfill: completeness, not row count", "Provenance policy" and "`chart.error`" before starting. The storage decisions were reviewed four times and several of the obvious designs are wrong for reasons recorded there.
+**Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (**revision 5**). Read "Storage consolidation into `price-registry`", "Backfill: completeness, not row count", "Provenance policy" and "`chart.error`" before starting. The storage decisions were reviewed five times and several of the obvious designs are wrong for reasons recorded there — rev 5 in particular replaced the provenance-**repair** policy with a provenance **filter**, so do not implement from a cached memory of rev 4.
+
+## Task 2 outcome — revision 4
+
+Task 2 is **done**: 17 render tests, 33 in the crate, workspace green, Python oracle still 28. All seven mutations were re-applied here and each turned its named test red; the implementer's report matched on every one, which is worth stating because the previous task's did not.
+
+Two checks went beyond the plan and both are worth keeping in mind for Task 6.
+
+**A render-only differential was run early, and came out byte-identical.** Four snapshots — the fixed-point equality fixture, a stale/en-dash/`n/a` combination, a 50–69-row window, and an all-negative set — were rendered by both implementations over identical inputs with the clock substituted on the Python module object, exactly the mechanism Task 6 specifies. Message, status and record line agree to the byte on all four (sha256 `912b8932…`). This does **not** discharge Task 6: it exercises no store, no fetch and no marker, which is where this port's actual risk lives. What it does buy is confidence that the string layer is not the thing that will fail there. Worth doing because the record line is assembled with Rust's `\` line-continuation, which swallows the following newline *and* its indentation — a construct that reads correctly whether or not it is correct.
+
+**The three refusal messages were checked against `run.py` rather than accepted.** They looked like generic invented English — `"record mode requires fresh data"`, `"record mode requires non-stale data"`, `"record mode requires complete confirmation data"` — and are in fact verbatim from lines 223, 229 and 231. Suspicion was wrong, which is the point of checking rather than assuming.
+
+**One latent divergence, recorded and deliberately not fixed here.** `format_message` calls `format_wti_line(...).expect("WTI rows are required")`. `format_wti_line` correctly returns `Result`, but `expect` converts a refusal into a panic, so this path would exit **101** where Python's uncaught `ValueError` exits **1**. It is unreachable today: `main` short-circuits on `snapshot.warning` before `format_message`, and `build_symbol_snapshot` raises for WTI rather than returning `rows = None`, so a warning-free snapshot always has WTI rows. Restructuring `format_message` to return `Result` would churn eight of the seventeen tests for a defensive gain in a path no golden can reach. **Task 5 owns exit codes and inherits this**: either propagate there, or assert the invariant that makes it unreachable. Do not leave it merely assumed.
+
+The other three `expect`/`unwrap` sites in `render.rs` were audited and are genuinely unreachable — each sits immediately after the guard that makes it so.
 
 ## Task 1 outcome — revision 3
 
@@ -488,7 +502,7 @@ Every test above asserts Rust against Rust. Only running the Python closes the g
 | Layer | What | Gate |
 |---|---|---|
 | L1 | analysis — 16 tests ✅ **done** | every mutation turns at least its named test red |
-| L2 | render — three refusals pinned separately, plus the `above`/`rollover` disagreement | likewise |
+| L2 | render — 17 tests ✅ **done**; three refusals pinned separately, plus the `above`/`rollover` disagreement | likewise |
 | L0 | `price_store::read_window_from_source` — limit applied after the source filter | a Rust-side filter must fail it |
 | L3 | store — every backfill boundary, Yahoo-only coverage, the recorded sparse limit | likewise; in-memory libsql only |
 | L4 | snapshot — the all-or-nothing model | likewise |

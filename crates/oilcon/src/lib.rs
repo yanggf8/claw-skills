@@ -2,3 +2,4 @@
 //! integration tests can exercise classification without network or clock.
 
 pub mod analysis;
+pub mod render;
