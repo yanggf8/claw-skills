@@ -4,24 +4,11 @@
 
 use crate::analysis::{
     classify_oil_trend, compute_change_pct, compute_extremes, ma_rising, moving_average,
-    pct_below_60d_high, Extremes, Row,
+    pct_below_60d_high, Extremes,
 };
-
-/// Per-symbol rows plus the stale flag, matching Python's `SymbolSnapshot`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SymbolSnapshot {
-    pub rows: Option<Vec<Row>>,
-    pub stale: bool,
-}
-
-/// Full run snapshot, matching Python's `Snapshot`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Snapshot {
-    pub wti: SymbolSnapshot,
-    pub brent: SymbolSnapshot,
-    pub ho: SymbolSnapshot,
-    pub warning: Option<String>,
-}
+// Types live in snapshot.rs (assembly owns them); re-export so existing
+// `render::Snapshot` / `render::SymbolSnapshot` paths keep working.
+pub use crate::snapshot::{Snapshot, SymbolSnapshot};
 
 /// Refusal / requirement error whose message is part of the stderr contract.
 #[derive(Debug, Clone, PartialEq, Eq)]

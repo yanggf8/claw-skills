@@ -1,7 +1,7 @@
 # Phase ③ — chipcon, oilcon, inflation-con to Rust
 
-Status: design, revision 5 (after three Codex reviews and one Grok review)
-Date: 2026-07-29 (rev 5: 2026-07-30)
+Status: design, revision 6 (after three Codex reviews and one Grok review)
+Date: 2026-07-29 (revs 5-6: 2026-07-30)
 
 Phases ① (claw-core + doughcon) and ② (weather) are shipped and live. This phase
 ports the remaining `con` family, retires the last two Python shared libs, and
@@ -12,7 +12,8 @@ against source. Rev 2 fixed one outright and seven partially. Rev 3 closed most 
 including two claims about chipcon that were simply false. **Rev 5 replaces the
 provenance-repair policy with a provenance filter**, after a review of Plan 3 showed
 the repair design could never converge; it also names the `price-store` read used to
-implement it. What rev 2 had wrong:
+implement it. **Rev 6 records that the 300-day span guard is satisfiable only
+because the source omits weekends**, found while implementing Task 4. What rev 2 had wrong:
 
 - the backfill guard measured row count, which is not what the analysis needs;
 - the `chart.error` mapping is **not implementable** against `market-fetch`'s
@@ -328,6 +329,18 @@ calculation. 7 days spans a long weekend plus holidays.
 Span, because the analytic window is a calendar year and `compute_extremes` reads all
 of it. Freshness, because every consumer indexes from the tail, so a gap at the
 newest end is the one that changes output.
+
+**`MIN_SPAN_DAYS = 300` against `WINDOW_SIZE = 252` assumes the source omits
+weekends** (found 2026-07-30 while implementing Task 4; recorded because it is an
+assumption, not a coincidence). The window is capped at 252 rows, so 252
+*calendar*-dense rows span 251 days — under the threshold — and the guard would fire
+on every run forever. It is satisfiable only because Yahoo returns trading days: 252
+of those run to roughly 365 calendar days, clear of 300 with margin. A source that
+ever supplied calendar-daily rows for these tickers would make the condition
+unreachable, producing the same daily-refetch shape as the provenance-repair design
+that rev 5 removed. Two consequences: raising `WINDOW_SIZE` toward the span figure
+reintroduces the collision, and test fixtures must span ≥ 300 days *across* 252 rows
+rather than simply being dense.
 
 **3. A backfill marker ends the retry loop for genuinely short series.** A ticker
 whose upstream history is shorter than `MIN_SPAN_DAYS` would otherwise refetch a year

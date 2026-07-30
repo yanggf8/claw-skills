@@ -1168,8 +1168,10 @@ name = "oilcon"
 version = "0.1.0"
 dependencies = [
  "libsql",
+ "market-fetch",
  "price-store",
  "tokio",
+ "turso-util",
 ]
 
 [[package]]

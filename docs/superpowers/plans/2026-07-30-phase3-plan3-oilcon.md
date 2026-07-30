@@ -8,7 +8,23 @@
 
 **Tech Stack:** Rust 2021, `market-fetch` (yahoo), `price-store`, `turso-util`, `claw-core`.
 
-**Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (**revision 5**). Read "Storage consolidation into `price-registry`", "Backfill: completeness, not row count", "Provenance policy" and "`chart.error`" before starting. The storage decisions were reviewed five times and several of the obvious designs are wrong for reasons recorded there — rev 5 in particular replaced the provenance-**repair** policy with a provenance **filter**, so do not implement from a cached memory of rev 4.
+**Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (**revision 6**). Read "Storage consolidation into `price-registry`", "Backfill: completeness, not row count", "Provenance policy" and "`chart.error`" before starting. The storage decisions were reviewed five times and several of the obvious designs are wrong for reasons recorded there — rev 5 in particular replaced the provenance-**repair** policy with a provenance **filter**, so do not implement from a cached memory of rev 4.
+
+## Task 4 outcome — revision 6
+
+Task 4 is **done**: 17 snapshot tests, **65 in the crate**, Python oracle still 28. All eight mutations were re-applied independently and each turned its named test red. `SymbolSnapshot` and `Snapshot` moved from `render.rs` to `snapshot.rs` with a re-export; the render differential from Task 2 was **re-run and is still byte-identical** (same sha256 `912b8932…`), which is how the move was confirmed behaviour-neutral rather than by reading it.
+
+**This plan specified the read order wrongly, and it mattered.** Revision 5 put the authoritative window read *before* `fetch_latest`. The Python's single `window()` call sits **below** the latest upsert, so the plan's order would have left today's close committed to the store but absent from `rows` — `current_close`, `today_change_pct`, both extremes, `pct_below_60d_high` and the classification all computed one observation behind, on every run. The implementer caught it, reported it as a plan-versus-file discrepancy, and followed the file. That is the seventh instruction in this phase to be wrong and the first whose consequence was every rendered number.
+
+**It was fixed in code but not pinned by a test.** Removing the post-latest re-read left all sixteen delivered tests green — verified by applying that exact mutation. `the_latest_observation_is_present_in_the_snapshot_rows` was added here: it seeds an adequate series, returns a distinctive close on the following day from `fetch_latest`, and asserts both that the newest snapshot row carries it and that it came through the store. It turns red on the mutation. A defect that is corrected silently is one refactor away from returning.
+
+Three further discrepancies the implementer raised were checked and are correct:
+
+- **Short-history Brent/HO drop the stale flag.** `SymbolSnapshot(rows=None)` takes the default `stale=False`, so a symbol that both fell short *and* failed its latest fetch reports not-stale. Faithful to the file.
+- **`Snapshot`'s shape is fields, not a dict**, so the all-or-nothing abort clears three `rows: None` rather than emptying a map. Same meaning.
+- **252 rows cannot span 300 calendar days if they are calendar-dense.** `load_window` caps at 252 and `MIN_SPAN_DAYS` is 300, so 252 consecutive *calendar* days span 251 and would re-trigger backfill forever. The guard is safe only because Yahoo returns trading days — 252 of those run to roughly 365 calendar days, comfortably clear. **Worth recording as an assumption rather than a coincidence**: a source that ever supplied calendar-daily rows would make the guard unsatisfiable, which is the same refetch-storm shape as the provenance-repair design rev 5 removed. Test fixtures must therefore span ≥ 300 days across 252 rows, not simply be dense.
+
+Mutation 3 was initially unobservable — every backfill-success fixture paired with a failing latest fetch, so `latest_failed` already masked the flag. The implementer added `successful_history_fetch_does_not_set_stale` rather than retuning a fixture, which is the Task 1 lesson applied without being told.
 
 ## Task 3 outcome — revision 5
 
@@ -445,16 +461,35 @@ Foreign rows are therefore **invisible to oilcon, not a problem for it to solve*
 
 **Contract.** Translate `build_symbol_snapshot` and `build_snapshot`, with the fetcher and the store injected. Behaviour to preserve exactly:
 
-- A `fetch_history` failure is **re-raised** and aborts the whole symbol loop, discarding symbols already built — `build_snapshot` returns `Snapshot { symbols: {}, warning }`. This is oilcon's all-or-nothing model and it is **not** what the other two do.
+- **The sequence changes, because the guard changed — and the authoritative read stays last.** The Python asks `needs_backfill` *first*: it is a presence check, so it needs no data. Task 3's guard is computed from coverage, so the window must be read before the question can be asked. But the Python's single `window()` call sits **below the latest upsert**, and that placement is load-bearing. The order is:
+
+  `load_window` (for coverage) → `coverage` → `needs_backfill(cov, today)` → optional history fetch and `upsert_many` → re-read → `fetch_latest` → optional `upsert` → **re-read** → `MIN_HISTORY_ROWS` check → `SymbolSnapshot`.
+
+  Two reasons the window is re-read rather than assembled in memory. After a backfill, computing the working set from the fetch payload would skip whatever the upsert actually committed — the window cap, the sort order, and any pre-existing rows. And after the latest upsert, **skipping the read leaves today's close committed to the store but absent from `rows`**, so `current_close`, `today_change_pct`, both extremes, `pct_below_60d_high` and the classification would every one of them be computed an observation behind. *An earlier revision of this plan specified the read before `fetch_latest` and was wrong; it was caught during implementation. `the_latest_observation_is_present_in_the_snapshot_rows` pins it, because removing that read left the other sixteen tests green.*
+
+- **A `fetch_history` failure resolves through `after_failed_refresh`, and this is where Tasks 3 and 4 would otherwise contradict each other.** The Python re-raises unconditionally, aborting the symbol loop and discarding symbols already built, so `build_snapshot` returns `Snapshot { symbols: {}, warning }`. Task 3 introduced a fallback for the case that guard newly created: an established symbol that goes eight days stale now *re-enters* history backfill, and a failure there must not throw away rows that were serving fine yesterday. There is only one history-fetch site in the Python, so both rules land on it. Resolve it by the state of the store, which is what `after_failed_refresh` already encodes:
+  - `Ok(rows)` — the store had rows. **Keep them, mark the symbol stale, continue.** This differs from the Python, which would abort.
+  - `Err(EmptyStoreOnFailedRefresh)` — nothing stored. **Abort**, as the Python does, and `build_snapshot` returns the empty all-or-nothing snapshot.
+
+  Note the consequence and do not paper over it: a symbol holding, say, 30 rows survives a failed refresh and renders, where the Python would have lost the whole report. 30 rows clears `MIN_HISTORY_ROWS` so it is not rejected, and `classify_oil_trend` reports `insufficient-history` for it — degraded rather than absent. That is the intended trade, but it is a real divergence and Task 6's differential will show it if a history failure is exercised. Record it, and do not let the differential's report call it a bug.
+
+  The all-or-nothing model still holds for the abort case — see the symbol-order bullet below.
 - **`fetch_latest` reaches the stale flag two ways, and "failure" names only one of them.** `run.py` sets `latest_failed` in the `except` clause *and* again in the `else` of `if latest_row is not None`. A fetch that returns `None` without raising is therefore just as stale as one that throws, and nothing is written to the store in either case. A Rust port whose fetcher returns `Result<Option<Row>>` must treat `Ok(None)` and `Err(_)` identically here; only `Ok(Some(_))` clears the flag and upserts. The Python has a test for the throwing path only — `test_build_snapshot_marks_latest_fetch_failure_as_stale` — so the `Ok(None)` path needs its own test on this side. Apart from these two, nothing else sets stale.
 - `len(rows) < 20` → WTI raises; Brent/HO return `rows = None`, and the message still renders with `Brent n/a`.
 - Symbols are processed **WTI, Brent, HO in that order**, each writing before the next starts. A Brent failure leaves WTI's writes committed while the snapshot is discarded. Existing behaviour; preserve it, and note the coverage guard from Task 3 is what makes the leftover harmless.
 
 **The `chart.error` mapping.** Plan 0 added `FetchError::Upstream`. Python's `parse_chart_response` returns `[]` — not an exception — for `chart.error`, a missing `result`, or falsy `closes`; Rust returns `Upstream` for the first and `NoData` for the others. **Map both to an empty vec**, exactly as chipcon does. Mapping only `Upstream` would turn an empty-history payload into a whole-snapshot failure, and this is the module where that difference is destructive: for Brent or HO it converts a local `n/a` into a total loss of the report.
 
-- [ ] **Step 1: Write the failing tests** — pin: history failure aborting the loop and discarding earlier symbols; **a throwing latest fetch and an `Ok(None)` latest fetch each setting stale, as two separate tests**, and nothing else doing so; the WTI-raises / others-`None` asymmetry at 19 vs 20 rows; symbol order; and that `Upstream` and `NoData` both become an empty series.
+- [ ] **Step 1: Write the failing tests** — pin, each separately:
+  - a history failure on an **empty** store aborting the loop and discarding earlier symbols' snapshots;
+  - a history failure on a **populated** store falling back, marking stale, and *not* aborting — the two halves of `after_failed_refresh`, which a single "history failure" test cannot tell apart;
+  - **a throwing latest fetch and an `Ok(None)` latest fetch each setting stale, as two separate tests**, and nothing else doing so;
+  - `needs_backfill` being asked *after* the window is read, and the window being re-read after a successful backfill — assert on the rows the snapshot carries, not on call order alone;
+  - the WTI-raises / others-`None` asymmetry at 19 vs 20 rows;
+  - symbol order, with a Brent failure leaving WTI's writes committed;
+  - `Upstream` and `NoData` both becoming an empty series.
 - [ ] **Step 2–4:** red, implement, green.
-- [ ] **Step 5: Mutation gate.** Let a history failure degrade instead of aborting; set stale on a history failure too; **treat `Ok(None)` as a success that clears the flag**; make `len < 20` raise for Brent; reorder the symbols; map only `Upstream`.
+- [ ] **Step 5: Mutation gate.** Make the populated-store history failure abort as well (collapsing `after_failed_refresh` to always `Err`); make the empty-store failure fall back instead of aborting; set stale on a *successful* history fetch; **treat `Ok(None)` as a success that clears the flag**; compute coverage from the fetched rows instead of re-reading the window; make `len < 20` raise for Brent; reorder the symbols; map only `Upstream`.
 - [ ] **Step 6: Report.**
 
 ---
@@ -521,7 +556,7 @@ Every test above asserts Rust against Rust. Only running the Python closes the g
 | L2 | render — 17 tests ✅ **done**; three refusals pinned separately, plus the `above`/`rollover` disagreement | likewise |
 | L0 | `price_store::read_window_from_source` — 2 tests ✅ **done**; limit applied after the source filter | a Rust-side filter must fail it |
 | L3 | store — 14 + 1 tests ✅ **done**; every backfill boundary, Yahoo-only coverage, the recorded sparse limit | likewise; in-memory libsql only |
-| L4 | snapshot — the all-or-nothing model | likewise |
+| L4 | snapshot — 17 tests ✅ **done**; the all-or-nothing model, both halves of `after_failed_refresh`, the latest observation reaching `rows` | likewise |
 | L5 | contract — oilcon's own markers, backticks, minimal-warning message | no chipcon or inflation-con literal survives |
 | L6 | differential vs Python across more than one trend state | every difference reported before it is accepted |
 | L7 | the Python oracle still passes | `python3 -m unittest discover -s lib -p 'test_oil*.py'` → 28 |

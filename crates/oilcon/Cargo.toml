@@ -9,7 +9,9 @@ path = "src/lib.rs"
 
 [dependencies]
 libsql = "0.6"
+market-fetch = { path = "../../../../b/gwebcdb/crates/market-fetch" }
 price-store = { path = "../../../../b/gwebcdb/crates/price-store" }
+turso-util = { path = "../../../../b/gwebcdb/crates/turso-util" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
