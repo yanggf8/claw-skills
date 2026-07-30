@@ -10,6 +10,22 @@
 
 **Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (**revision 5**). Read "Storage consolidation into `price-registry`", "Backfill: completeness, not row count", "Provenance policy" and "`chart.error`" before starting. The storage decisions were reviewed five times and several of the obvious designs are wrong for reasons recorded there — rev 5 in particular replaced the provenance-**repair** policy with a provenance **filter**, so do not implement from a cached memory of rev 4.
 
+## Task 3 outcome — revision 5
+
+Task 3 is **done**: `price_store::read_window_from_source` added with 2 new tests (price-store now 15), oilcon `store.rs` with 14 integration tests plus 1 unit test, 48 in the crate. price-cli's suite unaffected, Python oracle still 28. All eight mutations were re-applied independently and every one turned its named test red.
+
+**The hand-rolled date arithmetic was verified exhaustively, because it had to be.** `span_days` needs a calendar difference and there is no date crate in the dependency list, so the implementation carries Hinnant's `days_from_civil`. Two things made that worth attacking rather than reading: the delivered unit test checked only three offsets, and the era line is written `if y >= 0 { y } else { y - 399 } / 400`, where whether `/ 400` binds to the whole `if` or only to the `else` arm changes the result and both parses compile. Dumped against Python's `date.toordinal()` over **every date from 1900-01-01 to 2200-12-31 — 109,938 of them, zero mismatches, strictly +1 per day**. The parse is correct and so is the algorithm. Cases that would have caught a naive implementation are included: 1900 is not a leap year, 2000 and 2400 are, and year 1 and 1600 exercise the negative-era branch.
+
+**A user-visible error-formatting defect was fixed.** `load_window` mapped its error with `format!("{e:?}")`. The reasoning behind it was sound as far as it went — `turso_util::Error` genuinely implements neither `Display` nor `std::error::Error`, which was checked rather than assumed — but `Debug` is not the fallback to reach for. That string becomes `build_snapshot`'s warning, which renders into the delivered message as `[WARN: turso unavailable - …]` where the Python puts `str(exc)`. A Telegram reader would have received `Error { kind: Turso, message: "…" }`. `kind_str()` and `message()` are both public; the map now produces `turso: <message>`.
+
+**One mutation had to be applied twice to be worth anything.** Dropping `AND source = ?` from the SQL while leaving three bound parameters leaves the query with two placeholders and three arguments, so libsql fails on the binding and *four* oilcon tests go red — including `load_window_empty_store_is_empty`, which cannot legitimately be sensitive to a source predicate. That red light measured a parameter-count error, not a missing filter. Re-applied with the binding reduced to match, the result is the intended one: price-store's `from_source_applies_limit_after_the_source_filter` plus exactly the three oilcon provenance tests. A mutation that fails for the wrong reason proves nothing about the test.
+
+**The implementer's self-reported weakness is real and correctly diagnosed.** It flagged that a length assertion alone cannot catch the dropped source predicate, since a ticker holding 302 mixed rows still yields 252. Confirmed: the interleaved test survives on its date and content assertions, not its count. Mutation 5 — the Rust-side filter that reproduces the original design fault — fails it with `got 202`, which is the fault stated numerically.
+
+Two items it raised as under-specification are accepted as such: the plan named neither `load_window`'s error type nor the `coverage` / `after_failed_refresh` function names, so both were the implementer's choice. Recorded rather than retrofitted into the plan as though they had been specified.
+
+**A recorded limit, not fixed.** `parse_iso` validates only `1 <= m <= 12` and `1 <= d <= 31`, so `2026-02-31` parses. The comment above `is_stale` says unparseable dates are treated as stale "so a corrupt row cannot silence backfill" — true, but a *parseable impossible* date slips through, and one dated into the future would suppress the freshness condition specifically. The other two conditions still apply, and reaching this needs a corrupt row in the shared table, so day-versus-month-length validation is not being added. Written down so the guard's stated intent is not mistaken for complete.
+
 ## Task 2 outcome — revision 4
 
 Task 2 is **done**: 17 render tests, 33 in the crate, workspace green, Python oracle still 28. All seven mutations were re-applied here and each turned its named test red; the implementer's report matched on every one, which is worth stating because the previous task's did not.
@@ -503,8 +519,8 @@ Every test above asserts Rust against Rust. Only running the Python closes the g
 |---|---|---|
 | L1 | analysis — 16 tests ✅ **done** | every mutation turns at least its named test red |
 | L2 | render — 17 tests ✅ **done**; three refusals pinned separately, plus the `above`/`rollover` disagreement | likewise |
-| L0 | `price_store::read_window_from_source` — limit applied after the source filter | a Rust-side filter must fail it |
-| L3 | store — every backfill boundary, Yahoo-only coverage, the recorded sparse limit | likewise; in-memory libsql only |
+| L0 | `price_store::read_window_from_source` — 2 tests ✅ **done**; limit applied after the source filter | a Rust-side filter must fail it |
+| L3 | store — 14 + 1 tests ✅ **done**; every backfill boundary, Yahoo-only coverage, the recorded sparse limit | likewise; in-memory libsql only |
 | L4 | snapshot — the all-or-nothing model | likewise |
 | L5 | contract — oilcon's own markers, backticks, minimal-warning message | no chipcon or inflation-con literal survives |
 | L6 | differential vs Python across more than one trend state | every difference reported before it is accepted |

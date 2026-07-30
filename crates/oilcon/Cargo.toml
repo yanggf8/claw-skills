@@ -8,3 +8,8 @@ name = "oilcon"
 path = "src/lib.rs"
 
 [dependencies]
+libsql = "0.6"
+price-store = { path = "../../../../b/gwebcdb/crates/price-store" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
