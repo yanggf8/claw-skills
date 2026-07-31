@@ -135,3 +135,75 @@ fn without_deliver_to_the_body_still_reaches_stdout() {
     assert_eq!(code, 0);
     assert!(out.contains("SIGNAL-ONLY"), "the full report must be on stdout: {out}");
 }
+
+// ── argument validation: argparse's refusals, including the exit code ───────
+//
+// run.py uses argparse with choices=["deliver","record"], so an unknown flag, an
+// invalid --mode value and a --mode with no value all exit 2 before any work.
+//
+// The port originally ignored unknown flags and accepted any --mode string. Not
+// cosmetic: a mistyped --deliver-to leaves deliver_to at None, so the message
+// goes to stdout instead of Telegram and the 05:30 signal stops arriving while
+// the run still emits [skill-status:ok] and the scheduler sees success. Found on
+// 2026-07-31 by tools/install-skill.sh's smoke probe, which requires exit 2 —
+// the same defect it had already caught in oilcon that morning.
+
+#[test]
+fn an_unknown_flag_exits_two_without_fetching() {
+    let called = std::cell::Cell::new(false);
+    let f = |s: &str| -> Result<Vec<Row>, FetchError> {
+        called.set(true);
+        good(s)
+    };
+    let (code, out, err, _) = go(&["chipcon", "--nosuchflag"], Some("job-77"), &f);
+    assert_eq!(code, 2, "argparse exits 2 on an unrecognized argument");
+    assert!(
+        err.contains("unrecognized arguments: --nosuchflag"),
+        "the refusal must name the offending flag: {err}"
+    );
+    assert!(out.is_empty(), "nothing is delivered or emitted: {out}");
+    assert!(
+        !called.get(),
+        "argparse refuses before any fetch — a bad argument must not reach Yahoo"
+    );
+}
+
+#[test]
+fn a_mistyped_deliver_to_is_refused_rather_than_silently_printing_to_stdout() {
+    // The concrete harm: --deliverto leaves deliver_to None, so the body goes to
+    // stdout and the Telegram message simply never arrives.
+    let (code, out, err, _) = go(&["chipcon", "--deliverto", "7972814626"], Some("job-77"), &good);
+    assert_eq!(code, 2);
+    assert!(err.contains("unrecognized arguments: --deliverto"), "{err}");
+    assert!(
+        !out.contains("CHIPCON"),
+        "a refused run must not render the report at all: {out}"
+    );
+}
+
+#[test]
+fn an_invalid_mode_value_exits_two() {
+    let (code, out, err, _) = go(&["chipcon", "--mode", "recrod"], Some("job-77"), &good);
+    assert_eq!(code, 2);
+    assert!(err.contains("invalid choice: 'recrod'"), "{err}");
+    assert!(
+        !out.contains("[skill-status:"),
+        "a rejected run must not report a status at all: {out}"
+    );
+}
+
+#[test]
+fn a_flag_missing_its_value_exits_two() {
+    let (code, _out, err, _) = go(&["chipcon", "--mode"], Some("job-77"), &good);
+    assert_eq!(code, 2);
+    assert!(err.contains("argument --mode: expected one argument"), "{err}");
+}
+
+#[test]
+fn both_valid_modes_are_still_accepted() {
+    // The guard must not reject what argparse allows.
+    for mode in ["deliver", "record"] {
+        let (code, _out, err, _) = go(&["chipcon", "--mode", mode], Some("job-77"), &good);
+        assert_eq!(code, 0, "--mode {mode} must be accepted: {err}");
+    }
+}

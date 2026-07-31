@@ -250,3 +250,72 @@ fn without_deliver_to_the_body_still_reaches_stdout() {
         "inflation-con trailer must be on stdout: {out}"
     );
 }
+
+// ── argument validation: argparse's refusals, including the exit code ───────
+//
+// run.py uses argparse with choices=["deliver","record"]. The port originally
+// ignored unknown flags and accepted any --mode value, so a mistyped
+// --deliver-to left deliver_to at None and the report went to stdout instead of
+// Telegram — the signal never arriving while the run still emitted
+// [skill-status:ok]. This skill fires three times a month, so a silent miss
+// costs a third of the year's coverage before anyone notices.
+//
+// Found 2026-07-31: all three Phase ③ ports failed tools/install-skill.sh's
+// exit-2 smoke probe while weather and doughcon passed it.
+
+#[test]
+fn an_unknown_flag_exits_two_without_fetching() {
+    let called = std::cell::Cell::new(false);
+    let f = |s: &str| -> Result<Vec<Obs>, CreditError> {
+        called.set(true);
+        good(s)
+    };
+    let (code, out, err, _) = go(&["inflation-con", "--nosuchflag"], Some("job-77"), &f);
+    assert_eq!(code, 2, "argparse exits 2 on an unrecognized argument");
+    assert!(
+        err.contains("unrecognized arguments: --nosuchflag"),
+        "the refusal must name the offending flag: {err}"
+    );
+    assert!(out.is_empty(), "nothing is delivered or emitted: {out}");
+    assert!(
+        !called.get(),
+        "argparse refuses before any fetch — a bad argument must not reach FRED"
+    );
+}
+
+#[test]
+fn a_mistyped_deliver_to_is_refused_rather_than_silently_printing_to_stdout() {
+    let (code, out, err, _) =
+        go(&["inflation-con", "--deliverto", "7972814626"], Some("job-77"), &good);
+    assert_eq!(code, 2);
+    assert!(err.contains("unrecognized arguments: --deliverto"), "{err}");
+    assert!(
+        !out.contains("INFLATION"),
+        "a refused run must not render the report at all: {out}"
+    );
+}
+
+#[test]
+fn an_invalid_mode_value_exits_two() {
+    let (code, out, err, _) =
+        go(&["inflation-con", "--mode", "recrod"], Some("job-77"), &good);
+    assert_eq!(code, 2);
+    assert!(err.contains("invalid choice: 'recrod'"), "{err}");
+    assert!(!out.contains("[skill-status:"), "{out}");
+}
+
+#[test]
+fn a_flag_missing_its_value_exits_two() {
+    let (code, _out, err, _) = go(&["inflation-con", "--mode"], Some("job-77"), &good);
+    assert_eq!(code, 2);
+    assert!(err.contains("argument --mode: expected one argument"), "{err}");
+}
+
+#[test]
+fn both_valid_modes_are_still_accepted() {
+    for mode in ["deliver", "record"] {
+        let (code, _out, err, _) =
+            go(&["inflation-con", "--mode", mode], Some("job-77"), &good);
+        assert_eq!(code, 0, "--mode {mode} must be accepted: {err}");
+    }
+}

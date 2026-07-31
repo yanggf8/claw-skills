@@ -19,15 +19,15 @@ read or changed.
 ## Script
 
 ```
-~/.nullclaw/skills/chipcon/scripts/run.py
+~/.nullclaw/skills/chipcon/bin/chipcon
 ```
 
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/chipcon/scripts/run.py
-python3 ~/.nullclaw/skills/chipcon/scripts/run.py --mode record
-python3 ~/.nullclaw/skills/chipcon/scripts/run.py --deliver-to 7972814626
+~/.nullclaw/skills/chipcon/bin/chipcon
+~/.nullclaw/skills/chipcon/bin/chipcon --mode record
+~/.nullclaw/skills/chipcon/bin/chipcon --deliver-to 7972814626
 ```
 
 ## Trend Signals

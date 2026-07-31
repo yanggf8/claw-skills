@@ -37,7 +37,26 @@ struct Args {
 
 /// Parse argv. `argv[0]` is the program name (tests pass `"inflation-con"`).
 /// run.py:68-74
-fn parse_args(argv: &[String], home: &Path) -> Args {
+/// Parse argv the way `run.py`'s `argparse` does, **including its refusals**.
+///
+/// The original port silently ignored unknown flags and accepted any `--mode`
+/// value. Not cosmetic: a mistyped `--deliver-to` leaves `deliver_to` at `None`,
+/// so the report goes to stdout instead of Telegram and the monthly signal never
+/// arrives, while the run still reports `[skill-status:ok]` and the scheduler
+/// sees success. This skill fires three times a month, so a silent miss costs a
+/// third of the year's coverage before anyone would notice.
+///
+/// Found 2026-07-31 while cutting chipcon over: `tools/install-skill.sh`'s smoke
+/// probe requires exit 2 on an unknown flag, and all three Phase ③ ports failed
+/// it while weather and doughcon (Phases ① and ②) passed. The defect tracked the
+/// plan, not the implementer — the Phase ③ plans never specified argparse's
+/// refusals.
+///
+/// The exit code is the contract. The message text is not byte-comparable with
+/// argparse's usage block and is not attempted.
+fn parse_args(argv: &[String], home: &Path) -> Result<Args, String> {
+    const MODES: [&str; 2] = ["deliver", "record"];
+
     let mut mode = "deliver".to_string();
     // run.py:50  DEFAULT_CONFIG = Path.home() / ".nullclaw" / "skills" / "inflation-con" / "config.json"
     let mut config = home
@@ -56,50 +75,52 @@ fn parse_args(argv: &[String], home: &Path) -> Args {
         }
     }
 
+    // Consume the value belonging to `flag`, or refuse the way argparse does.
+    fn value_for(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
+        *i += 1;
+        args.get(*i)
+            .cloned()
+            .ok_or_else(|| format!("inflation-con: error: argument {flag}: expected one argument"))
+    }
+
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--mode" => {
-                i += 1;
-                if i < args.len() {
-                    mode = args[i].clone();
-                }
-            }
+            "--mode" => mode = value_for(args, &mut i, "--mode")?,
             "--config" => {
-                i += 1;
-                if i < args.len() {
-                    config = PathBuf::from(&args[i]);
-                    // Python: Path(args.config).expanduser()
-                    if let Some(stripped) = args[i].strip_prefix("~/") {
-                        config = home.join(stripped);
-                    } else if args[i] == "~" {
-                        config = home.to_path_buf();
-                    }
-                }
+                let raw = value_for(args, &mut i, "--config")?;
+                // Python: Path(args.config).expanduser()
+                config = if let Some(stripped) = raw.strip_prefix("~/") {
+                    home.join(stripped)
+                } else if raw == "~" {
+                    home.to_path_buf()
+                } else {
+                    PathBuf::from(&raw)
+                };
             }
-            "--deliver-to" => {
-                i += 1;
-                if i < args.len() {
-                    deliver_to = Some(args[i].clone());
-                }
+            "--deliver-to" => deliver_to = Some(value_for(args, &mut i, "--deliver-to")?),
+            "--account" => account = value_for(args, &mut i, "--account")?,
+            other => {
+                return Err(format!(
+                    "inflation-con: error: unrecognized arguments: {other}"
+                ));
             }
-            "--account" => {
-                i += 1;
-                if i < args.len() {
-                    account = args[i].clone();
-                }
-            }
-            _ => {}
         }
         i += 1;
     }
 
-    Args {
+    if !MODES.contains(&mode.as_str()) {
+        return Err(format!(
+            "inflation-con: error: argument --mode: invalid choice: '{mode}' (choose from 'deliver', 'record')"
+        ));
+    }
+
+    Ok(Args {
         mode,
         config,
         deliver_to,
         account,
-    }
+    })
 }
 
 /// Emit `[skill-status:<status>]` only when job_id is set (manual runs stay clean).
@@ -176,7 +197,16 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    let args = parse_args(argv, &env.home);
+    // argparse refuses before doing any work, and so must this: a bad argument
+    // must not reach the FRED fetch.
+    let args = match parse_args(argv, &env.home) {
+        Ok(a) => a,
+        Err(msg) => {
+            let _ = writeln!(err, "{msg}");
+            let _ = err.flush();
+            return 2;
+        }
+    };
     // load_config runs BEFORE the try — malformed config panics, no markers
     // (wart 1 preserved from run.py:316).
     let cfg = load_config(&args.config);
