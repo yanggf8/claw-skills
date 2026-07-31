@@ -10,6 +10,12 @@
 
 **Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (revision 4). Read "The three skills are less alike than rev 1 and rev 2 assumed" and "`chart.error`" before starting.
 
+> **STATUS: COMPLETE — chipcon cut over to Rust 2026-07-31.** 49 tests in the crate;
+> intentional differences recorded in `docs/specs/2026-07-31-phase3-chipcon-intentional-differences.md`.
+> **The `- [ ]` checkboxes below were never ticked as work proceeded** — completion is
+> recorded in the prose outcome sections and in git, not in the boxes. Read them as the
+> plan as written, not as a progress tracker.
+
 ## Global Constraints
 
 - **The Python is the oracle.** Every ported function is checked against `chipcon/scripts/run.py`. Where this plan's prose and that file disagree, **the file wins** — report the discrepancy rather than editing code to match prose. Two claims about chipcon in an earlier design revision were simply false, so this is not hypothetical.

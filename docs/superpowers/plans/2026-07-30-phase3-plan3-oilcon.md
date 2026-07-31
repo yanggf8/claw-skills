@@ -10,6 +10,12 @@
 
 **Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (**revision 6**). Read "Storage consolidation into `price-registry`", "Backfill: completeness, not row count", "Provenance policy" and "`chart.error`" before starting. The storage decisions were reviewed five times and several of the obvious designs are wrong for reasons recorded there — rev 5 in particular replaced the provenance-**repair** policy with a provenance **filter**, so do not implement from a cached memory of rev 4.
 
+> **STATUS: COMPLETE — oilcon cut over to Rust 2026-07-31.** 82 tests in the crate;
+> intentional differences recorded in `docs/specs/2026-07-31-phase3-oilcon-intentional-differences.md`.
+> **The `- [ ]` checkboxes below were never ticked as work proceeded** — completion is
+> recorded in the prose outcome sections and in git, not in the boxes. Read them as the
+> plan as written, not as a progress tracker.
+
 ## Task 6 outcome — revision 8
 
 Task 6 is **done**: **six fixture sets, all byte-identical** on message, record line and skill status — `live` (real Yahoo, lands in `rollover`), synthesised `uptrend`, `weakening-uptrend` and `no-uptrend`, and two forms of the fixed-point equality case. 78 tests in the crate, Python oracle still 28.

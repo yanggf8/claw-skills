@@ -10,6 +10,12 @@
 
 **Spec:** `docs/specs/2026-07-29-con-family-rust-port-phase3-design.md` (revision 4). Read "The three skills are less alike than rev 1 and rev 2 assumed" and "inflation-con carries a reachable crash and a piece of dead code" first.
 
+> **STATUS: COMPLETE — inflation-con cut over to Rust 2026-07-31.** 45 tests in the crate;
+> intentional differences recorded in `docs/specs/2026-07-30-phase3-inflation-con-intentional-differences.md`.
+> **The `- [ ]` checkboxes below were never ticked as work proceeded** — completion is
+> recorded in the prose outcome sections and in git, not in the boxes. Read them as the
+> plan as written, not as a progress tracker.
+
 ## Global Constraints
 
 - **The Python is the oracle, and it is now correct.** The `be_last[1]` crash was fixed in `899b7a8` before this plan was written, precisely so the differential in Task 5 would mean something — a differential against an oracle that crashes only proves both sides crash. Do not port the pre-fix behaviour.
