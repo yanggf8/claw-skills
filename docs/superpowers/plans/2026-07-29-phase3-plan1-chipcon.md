@@ -750,9 +750,45 @@ fn without_deliver_to_the_body_still_reaches_stdout() {
 
 ---
 
-### Task 5: differential check against the Python
+### Task 5: differential check against the Python — ✅ DONE 2026-07-31
 
-**Files:** Create `crates/chipcon/tests/differential.rs` or a script under `tools/`.
+**Files:** `crates/chipcon/tests/differential.rs` + `crates/chipcon/fixtures/`.
+
+**Result: seven fixture sets, all byte-identical** on message, record line and skill
+status — `live` (real Yahoo, classifies RED) plus one synthesised set for each of the
+six `Status` values. The classification printed for each set is the **Python's own**,
+so the coverage claim is the oracle's, not a directory label. chipcon is now 44 tests;
+the workspace is 244.
+
+Verified rather than accepted:
+
+- **The differential runs the Python.** `differential.rs` spawns `python3` at test
+  time and parses its stdout; nothing is compared against a stored expectation, and
+  `drive_python.py` calls `update_state` / `classify` / `format_message` /
+  `record_line` on the loaded module rather than reimplementing any of them. It
+  contains zero rendered-string literals.
+- **The test can fail.** Two mutations of `render.rs` — a space appended to the
+  message title, and the record line's `SMH={:.2}` widened to `{:.3}` — each turned
+  it red with exit 101. A differential that only prints DIFFER without failing would
+  be worthless.
+- **No network, with a positive control.** Zero `connect()` and zero `AF_INET` in
+  both the Python driver and the Rust test binary under `strace`; a real HTTPS
+  request under the same filter shows 10 of each, so the zero is a measurement and
+  not a filter that missed. Note a blackhole proxy proves nothing here — the test
+  strips proxy variables from the child environment, as oilcon's does.
+- **The live fixture is genuinely live**: `SMH`, exchange `NGM`, `ETF`, USD, 251
+  points spanning 2025-07-31 to 2026-07-30, closes 283.95–668.91, 98% non-integer.
+
+**The trap this task contains**, recorded because it nearly cost the implementer the
+run: chipcon has no `cst_now`-style helper. `record_line` calls
+`datetime.now(tz).strftime(...)` **inline** (`run.py:248`), so the driver has to
+substitute the `datetime` **class**, not a function. The real class must be captured
+**once at module load** — capturing it per fixture set means the second set grabs
+`FakeDT` and `FakeDT(...)` raises `TypeError`.
+
+**Not covered here** (all fixtures fetch successfully and warn nowhere): the degraded
+text from a failed secondary fetch, a hard `update_state` failure, `--mode record`
+writing its file, and delivery/markers. Those remain on the contract and fetch tests.
 
 Run both implementations over the **same captured Yahoo payloads** with the clock frozen, and compare the rendered message and the record line. Capture the fixtures once from the real endpoint and commit them; do not hit the network in the test.
 
