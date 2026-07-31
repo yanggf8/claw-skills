@@ -256,7 +256,7 @@ is a live defect in ported code, not a Python-only legacy:
 | Impl | Skills | Evidence |
 |------|--------|----------|
 | Rust (live) | `weather`, `doughcon`, `traffic` | `weather/src/main.rs:116` deliver → `:129` `Finish::Marked`; `doughcon/src/main.rs:108` → `:113`. `traffic` sidesteps it: its degraded path exits before delivery, and its jobs are on `repair_policy = none` because no traffic failure is repaired by a retry. |
-| Python (live) | `cct2`, `chipcon`, `inflation-con`, `news`, `oilcon` | `deliver_or_fail()` precedes `emit_skill_status()` |
+| Python (live) | `cct2`, `news` | `deliver_or_fail()` precedes `emit_skill_status()` |
 
 So any first attempt that delivers successfully and then reports `degraded` or
 `failed` has already put a message in front of the user when the retry fires.
@@ -327,7 +327,7 @@ Prior design context lives in `docs/specs/` (`2026-04-15-oilcon-skill-design.md`
 | `news` | `--topics`, `--account-topics`, `manage list\|add\|remove` | Google News RSS |
 | `cct` | `--mode <pre-market\|eod\|...>` | CCT internal |
 | `cct2` | `--mode pre-market\|eod` | Yahoo Finance + dual LLM |
-| `stock` | `--market tw\|hk\|all`, `--symbol CODE` | TWSE, Yahoo Finance |
+| `stock` | `--market tw\|hk\|all`, `--symbol CODE` | TWSE, Yahoo Finance (Rust) |
 | `chipcon` | `--mode record`, `--deliver-to` | Yahoo Finance chart (SMH/QQQ/SOXX); observation-only report |
 | `weather` | `--location NAME` (repeatable) | CWA (Taiwan), HKO (HK) |
 | `traffic` | `--from`, `--to`, `--via` | TomTom Routing API |
