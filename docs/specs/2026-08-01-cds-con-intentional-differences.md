@@ -76,7 +76,12 @@ forbids exactly that.
   unlike the percentile logic, which is deliberately single-sourced — but a
   third consumer should move the read into `credit-store`.
 - **`price_registry()` is duplicated in `main.rs`**, because `price-cli` is a
-  `[[bin]]`-only crate with no `[lib]` and cannot be imported.
+  `[[bin]]`-only crate with no `[lib]` and cannot be imported. The credential path
+  itself was confirmed rather than assumed: `turso_util::resolve_token` checks the
+  environment first (`lib.rs:30`) and returns immediately on a hit, the gateway
+  process carries both `PRICE_TURSO_URL` and `PRICE_TURSO_READ_TOKEN`, and that
+  token has no `exp` claim. So a cron host never mints and never needs an
+  interactive `turso auth login`.
 - **The two cron jobs are ordered by the clock alone.** Fetch at 06:00, deliver
   at 06:30. Nothing enforces that the fetch succeeded first; the `資料:` line is
   what makes a missed fetch visible.
