@@ -42,7 +42,21 @@ fn history_log_path(home: &Path) -> PathBuf {
 
 /// Parse argv. `argv[0]` is the program name (tests pass `"oilcon"`).
 /// run.py:307–316
-fn parse_args(argv: &[String]) -> Args {
+/// Parse argv the way `run.py`'s `argparse` does, **including its refusals**.
+///
+/// An earlier version silently ignored unknown flags and accepted any `--mode`
+/// value. That is not a cosmetic difference from the Python: `if args.mode ==
+/// "deliver"` is false for a typo, so `--mode recrod` fell through to the record
+/// branch, which never delivers — the nightly signal would stop arriving while
+/// the run still reported `[skill-status:ok]` and the scheduler saw success.
+/// `argparse` exits 2 on all three of these; so do we.
+///
+/// The exit code is the contract. The message text is not byte-comparable with
+/// `argparse`'s usage block and is not attempted — same class as the io::Error
+/// versus OSError difference in the history-log line.
+fn parse_args(argv: &[String]) -> Result<Args, String> {
+    const MODES: [&str; 2] = ["deliver", "record"];
+
     let mut mode = "deliver".to_string();
     let mut deliver_to: Option<String> = None;
     let mut account = "main".to_string();
@@ -55,37 +69,38 @@ fn parse_args(argv: &[String]) -> Args {
         }
     }
 
+    // Consume the value belonging to `flag`, or refuse the way argparse does.
+    fn value_for(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
+        *i += 1;
+        args.get(*i)
+            .cloned()
+            .ok_or_else(|| format!("oilcon: error: argument {flag}: expected one argument"))
+    }
+
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--mode" => {
-                i += 1;
-                if i < args.len() {
-                    mode = args[i].clone();
-                }
+            "--mode" => mode = value_for(args, &mut i, "--mode")?,
+            "--deliver-to" => deliver_to = Some(value_for(args, &mut i, "--deliver-to")?),
+            "--account" => account = value_for(args, &mut i, "--account")?,
+            other => {
+                return Err(format!("oilcon: error: unrecognized arguments: {other}"));
             }
-            "--deliver-to" => {
-                i += 1;
-                if i < args.len() {
-                    deliver_to = Some(args[i].clone());
-                }
-            }
-            "--account" => {
-                i += 1;
-                if i < args.len() {
-                    account = args[i].clone();
-                }
-            }
-            _ => {}
         }
         i += 1;
     }
 
-    Args {
+    if !MODES.contains(&mode.as_str()) {
+        return Err(format!(
+            "oilcon: error: argument --mode: invalid choice: '{mode}' (choose from 'deliver', 'record')"
+        ));
+    }
+
+    Ok(Args {
         mode,
         deliver_to,
         account,
-    }
+    })
 }
 
 /// Emit `[skill-status:<status>]` only when job_id is set (manual runs stay clean).
@@ -179,7 +194,16 @@ pub async fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    let args = parse_args(argv);
+    // argparse refuses before doing any work, and so must this: a bad argument
+    // must not reach build_snapshot, which fetches and writes the registry.
+    let args = match parse_args(argv) {
+        Ok(a) => a,
+        Err(msg) => {
+            let _ = writeln!(err, "{msg}");
+            let _ = err.flush();
+            return 2;
+        }
+    };
 
     let snapshot = build_snapshot(conn, today, fetch_history, fetch_latest).await;
 

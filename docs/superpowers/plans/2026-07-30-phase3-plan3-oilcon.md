@@ -572,6 +572,18 @@ Every test above asserts Rust against Rust. Only running the Python closes the g
 
 ### Task 7: cutover — the part that touches a live daily cron
 
+**CUTOVER DONE 2026-07-31 12:0x.** `SKILL.md`'s `## Script` line and all three `## Usage` lines now point at `~/.nullclaw/skills/oilcon/bin/oilcon`; the binary is `sha256 18362db323145b503170ef206ae7f44eda7eb755963a9267c8eaf516d22e6f5d`, published by `tools/install-skill.sh oilcon` and matching `target/release/oilcon`. Smoke-tested through the exact path nullclaw resolves, with a job id: exit 0 in 1.3 s, full report, backticked job id, both markers, order body → status → trace, clean stderr. First scheduled Rust run is tonight at 22:00 Taipei.
+
+**Rollback** is one line: set `## Script` back to `~/.nullclaw/skills/oilcon/scripts/run.py`. `oilcon-yanggf8`, `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are untouched, so the Python resumes with its own history and its own numbers.
+
+**⚠ A silent-failure defect was found during Step 4 and fixed before the switch.** `tools/install-skill.sh` smoke-probes a staged binary with an unknown flag and requires **exit 2** — proof that the argument parser loads and refuses. The manual `install -m 755` used earlier bypassed that gate, and running the probe by hand exposed the reason it exists: `parse_args` had `_ => {}`, so it **silently ignored unknown flags and accepted any `--mode` value**.
+
+That is not cosmetic. `run.py` declares `choices=["deliver", "record"]`, so `argparse` exits 2 on a typo; the Rust fell through `if args.mode == "deliver"` into the **record** branch, which never delivers. Measured before the fix: `--mode recrod`, `--mode DELIVER` and `--mode ""` all exited **0** and ran as record, against **2** from the Python. A mistyped or newly-added cron flag would therefore have stopped the nightly signal while still emitting `[skill-status:ok]` — the scheduler would see success and nobody would notice the message had stopped arriving.
+
+Fixed to match `argparse`'s three refusals — unknown flag, invalid `--mode` value, flag missing its value — all exiting 2 **before** `build_snapshot`, so a bad argument never reaches a fetch or a write. Four contract tests added and each falsified by mutation; the exit code is the contract, the message text is not byte-comparable with argparse's usage block and is not attempted. 82 tests.
+
+The lesson is narrower than "run the installer": **a project's own install gate encodes a contract the code must meet, and bypassing it silently drops that contract.** The gate was not decoration — it caught a real defect on its first honest run.
+
 **⚠ Found during the 2026-07-30 preflight: the port changes every derived number, permanently, and it can change the classification.** This was not on the intentional-divergence list and it is the most consequential finding of the whole plan.
 
 The two stores hold **different closes for the same symbol on the same date**:
@@ -637,7 +649,7 @@ Consequences:
 | L0 | `price_store::read_window_from_source` — 2 tests ✅ **done**; limit applied after the source filter | a Rust-side filter must fail it |
 | L3 | store — 14 + 1 tests ✅ **done**; every backfill boundary, Yahoo-only coverage, the recorded sparse limit | likewise; in-memory libsql only |
 | L4 | snapshot — 17 tests ✅ **done**; the all-or-nothing model, both halves of `after_failed_refresh`, the latest observation reaching `rows` | likewise |
-| L5 | contract — 12 tests ✅ **done**; oilcon's own markers, backticks, minimal-warning message, the inherited exit-code invariant | no chipcon or inflation-con literal survives |
+| L5 | contract — 16 tests ✅ **done**; oilcon's own markers, backticks, minimal-warning message, the inherited exit-code invariant | no chipcon or inflation-con literal survives |
 | L6 | differential ✅ **done** — 6 sets byte-identical (live + 4 trend states + fixed-point equality) | every difference reported before it is accepted |
 | L7 | the Python oracle still passes | `python3 -m unittest discover -s lib -p 'test_oil*.py'` → 28 |
 

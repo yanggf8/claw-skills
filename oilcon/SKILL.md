@@ -11,15 +11,15 @@ Fetch WTI, Brent, and heating-oil closes, then deliver a compact oil regime snap
 ## Script
 
 ```
-~/.nullclaw/skills/oilcon/scripts/run.py
+~/.nullclaw/skills/oilcon/bin/oilcon
 ```
 
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/oilcon/scripts/run.py
-python3 ~/.nullclaw/skills/oilcon/scripts/run.py --mode record
-python3 ~/.nullclaw/skills/oilcon/scripts/run.py --deliver-to CHAT_ID
+~/.nullclaw/skills/oilcon/bin/oilcon
+~/.nullclaw/skills/oilcon/bin/oilcon --mode record
+~/.nullclaw/skills/oilcon/bin/oilcon --deliver-to CHAT_ID
 ```
 
 ## Options

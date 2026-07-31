@@ -582,3 +582,109 @@ async fn warning_free_deliver_always_has_wti_rows_so_format_message_expect_is_un
     let _ = std::fs::remove_dir_all(&home);
     let _ = std::fs::remove_dir_all(&home2);
 }
+
+// ── argument validation: argparse's refusals, including the exit code ───────
+//
+// run.py uses argparse with choices=["deliver","record"], so an unknown flag, an
+// invalid --mode value and a --mode with no value all exit 2 before any work.
+//
+// The port originally ignored unknown flags and accepted any --mode string, which
+// was not cosmetic: `if args.mode == "deliver"` is false for a typo, so `--mode
+// recrod` fell through to the record branch, which never delivers. The nightly
+// signal would have stopped arriving while the run still emitted
+// [skill-status:ok] and the scheduler saw success. Found on 2026-07-31 by running
+// tools/install-skill.sh's own smoke probe, which requires exit 2 and which the
+// manual install had bypassed.
+
+#[tokio::test]
+async fn an_unknown_flag_exits_two_without_doing_any_work() {
+    let conn = mem().await;
+    let called = std::cell::Cell::new(false);
+    let history = |s: &str| -> Result<Vec<Row>, FetchError> {
+        called.set(true);
+        history_unused(s)
+    };
+    let latest = |s: &str| -> Result<Option<Row>, FetchError> {
+        called.set(true);
+        latest_ok(s)
+    };
+    let (code, out, err, home) =
+        go(&["oilcon", "--nosuchflag"], Some(JOB), &conn, &history, &latest, tmp()).await;
+    assert_eq!(code, 2, "argparse exits 2 on an unrecognized argument");
+    assert!(
+        err.contains("unrecognized arguments: --nosuchflag"),
+        "the refusal must name the offending flag: {err}"
+    );
+    assert!(out.is_empty(), "nothing is delivered or emitted: {out}");
+    assert!(
+        !called.get(),
+        "argparse refuses before any fetch — a bad argument must not reach build_snapshot"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test]
+async fn an_invalid_mode_value_exits_two_rather_than_silently_recording() {
+    // The dangerous case: `deliver` mistyped is not `deliver`, and every branch
+    // that is not `deliver` records — which never delivers.
+    let conn = mem().await;
+    let (code, out, err, home) = go(
+        &["oilcon", "--mode", "recrod"],
+        Some(JOB),
+        &conn,
+        &history_unused,
+        &latest_ok,
+        tmp(),
+    )
+    .await;
+    assert_eq!(code, 2, "argparse exits 2 on an invalid choice");
+    assert!(
+        err.contains("invalid choice: 'recrod'"),
+        "the refusal must name the rejected value: {err}"
+    );
+    assert!(
+        !out.contains("[skill-status:"),
+        "a rejected run must not report a status at all: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test]
+async fn a_flag_missing_its_value_exits_two() {
+    let conn = mem().await;
+    let (code, _out, err, home) = go(
+        &["oilcon", "--mode"],
+        Some(JOB),
+        &conn,
+        &history_unused,
+        &latest_ok,
+        tmp(),
+    )
+    .await;
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("argument --mode: expected one argument"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test]
+async fn both_valid_modes_are_still_accepted() {
+    // The guard must not reject what argparse allows.
+    for mode in ["deliver", "record"] {
+        let conn = mem().await;
+        seed_all(&conn).await;
+        let (code, _out, err, home) = go(
+            &["oilcon", "--mode", mode],
+            Some(JOB),
+            &conn,
+            &history_unused,
+            &latest_ok,
+            tmp(),
+        )
+        .await;
+        assert_eq!(code, 0, "--mode {mode} must be accepted: {err}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}
