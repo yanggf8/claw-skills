@@ -40,15 +40,15 @@ No local store and no price registry — series are fetched fresh each run.
 ## Script
 
 ```
-~/.nullclaw/skills/inflation-con/scripts/run.py
+~/.nullclaw/skills/inflation-con/bin/inflation-con
 ```
 
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/inflation-con/scripts/run.py
-python3 ~/.nullclaw/skills/inflation-con/scripts/run.py --mode record
-python3 ~/.nullclaw/skills/inflation-con/scripts/run.py --deliver-to 7972814626
+~/.nullclaw/skills/inflation-con/bin/inflation-con
+~/.nullclaw/skills/inflation-con/bin/inflation-con --mode record
+~/.nullclaw/skills/inflation-con/bin/inflation-con --deliver-to 7972814626
 ```
 
 ## Status ladder
