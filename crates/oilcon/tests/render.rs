@@ -104,7 +104,7 @@ fn format_message_status_degraded_only_when_warning_set() {
     snap.warning = Some("latest quote unavailable".into());
     let (msg, status) = format_message(&snap, "2026-04-15 12:00");
     assert_eq!(status, "degraded");
-    assert!(msg.contains("[WARN: latest quote unavailable]"));
+    assert!(msg.contains("⚠ 這份不完整:latest quote unavailable"));
 }
 
 #[test]

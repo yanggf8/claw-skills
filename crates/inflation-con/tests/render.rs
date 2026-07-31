@@ -204,7 +204,7 @@ fn warning_line_is_prefixed_exactly() {
         &cfg(),
         Some("fetch DGS10: timeout"),
     );
-    assert!(m.contains("[WARN: fetch DGS10: timeout]"), "{m}");
+    assert!(m.contains("⚠ 這份不完整:fetch DGS10: timeout"), "{m}");
 }
 
 #[test]

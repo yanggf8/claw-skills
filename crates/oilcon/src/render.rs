@@ -112,7 +112,9 @@ pub fn format_message(snapshot: &Snapshot, now: &str) -> (String, String) {
     let mut lines: Vec<String> = vec!["🛢️ OILCON 情報".into()];
     let mut status = "ok".to_string();
     if let Some(ref warning) = snapshot.warning {
-        lines.push(format!("[WARN: {warning}]"));
+        // Say what is affected, not a tag. This line rides on an otherwise
+        // complete report, so the reader needs to know which part to distrust.
+        lines.push(format!("⚠ 這份不完整:{warning}"));
         status = "degraded".to_string();
     }
 

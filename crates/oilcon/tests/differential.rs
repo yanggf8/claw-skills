@@ -272,7 +272,7 @@ async fn rust_artefacts(
 
     let snap = build_snapshot(conn, PINNED_TODAY, &fetch_history, &fetch_latest).await;
     if let Some(ref w) = snap.warning {
-        let message = format!("🛢️ OILCON 情報\n[WARN: {w}]\n更新：{PINNED_NOW}");
+        let message = format!("🛢️ OILCON 情報\n⚠ 今天沒有報告可出:{w}\n  沒有數字可讀,不是行情平靜。下次排程會再試。\n更新：{PINNED_NOW}");
         return (
             String::new(),
             message,

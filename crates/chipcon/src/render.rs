@@ -63,7 +63,11 @@ pub fn format_message(
     let mut lines: Vec<String> = vec!["💾 CHIPCON 情報".into()];
     let mut skill_status: SkillStatus = "ok";
     if let Some(w) = warning {
-        lines.push(format!("[WARN: {w}]"));
+        // Say what is missing and what still holds, not a status word. The raw
+        // fetch string is kept on its own line so the cause is still readable,
+        // but the reader is told first which part of THIS report to distrust.
+        lines.push(format!("⚠ 這份不完整:{w}"));
+        lines.push("  受影響:相對強弱那幾行(SMH 自身的趨勢判斷不受影響)".to_string());
         skill_status = "degraded";
     }
     lines.push(format!("狀態：{}", status_str(status)));

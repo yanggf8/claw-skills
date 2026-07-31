@@ -67,7 +67,9 @@ pub fn format_message(
     let mut lines: Vec<String> = vec!["📈 INFLATION-CON".into()];
     let mut skill_status: SkillStatus = "ok";
     if let Some(w) = warning {
-        lines.push(format!("[WARN: {w}]"));
+        // Say what is missing and what still holds, not a status word.
+        lines.push(format!("⚠ 這份不完整:{w}"));
+        lines.push("  受影響:缺的那條序列不列入依據;其餘分級照算".to_string());
         skill_status = "degraded";
     }
     lines.push(format!("狀態：{}", status_str(status)));

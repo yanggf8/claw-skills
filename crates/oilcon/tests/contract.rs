@@ -302,7 +302,7 @@ async fn deliver_plus_warning_is_the_three_line_minimal_message() {
     );
     // Exact three-line shape (plus job-id footer and markers).
     assert!(
-        out.contains("🛢️ OILCON 情報\n[WARN:"),
+        out.contains("🛢️ OILCON 情報\n⚠ 今天沒有報告可出:"),
         "title then WARN: {out}"
     );
     assert!(
@@ -548,7 +548,7 @@ async fn warning_free_deliver_always_has_wti_rows_so_format_message_expect_is_un
             go(&["oilcon"], Some(JOB), &conn, &history_fail, &latest_fail, tmp()).await;
         assert_eq!(code, 0, "insufficient WTI must degrade, not panic: {err}");
         assert!(
-            out.contains("[WARN: insufficient WTI history (19 rows)]"),
+            out.contains("⚠ 今天沒有報告可出:insufficient WTI history (19 rows)"),
             "insufficient WTI must surface as a warning, never reach format_message: {out}"
         );
         assert!(

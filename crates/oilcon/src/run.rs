@@ -211,7 +211,11 @@ pub async fn run(
     if let Some(ref warning) = snapshot.warning {
         if args.mode == "deliver" {
             // run.py:321  three-line minimal message, not the full report.
-            let message = format!("🛢️ OILCON 情報\n[WARN: {warning}]\n更新：{now}");
+            // The whole report is gone, not just a part of it — say so plainly.
+            // A reader seeing three lines needs to know this is not "oil is quiet".
+            let message = format!(
+                "🛢️ OILCON 情報\n⚠ 今天沒有報告可出:{warning}\n  沒有數字可讀,不是行情平靜。下次排程會再試。\n更新：{now}"
+            );
             return emit_and_exit(
                 &message,
                 "degraded",

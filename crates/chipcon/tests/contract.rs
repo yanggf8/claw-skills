@@ -69,7 +69,7 @@ fn a_secondary_failure_is_degraded_but_still_delivers_and_exits_zero() {
     let (code, out, err, _) = go(&["chipcon"], Some("job-77"), &f);
     assert_eq!(code, 0, "a degraded run is not a failure");
     assert!(out.contains("[skill-status:degraded]"), "{out}");
-    assert!(out.contains("[WARN:"), "the warning must reach the reader: {out}");
+    assert!(out.contains("⚠ 這份不完整:"), "the warning must reach the reader in plain language: {out}");
     assert!(err.is_empty(), "{err}");
 }
 

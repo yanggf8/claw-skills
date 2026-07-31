@@ -142,7 +142,9 @@ fn dispatch_warning(
     let (mode, deliver_to, account) = parse_mode_and_delivery(argv);
 
     if mode == "deliver" {
-        let mut output = format!("🛢️ OILCON 情報\n[WARN: {warning}]\n更新：{now}");
+        let mut output = format!(
+            "🛢️ OILCON 情報\n⚠ 今天沒有報告可出:{warning}\n  沒有數字可讀,不是行情平靜。下次排程會再試。\n更新：{now}"
+        );
         if let Some(ref job_id) = env.job_id {
             output.push_str("\n\n`");
             output.push_str(job_id);
