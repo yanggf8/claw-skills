@@ -120,3 +120,50 @@ Verified by breaking things on purpose and checking the right test went red:
   Not fixed here because claw-core is in another repo.
 - A float `travelTimeInSeconds` is rejected where Python accepted it. TomTom
   returns integers; unverified against a payload that does otherwise.
+
+## Recorded, not acted on: where claw-core lives
+
+`claw-core` sits in `~/b/gwebcdb/crates/claw-core` and every skill reaches it
+through `path = "../../../../b/gwebcdb/crates/claw-core"`. The question of
+whether it belongs there was reviewed on 2026-08-01 and the answer is **it
+should move into this repo, but not yet** — recorded here so the reasoning is
+not re-derived.
+
+The case for moving, all verified:
+
+- gwebcdb's own README lists its shared crates as `turso-util`, `price-cli` and
+  `worker-github-oauth`. `claw-core` is not among them.
+- `cargo tree -i claw-core` inside gwebcdb returns nothing. No crate in the
+  repo that hosts it consumes it.
+- `git log -- crates/claw-core` is 1 commit — the one that moved it in.
+  `turso-util` has 8.
+- Its stated justification is that `cct` and `autocli` will need it once they
+  port. Neither has any Rust yet, and the Python they run today resolves its
+  shared lib to `~/a/claw-skills/lib` by an explicit rule in cct's own
+  `run.py`, which says the contract is "maintained in claw-skills". Placing the
+  Rust twin elsewhere splits the ownership of one contract across two repos.
+- The commit that moved it says of the path: "Ugly, and worth remembering if
+  either repo ever moves."
+
+And the correction that keeps it from being urgent — this is the part an
+outside review understated:
+
+**Moving claw-core does not free claw-skills from gwebcdb.** Five crates cross
+that boundary, not one:
+
+| crate | consumers here |
+|---|---|
+| `claw-core` | all seven |
+| `market-fetch` | inflation-con, chipcon, oilcon |
+| `turso-util` | cds-con, oilcon |
+| `price-store` | oilcon |
+| `credit-store` | cds-con |
+
+Four of the seven skills would still need gwebcdb checked out beside this repo.
+So the strongest practical argument — "you cannot build without a second
+checkout" — mostly does not survive; only doughcon, weather and traffic would
+be freed. The remaining case is conceptual: claw-core is claw-specific, while
+the other four are genuinely shared domain crates that belong where they are.
+
+Worth doing before the crate count grows (7 `Cargo.toml` files today, 14 once
+every skill is ported), and not worth interrupting the port for.
