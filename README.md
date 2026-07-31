@@ -69,7 +69,6 @@ Config schema auto-detected:
 | cct | Fetch CCT 4-moment trading intelligence and deliver to Telegram |
 | cct2 | Dual-LLM market sentiment analysis for configured tickers — pre-market and EOD reports |
 | chipcon | Observe SMH semiconductor momentum via trend/relative-strength signals; signal-only observation report |
-| commute | Fetch route travel time via traffic sub-skill |
 | doughcon | Fetch PizzINT DOUGHCON level and deliver or record |
 | liko-finance-weekly | Draft, validate, and publish the weekly liko-finance cross-border wealth signal stream |
 | mindfulness-spirit | 身心靈 × AI series — auto-draft, check, and publish columns via persona-core |

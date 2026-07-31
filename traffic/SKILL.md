@@ -11,14 +11,14 @@ Fetch TomTom route travel time between two or three waypoints.
 ## Script
 
 ```
-~/.nullclaw/skills/traffic/scripts/run.py
+~/.nullclaw/skills/traffic/bin/traffic
 ```
 
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/traffic/scripts/run.py --from 淡水安泰登峰 --to 小巨蛋
-python3 ~/.nullclaw/skills/traffic/scripts/run.py --from 士林 --via 昌吉街重北路口 --to 淡水安泰登峰
+python3 ~/.nullclaw/skills/traffic/bin/traffic --from 淡水安泰登峰 --to 小巨蛋
+python3 ~/.nullclaw/skills/traffic/bin/traffic --from 士林 --via 昌吉街重北路口 --to 淡水安泰登峰
 ```
 
 ## Options

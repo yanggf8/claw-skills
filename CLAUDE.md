@@ -223,7 +223,7 @@ never adds attempts.
 ### 2. Every cron job now runs `skill_contract` — there is no lax mode left
 
 All 38 jobs use `verification_mode = skill_contract`
-(`weather` 8, `commute` 7, `news` 6, `cct` 4, `doughcon` 4, `cct2` 2,
+(`weather` 8, `traffic` 7, `news` 6, `cct` 4, `doughcon` 4, `cct2` 2,
 `ainews` 2, one each for the rest). A skill that gets the markers wrong alerts
 the same day.
 
@@ -255,8 +255,8 @@ is a live defect in ported code, not a Python-only legacy:
 
 | Impl | Skills | Evidence |
 |------|--------|----------|
-| Rust (live) | `weather`, `doughcon` | `weather/src/main.rs:116` deliver → `:129` `Finish::Marked`; `doughcon/src/main.rs:108` → `:113` |
-| Python (live) | `cct2`, `chipcon`, `commute`, `inflation-con`, `news`, `oilcon` | `deliver_or_fail()` precedes `emit_skill_status()` |
+| Rust (live) | `weather`, `doughcon`, `traffic` | `weather/src/main.rs:116` deliver → `:129` `Finish::Marked`; `doughcon/src/main.rs:108` → `:113`. `traffic` sidesteps it: its degraded path exits before delivery, and its jobs are on `repair_policy = none` because no traffic failure is repaired by a retry. |
+| Python (live) | `cct2`, `chipcon`, `inflation-con`, `news`, `oilcon` | `deliver_or_fail()` precedes `emit_skill_status()` |
 
 So any first attempt that delivers successfully and then reports `degraded` or
 `failed` has already put a message in front of the user when the retry fires.
@@ -331,7 +331,6 @@ Prior design context lives in `docs/specs/` (`2026-04-15-oilcon-skill-design.md`
 | `chipcon` | `--mode record`, `--deliver-to` | Yahoo Finance chart (SMH/QQQ/SOXX); observation-only report |
 | `weather` | `--location NAME` (repeatable) | CWA (Taiwan), HKO (HK) |
 | `traffic` | `--from`, `--to`, `--via` | TomTom Routing API |
-| `commute` | wraps traffic | TomTom |
 | `doughcon` | `--mode deliver\|record`, `--et-hour H` (DST gate) | PizzINT API |
 | `oilcon` | `--mode deliver\|record` | Yahoo Finance, Turso |
 | `agent-reach` | agent-only, see SKILL.md | 13+ platforms |
