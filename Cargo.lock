@@ -242,6 +242,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cds-con"
+version = "0.1.0"
+dependencies = [
+ "credit-store",
+]
+
+[[package]]
 name = "cexpr"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -330,6 +337,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "credit-store"
+version = "0.1.0"
+dependencies = [
+ "libsql",
+ "market-fetch",
+ "turso-util",
 ]
 
 [[package]]
