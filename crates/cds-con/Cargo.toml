@@ -3,9 +3,21 @@ name = "cds-con"
 version = "0.1.0"
 edition.workspace = true
 
+[[bin]]
+name = "cds-con"
+path = "src/main.rs"
+
 [lib]
 name = "cds_con"
 path = "src/lib.rs"
 
 [dependencies]
+libsql = "0.6"
 credit-store = { path = "../../../../b/gwebcdb/crates/credit-store" }
+turso-util = { path = "../../../../b/gwebcdb/crates/turso-util" }
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+jiff = { version = "0.1", features = ["tzdb-bundle-always"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

@@ -245,7 +245,12 @@ dependencies = [
 name = "cds-con"
 version = "0.1.0"
 dependencies = [
+ "claw-core",
  "credit-store",
+ "jiff",
+ "libsql",
+ "tokio",
+ "turso-util",
 ]
 
 [[package]]
