@@ -12,6 +12,7 @@ use claw_core::budget::monotonic_secs;
 use serde_json::json;
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A synthetic code, not one the agent can return: the process was killed for
@@ -199,10 +200,25 @@ fn run_agent_once(
     // stdout and stderr are drained on their own threads. A pipe left unread
     // fills, the child blocks writing to it, and the wait below would time out
     // a model that was answering perfectly well.
+    //
+    // They append into shared buffers rather than returning a value, so a
+    // timeout can take what arrived without joining. Joining would give the
+    // timeout no force at all whenever the pipe outlives the process we
+    // killed — a child that spawned its own child leaves the write end open,
+    // and the read blocks until *that* exits, which is exactly the stalled
+    // case the timeout exists for.
+    let out_buf = Arc::new(Mutex::new(String::new()));
+    let err_buf = Arc::new(Mutex::new(String::new()));
     let mut out_pipe = child.stdout.take();
     let mut err_pipe = child.stderr.take();
-    let out_handle = std::thread::spawn(move || read_all(&mut out_pipe));
-    let err_handle = std::thread::spawn(move || read_all(&mut err_pipe));
+    let out_handle = {
+        let buf = Arc::clone(&out_buf);
+        std::thread::spawn(move || read_into(&mut out_pipe, &buf))
+    };
+    let err_handle = {
+        let buf = Arc::clone(&err_buf);
+        std::thread::spawn(move || read_into(&mut err_pipe, &buf))
+    };
 
     let deadline = started + Duration::from_secs(timeout_secs);
     let mut timed_out = false;
@@ -233,11 +249,12 @@ fn run_agent_once(
         }
     }
 
-    let stdout = out_handle.join().unwrap_or_default();
-    let stderr = err_handle.join().unwrap_or_default();
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-
+    let snapshot = |b: &Arc<Mutex<String>>| b.lock().map(|g| g.clone()).unwrap_or_default();
     if timed_out {
+        // Deliberately not joined: see the note above the readers.
+        let (stdout, stderr) = (snapshot(&out_buf), snapshot(&err_buf));
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
         log_trace(
             "llm_agent_timeout",
             json!({"variant": variant, "timeout_secs": timeout_secs,
@@ -257,6 +274,13 @@ fn run_agent_once(
         };
     }
 
+    // The process exited on its own, so both pipes are closed and joining is
+    // bounded — take the complete output rather than a snapshot.
+    let _ = out_handle.join();
+    let _ = err_handle.join();
+    let (stdout, stderr) = (snapshot(&out_buf), snapshot(&err_buf));
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
     log_trace(
         "llm_agent_exit",
         json!({"variant": variant, "elapsed_ms": elapsed_ms, "returncode": code,
@@ -271,11 +295,22 @@ fn run_agent_once(
     }
 }
 
-fn read_all(pipe: &mut Option<impl Read>) -> String {
+/// Read to EOF, appending as it goes so a caller that gives up still sees
+/// whatever the child managed to say.
+fn read_into(pipe: &mut Option<impl Read>, out: &Arc<Mutex<String>>) {
     let Some(p) = pipe.as_mut() else {
-        return String::new();
+        return;
     };
-    let mut buf = Vec::new();
-    let _ = p.read_to_end(&mut buf);
-    String::from_utf8_lossy(&buf).into_owned()
+    let mut chunk = [0u8; 8192];
+    loop {
+        match p.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                let text = String::from_utf8_lossy(&chunk[..n]).into_owned();
+                if let Ok(mut g) = out.lock() {
+                    g.push_str(&text);
+                }
+            }
+        }
+    }
 }

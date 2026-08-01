@@ -67,13 +67,11 @@ pub fn fetch_feed(url: &str, max_items: usize, timeout: Duration) -> Vec<Item> {
     // The error is reduced to a class immediately rather than carried, both
     // to keep the URL out of the diagnostic and because a `ureq::Error` owns a
     // whole response.
-    let fetched = ureq::builder()
-        .timeout(timeout)
-        .build()
+    let fetched = crate::http::agent(timeout)
         .get(url)
         .set("User-Agent", "nullclaw-news/1.0")
         .call()
-        .map_err(|e| fetch_error(&e))
+        .map_err(|e| crate::http::error_class(&e))
         .and_then(|r| r.into_string().map_err(|e| e.to_string()));
 
     let body = match fetched {
@@ -89,16 +87,6 @@ pub fn fetch_feed(url: &str, max_items: usize, timeout: Duration) -> Vec<Item> {
         }
     };
     parse_rss(&body, max_items)
-}
-
-/// The status or transport class, never the rendered error.
-///
-/// `ureq`'s `Display` includes the full URL with its query string.
-fn fetch_error(e: &ureq::Error) -> String {
-    match e {
-        ureq::Error::Status(code, _) => format!("HTTP {code}"),
-        ureq::Error::Transport(_) => "transport error".to_string(),
-    }
 }
 
 /// Pull `title` / `link` / `pubDate` out of each `<item>`.

@@ -274,3 +274,54 @@ fn two_hosts_of_one_publisher_are_recognised_as_the_same() {
     assert!(!same_registered_domain("nytimes.com", "reuters.com"));
     assert!(!same_registered_domain("", "reuters.com"));
 }
+
+// ── request timeouts ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_refused_connection_returns_at_once_rather_than_stalling() {
+    // `ureq::builder().timeout(d)` does not bound the connect phase — only
+    // `timeout_connect` does — so a fetch built the obvious way waits out
+    // ureq's own 30-second default no matter what it was asked for. Measured
+    // 2026-08-01: 30.03s for a 50ms request. The Python this was ported from
+    // has no such gap, since `urlopen(timeout=N)` covers the connect.
+    let started = std::time::Instant::now();
+    let items = news::feed::fetch_feed(
+        "http://127.0.0.1:1/rss",
+        5,
+        std::time::Duration::from_secs(1),
+    );
+    assert!(items.is_empty());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "a refused connection took {:?}; the connect phase is unbounded again",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn an_unreachable_host_is_bounded_by_the_budget_it_was_given() {
+    // TEST-NET-3: reserved for documentation, routed nowhere, so the connect
+    // hangs rather than being refused. That is the case the missing
+    // `timeout_connect` actually cost 30 seconds on.
+    let started = std::time::Instant::now();
+    let items = news::feed::fetch_feed(
+        "http://203.0.113.1/rss",
+        5,
+        std::time::Duration::from_secs(1),
+    );
+    assert!(items.is_empty());
+    if started.elapsed() < std::time::Duration::from_millis(200) {
+        // Some networks refuse instead of dropping. Say so rather than pass
+        // quietly — a vacuous pass here is what let the bug live.
+        eprintln!(
+            "note: this host refuses TEST-NET-3 instead of blackholing it, \
+             so the connect timeout was not exercised"
+        );
+        return;
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "a 1s budget took {:?}",
+        started.elapsed()
+    );
+}

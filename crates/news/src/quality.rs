@@ -333,13 +333,11 @@ pub fn parse_garturlres(response_text: &str) -> Option<String> {
 }
 
 fn http_get(url: &str, timeout: Duration) -> Result<(String, String), String> {
-    let resp = ureq::builder()
-        .timeout(timeout)
-        .build()
+    let resp = crate::http::agent(timeout)
         .get(url)
         .set("User-Agent", USER_AGENT)
         .call()
-        .map_err(|e| error_class(&e))?;
+        .map_err(|e| crate::http::error_class(&e))?;
     // The post-redirect URL, so the host used for classification reflects
     // where the request actually landed rather than where it was aimed.
     let final_url = resp.get_url().to_string();
@@ -352,9 +350,7 @@ fn http_get(url: &str, timeout: Duration) -> Result<(String, String), String> {
 }
 
 fn http_post(url: &str, data: &str, timeout: Duration) -> Result<String, String> {
-    ureq::builder()
-        .timeout(timeout)
-        .build()
+    crate::http::agent(timeout)
         .post(url)
         .set("User-Agent", USER_AGENT)
         .set(
@@ -362,17 +358,9 @@ fn http_post(url: &str, data: &str, timeout: Duration) -> Result<String, String>
             "application/x-www-form-urlencoded;charset=UTF-8",
         )
         .send_string(data)
-        .map_err(|e| error_class(&e))?
+        .map_err(|e| crate::http::error_class(&e))?
         .into_string()
         .map_err(|e| e.to_string())
-}
-
-/// Never the rendered error: `ureq`'s `Display` embeds the full URL.
-fn error_class(e: &ureq::Error) -> String {
-    match e {
-        ureq::Error::Status(code, _) => format!("HTTP {code}"),
-        ureq::Error::Transport(_) => "TransportError".to_string(),
-    }
 }
 
 pub fn decode_google_news_url(rss_link: &str, timeout: Duration) -> Option<String> {
