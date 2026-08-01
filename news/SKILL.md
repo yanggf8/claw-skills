@@ -11,13 +11,17 @@ Fetch and summarize Taiwan news from Google RSS feeds in Traditional Chinese.
 ## Script
 
 ```
-~/.nullclaw/skills/news/scripts/run.py
+~/.nullclaw/skills/news/bin/news
 ```
+
+Rust (`crates/news`), live since 2026-08-01. `scripts/run.py` is the rollback
+path and the differential oracle — publish the binary with
+`tools/install-skill.sh news`, never by hand.
 
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/news/scripts/run.py --deliver-to 7972814626
+~/.nullclaw/skills/news/bin/news --deliver-to 7972814626
 ```
 
 ## Options
@@ -33,9 +37,9 @@ python3 ~/.nullclaw/skills/news/scripts/run.py --deliver-to 7972814626
 Users can manage their own news subscriptions via conversation. When a user asks about their topics or wants to add/remove topics, run the management subcommand and reply with the result.
 
 Triggers and commands:
-- "我訂閱了什麼" / "我的新聞主題" / "看看我訂閱的新聞" → `python3 ~/.nullclaw/skills/news/scripts/run.py manage list --account ACCOUNT --deliver-to CHAT_ID`
-- "加新聞主題 X" / "新增主題 X" / "訂閱 X" → `python3 ~/.nullclaw/skills/news/scripts/run.py manage add --account ACCOUNT --topic X --deliver-to CHAT_ID`
-- "移除主題 X" / "取消訂閱 X" / "刪除主題 X" / "不要 X 新聞" → `python3 ~/.nullclaw/skills/news/scripts/run.py manage remove --account ACCOUNT --topic X --deliver-to CHAT_ID`
+- "我訂閱了什麼" / "我的新聞主題" / "看看我訂閱的新聞" → `~/.nullclaw/skills/news/bin/news manage list --account ACCOUNT --deliver-to CHAT_ID`
+- "加新聞主題 X" / "新增主題 X" / "訂閱 X" → `~/.nullclaw/skills/news/bin/news manage add --account ACCOUNT --topic X --deliver-to CHAT_ID`
+- "移除主題 X" / "取消訂閱 X" / "刪除主題 X" / "不要 X 新聞" → `~/.nullclaw/skills/news/bin/news manage remove --account ACCOUNT --topic X --deliver-to CHAT_ID`
 
 Replace ACCOUNT with the bot account name and CHAT_ID with the user's Telegram chat ID.
 
@@ -86,7 +90,7 @@ AI 預設新聞去重：
 
 AI 區塊在切半前先做確定性群集。標題會移除 Google News 的尾端 ` - Source`，再抽出 Latin token 與 CJK 字元 bigram；兩則新聞會和既有群集的第一則候選新聞比較，token 重疊數達 `_CLUSTER_OVERLAP = 2` 才歸入同一事件群集。群集的 seed token 不會隨後續新聞擴張，避免不同事件靠累積詞彙串接在一起。群集按來源數排序，代表越多來源報導越重要。每日摘要每個群集只保留 1 則，直接採用該群集中的第一則候選新聞，不再依來源名稱做分類或分支。
 
-CJK bigram 通用詞過濾：常見的中文填充詞（`公司`、`發布`、`布新`、`新產`、`產品`、`股價`、`上漲`、`下跌`）會在 `_CJK_STOP_BIGRAMS` 中被排除，避免「甲公司發布新產品」與「乙公司發布新產品」這類完全無關的標題被視為同一事件。清單由觀察累積，若 trace 中發現新的過度群集模式，請更新 `scripts/run.py` 中的 `_CJK_STOP_BIGRAMS`。
+CJK bigram 通用詞過濾：常見的中文填充詞（`公司`、`發布`、`布新`、`新產`、`產品`、`股價`、`上漲`、`下跌`）會在 `_CJK_STOP_BIGRAMS` 中被排除，避免「甲公司發布新產品」與「乙公司發布新產品」這類完全無關的標題被視為同一事件。清單由觀察累積，若 trace 中發現新的過度群集模式，請更新 `crates/news/src/text.rs` 中的 `CJK_STOP_BIGRAMS`（以及回退用的 `scripts/run.py`）。
 
 這個去重在 LLM 分段前完成，所以同一事件不會分散到兩個 half。執行時會寫入 `cluster_dedup` trace，欄位包含 `before`、`after`、`clusters_total`、`clusters_kept`。
 
@@ -190,7 +194,7 @@ nullclaw cron trace <job_id_prefix> --event ai_substage
 ## Content prechecking
 
 The skill sees only RSS titles, so a strong title on paywalled/thin/promo content used
-to slip through. Two-tier prechecking (`lib/news_quality.py`) handles it with a **three-way
+to slip through. Two-tier prechecking (`crates/news/src/quality.rs`; `lib/news_quality.py` in the rollback path) handles it with a **three-way
 verdict** per item — `keep`, `drop`, or `title_only`:
 
 - **Tier 1 (every run, no network):** at the dedup site, drops deny-listed **sources** only.

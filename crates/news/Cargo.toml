@@ -1,0 +1,22 @@
+[package]
+name = "news"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "news"
+path = "src/main.rs"
+
+[lib]
+name = "news"
+path = "src/lib.rs"
+
+[dependencies]
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
+ureq = "2"
+serde_json = "1"
+jiff = { version = "0.1", features = ["tzdb-bundle-always"] }
+quick-xml = "0.36"
+serde = { version = "1.0.229", features = ["derive"] }
+regex = "1.13.1"
+sha1 = "0.11.0"

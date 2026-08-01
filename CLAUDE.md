@@ -8,8 +8,8 @@ Personal agent skills invoked as cron jobs or on-demand by the **nullclaw**, **o
 
 **The repo is mid-port from Python to Rust** (standing instruction: the whole stack is Rust). Today it is both:
 
-- `lib/` + `<skill>/scripts/run.py` — the Python. **No longer uniformly live** (as of 2026-07-31): **every skill in this repo has cut over** as of 2026-07-31 — `weather`, `doughcon`, `oilcon`, `chipcon` and `inflation-con` all run the Rust binary. The Python is retained as the rollback path and as the differential oracle, not as a live entry point. Check a skill's `## Script` line before assuming which implementation a cron fires — that line is the switch.
-- `crates/` — a Cargo workspace holding one binary crate per ported skill. **The shared `claw-core` lives in `../../b/gwebcdb/crates/claw-core`**, consumed by path dependency — gwebcdb is this ecosystem's home for cross-repo Rust crates (the same arrangement as `turso-util` → `finance-cli`), and `cct` / `autocli` will need claw-core too once they port. Building claw-skills therefore requires gwebcdb checked out beside it. **Live status, 2026-08-01: all five ported skills run Rust, plus `cds-con`, which was born Rust and has no Python original.** Cutover is one line — the `## Script` path in `SKILL.md` — but **publish the binary with `tools/install-skill.sh <skill>`, never by hand**. That script builds `--locked`, stages, smoke-probes the artifact with an unknown flag and requires **exit 2**, publishes atomically, and verifies the path nullclaw will resolve. A manual `install` bypasses the probe, and on 2026-07-31 that probe caught a real defect in oilcon: its argument parser silently ignored unknown flags and accepted any `--mode` value, so a typo would have run the record branch — which never delivers — while still reporting `[skill-status:ok]`.
+- `lib/` + `<skill>/scripts/run.py` — the Python. **No longer live anywhere**: every skill in this repo has cut over — `weather`, `doughcon`, `oilcon`, `chipcon`, `inflation-con`, `cds-con`, `traffic`, `commute`, `stock`, `cct`, `cct2`, `liko-finance-weekly` and, as of 2026-08-01, `news` all run the Rust binary. The Python is retained as the rollback path and as the differential oracle, not as a live entry point. Check a skill's `## Script` line before assuming which implementation a cron fires — that line is the switch.
+- `crates/` — a Cargo workspace holding one binary crate per ported skill. **The shared `claw-core` lives in `../../b/gwebcdb/crates/claw-core`**, consumed by path dependency — gwebcdb is this ecosystem's home for cross-repo Rust crates (the same arrangement as `turso-util` → `finance-cli`), and any future cross-repo consumer will need claw-core the same way. Building claw-skills therefore requires gwebcdb checked out beside it. **Live status, 2026-08-01: every ported skill runs Rust, plus `cds-con`, which was born Rust and has no Python original.** Cutover is one line — the `## Script` path in `SKILL.md` — but **publish the binary with `tools/install-skill.sh <skill>`, never by hand**. That script builds `--locked`, stages, smoke-probes the artifact with an unknown flag and requires **exit 2**, publishes atomically, and verifies the path nullclaw will resolve. A manual `install` bypasses the probe, and on 2026-07-31 that probe caught a real defect in oilcon: its argument parser silently ignored unknown flags and accepted any `--mode` value, so a typo would have run the record branch — which never delivers — while still reporting `[skill-status:ok]`.
 
 **The Python `lib/` cannot be deleted when a skill is ported.** `cct` (`~/a/cct/skills/cct`) and `autocli` (`~/.nullclaw/skills/autocli`) import `delivery` and `trace_marker` from it from **outside this repo**. Both implementations coexist until every consumer moves.
 
@@ -256,7 +256,7 @@ is a live defect in ported code, not a Python-only legacy:
 | Impl | Skills | Evidence |
 |------|--------|----------|
 | Rust (live) | `weather`, `doughcon`, `traffic` | `weather/src/main.rs:116` deliver → `:129` `Finish::Marked`; `doughcon/src/main.rs:108` → `:113`. `traffic` sidesteps it: its degraded path exits before delivery, and its jobs are on `repair_policy = none` because no traffic failure is repaired by a retry. |
-| Python (live) | `news` | `deliver_or_fail()` precedes `emit_skill_status()` |
+| Rust (live) | `news` | Satisfies option A rather than inheriting the defect: both hard-failure paths (`all_feeds_empty`, `ai_exhausted`) alert and exit 1 without delivering, and the skill never emits `degraded` at all — a section that falls back still ships as `ok`. One duplicate window remains, inherited from the Python: a long digest is sent as several chunks in sequence, so a failure on chunk 2 exits 1 with chunk 1 already delivered, and the retry re-sends it. |
 
 So any first attempt that delivers successfully and then reports `degraded` or
 `failed` has already put a message in front of the user when the retry fires.
@@ -364,6 +364,13 @@ persona-core plans list
 
 ### Shared libraries (`lib/`)
 
+**Nothing live imports these.** Every skill in the repo runs its Rust binary,
+and the two outside consumers are gone (`cct` moved in, `autocli` was retired).
+They are kept as the rollback path and, more usefully, as the differential
+oracle a port is checked against — the `news` port ran 578 recorded cases
+through both implementations before cutover, and that is what caught the two
+places where the Rust and the Python disagreed.
+
 | Module | Purpose |
 |--------|---------|
 | `skill_runner` | Shared agent-first skill runtime helpers (subprocess wrappers, persona-core CLI shortcut, nullclaw agent invocation, cron skill-contract markers). `strip_agent_artifacts()` sanitizes nested-agent stdout before delivery — strips `<ncchoices>` blocks (paired **and** unclosed) plus harness marker lines, so agent protocol noise never reaches Telegram. Any skill that delivers raw `nullclaw agent` stdout must run it through this. |
@@ -374,6 +381,7 @@ persona-core plans list
 | `heartbeat` | Wall-clock heartbeat for long-running subprocesses |
 | `oil_fetch` | Yahoo Finance chart fetch/parse helpers (oilcon) |
 | `oil_store` | Turso/libsql time-series storage for `oil_daily` (oilcon) |
+| `news_quality` | Deny/paywall classification, Google News URL decoding, article fetch (news). Ported to `crates/news/src/quality.rs`. |
 
 `persona_registry` and `persona_history` were retired alongside
 `persona-skill`. All persona/history access goes through `persona-core`

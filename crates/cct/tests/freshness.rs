@@ -216,7 +216,10 @@ fn a_fresh_report_still_shows_its_signals() {
 
 // ── has_eod_data ─────────────────────────────────────────────────────────────
 
-const EOD_SCORECARD: &str = include_str!("../../../cct/scripts/testdata/eod-2026-07-29.json");
+// Captured from a live end-of-day run. It lives in this crate rather than
+// being read out of the cct repo: that path stopped existing the moment the
+// skill moved here, and the workspace build has been broken by it since.
+const EOD_SCORECARD: &str = include_str!("eod_scorecard.json");
 
 #[test]
 fn a_real_scorecard_counts_as_data() {
