@@ -103,9 +103,7 @@ pub fn fetch(base_url: Option<&str>, lat: f64, lon: f64) -> Result<OmData, Strin
              &timezone=Asia%2FTaipei&forecast_days=1"
         )
     };
-    let body = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(TIMEOUT_S))
-        .build()
+    let body = claw_core::http::agent(Duration::from_secs(TIMEOUT_S))
         .get(&url)
         .set("Accept", "application/json")
         .call()

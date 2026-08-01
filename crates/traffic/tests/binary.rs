@@ -35,8 +35,9 @@ impl Stub {
         let served = AtomicUsize::new(0);
 
         let handle = thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { break };
+            // One connection is all any of these tests needs, so take exactly
+            // one rather than looping with an unconditional break.
+            if let Some(Ok(mut stream)) = listener.incoming().next() {
                 // Drain the request line and headers so the client is not left
                 // writing into a closed socket.
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -66,7 +67,6 @@ impl Stub {
                 };
                 let _ = stream.write_all(resp.as_bytes());
                 let _ = stream.flush();
-                break; // one connection is all any of these tests needs
             }
         });
 

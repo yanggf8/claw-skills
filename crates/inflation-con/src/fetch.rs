@@ -32,6 +32,9 @@ pub const FETCH_TIMEOUT_SECS: u64 = 20;
 
 /// Headers the live FRED transport sets. Pure so tests can assert the User-Agent
 /// without a network call.
+/// Observations per series, plus the first fetch error if any series failed.
+pub type Fetched = (BTreeMap<String, Vec<Obs>>, Option<String>);
+
 pub fn fred_request_headers() -> &'static [(&'static str, &'static str)] {
     &[("User-Agent", USER_AGENT)]
 }
@@ -41,10 +44,7 @@ pub fn fred_request_headers() -> &'static [(&'static str, &'static str)] {
 /// a stub into `fetch_all` instead.
 pub fn live_fetch(series_id: &str) -> Result<Vec<Obs>, CreditError> {
     let url = build_url(FRED_CSV_BASE, series_id, FRED_START_DATE);
-    let mut req = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
-        .build()
-        .get(&url);
+    let mut req = claw_core::http::agent(Duration::from_secs(FETCH_TIMEOUT_SECS)).get(&url);
     for (k, v) in fred_request_headers() {
         req = req.set(k, v);
     }
@@ -86,7 +86,7 @@ pub fn fred_rows_or_empty(
 pub fn fetch_all(
     series: &[(String, String)],
     fetch: &dyn Fn(&str) -> Result<Vec<Obs>, CreditError>,
-) -> Result<(BTreeMap<String, Vec<Obs>>, Option<String>), String> {
+) -> Result<Fetched, String> {
     let mut warnings: Vec<String> = Vec::new();
     let mut out: BTreeMap<String, Vec<Obs>> = BTreeMap::new();
 

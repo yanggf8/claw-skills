@@ -51,10 +51,10 @@ fn status_message(code: u16) -> String {
 }
 
 fn get_json(url: &str, referer: Option<&str>) -> Result<serde_json::Value, SourceError> {
-    let mut req = ureq::get(url)
+    let mut req = claw_core::http::agent(std::time::Duration::from_secs(TIMEOUT_S))
+        .get(url)
         .set("Accept", "application/json")
-        .set("User-Agent", UA)
-        .timeout(std::time::Duration::from_secs(TIMEOUT_S));
+        .set("User-Agent", UA);
     if let Some(r) = referer {
         req = req.set("Referer", r);
     }

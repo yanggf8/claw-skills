@@ -50,3 +50,32 @@ fn gate_skip_carries_the_hour_and_abbreviation() {
         Gate::Run => panic!("expected Skip"),
     }
 }
+
+#[test]
+fn an_unreachable_upstream_is_bounded_by_the_fetch_timeout() {
+    // Not a doughcon rule so much as a check that this crate goes through
+    // claw_core::http::agent. Building a ureq agent by hand leaves the connect
+    // phase on ureq's own 30-second default however short the stated timeout
+    // is, so a twenty-second budget silently becomes thirty — and with a
+    // handful of upstreams that is the difference between finishing and being
+    // killed by cron. tools/lint-http.sh keeps the other crates honest; this
+    // measures that the wrapper actually does what it claims.
+    //
+    // Costs ~20s, the crate's own budget, because there is no seam to shorten
+    // it and a refused connection would prove nothing — it returns fast with
+    // or without the bug. The static check cannot see composition and the
+    // claw-core unit test cannot see this crate, so something has to pay.
+    let started = std::time::Instant::now();
+    // TEST-NET-3: routed nowhere, so the connect hangs rather than refusing.
+    let out = doughcon::pizzint::fetch(Some("http://203.0.113.1"));
+    assert!(out.is_err());
+    let took = started.elapsed();
+    if took < std::time::Duration::from_millis(100) {
+        eprintln!("note: this host refuses TEST-NET-3; the connect bound was not exercised");
+        return;
+    }
+    assert!(
+        took < std::time::Duration::from_secs(25),
+        "a 20s budget took {took:?}; the connect phase is unbounded again"
+    );
+}

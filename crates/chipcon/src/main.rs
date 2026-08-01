@@ -17,9 +17,7 @@ const FETCH_TIMEOUT_SECS: u64 = 15;
 
 fn live_fetch(sym: &str) -> Result<Vec<Row>, FetchError> {
     let url = chart_url(YAHOO_CHART_BASE, sym, "1y");
-    let body = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
-        .build()
+    let body = claw_core::http::agent(Duration::from_secs(FETCH_TIMEOUT_SECS))
         .get(&url)
         .set("User-Agent", USER_AGENT)
         .set("Accept", "application/json")

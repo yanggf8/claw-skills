@@ -333,11 +333,11 @@ pub fn parse_garturlres(response_text: &str) -> Option<String> {
 }
 
 fn http_get(url: &str, timeout: Duration) -> Result<(String, String), String> {
-    let resp = crate::http::agent(timeout)
+    let resp = claw_core::http::agent(timeout)
         .get(url)
         .set("User-Agent", USER_AGENT)
         .call()
-        .map_err(|e| crate::http::error_class(&e))?;
+        .map_err(|e| claw_core::http::error_class(&e))?;
     // The post-redirect URL, so the host used for classification reflects
     // where the request actually landed rather than where it was aimed.
     let final_url = resp.get_url().to_string();
@@ -350,7 +350,7 @@ fn http_get(url: &str, timeout: Duration) -> Result<(String, String), String> {
 }
 
 fn http_post(url: &str, data: &str, timeout: Duration) -> Result<String, String> {
-    crate::http::agent(timeout)
+    claw_core::http::agent(timeout)
         .post(url)
         .set("User-Agent", USER_AGENT)
         .set(
@@ -358,7 +358,7 @@ fn http_post(url: &str, data: &str, timeout: Duration) -> Result<String, String>
             "application/x-www-form-urlencoded;charset=UTF-8",
         )
         .send_string(data)
-        .map_err(|e| crate::http::error_class(&e))?
+        .map_err(|e| claw_core::http::error_class(&e))?
         .into_string()
         .map_err(|e| e.to_string())
 }

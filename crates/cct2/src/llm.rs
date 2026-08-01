@@ -4,6 +4,8 @@ use crate::json::extract;
 
 pub const DEFAULT_PRIMARY_MODEL: &str = "MiniMax-M2.7";
 pub const DEFAULT_BACKUP_MODEL: &str = "GLM-5.1";
+/// Both providers stream; a long reasoning pass legitimately takes minutes.
+const LLM_TIMEOUT_S: u64 = 120;
 
 /// Both upstreams speak the Anthropic messages API, so one client serves both.
 ///
@@ -164,11 +166,11 @@ fn post_once(ep: &Endpoint, model: &str, prompt: &str) -> Result<serde_json::Val
         "max_tokens": MAX_TOKENS,
         "messages": [{"role": "user", "content": prompt}],
     });
-    let resp = ureq::post(&format!("{}/v1/messages", ep.base_url))
+    let resp = claw_core::http::agent(std::time::Duration::from_secs(LLM_TIMEOUT_S))
+        .post(&format!("{}/v1/messages", ep.base_url))
         .set("x-api-key", &ep.api_key)
         .set("anthropic-version", "2023-06-01")
         .set("Content-Type", "application/json")
-        .timeout(std::time::Duration::from_secs(120))
         .send_string(&body.to_string())
         .map_err(|e| match e {
             ureq::Error::Status(code, _) => code,

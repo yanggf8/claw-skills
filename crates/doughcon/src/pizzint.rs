@@ -59,9 +59,7 @@ const TIMEOUT_S: u64 = 20;
 
 pub fn fetch(base_url: Option<&str>) -> Result<Snapshot, String> {
     let url = base_url.unwrap_or(DEFAULT_URL);
-    let body = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(TIMEOUT_S))
-        .build()
+    let body = claw_core::http::agent(Duration::from_secs(TIMEOUT_S))
         .get(url)
         .set("Accept", "application/json")
         .set("User-Agent", "nullclaw/1.0")

@@ -9,7 +9,6 @@ pub mod crossdedup;
 pub mod deliver;
 pub mod digest;
 pub mod feed;
-pub mod http;
 pub mod precheck;
 pub mod quality;
 pub mod render;

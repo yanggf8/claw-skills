@@ -63,10 +63,7 @@ pub fn status_of(out: &Outcome) -> SkillStatus {
 /// the diagnostic when we suppress the chat id. Ok / Degraded pass
 /// `deliver_to` through unchanged so a stale-but-real report still reaches
 /// the user (and still trips retry_once — that is a separate open issue).
-pub fn chat_id_for_delivery<'a>(
-    status: SkillStatus,
-    deliver_to: Option<&'a str>,
-) -> Option<&'a str> {
+pub fn chat_id_for_delivery(status: SkillStatus, deliver_to: Option<&str>) -> Option<&str> {
     match status {
         SkillStatus::Failed => None,
         SkillStatus::Ok | SkillStatus::Degraded => deliver_to,

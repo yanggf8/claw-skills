@@ -35,12 +35,15 @@ pub fn base() -> String {
 /// `None` means "no usable payload", and the reason goes to stderr — stdout is
 /// the delivered body plus the contract markers, so a diagnostic there would
 /// become part of the message.
+/// The CCT API renders a full report before answering.
+const TIMEOUT_S: u64 = 30;
+
 pub fn get(path: &str) -> Option<serde_json::Value> {
     let url = format!("{}{path}", base());
-    let resp = match ureq::get(&url)
+    let resp = match claw_core::http::agent(std::time::Duration::from_secs(TIMEOUT_S))
+        .get(&url)
         .set("X-API-Key", &api_key())
         .set("User-Agent", "nullclaw-cct/1.0")
-        .timeout(std::time::Duration::from_secs(30))
         .call()
     {
         Ok(r) => r,

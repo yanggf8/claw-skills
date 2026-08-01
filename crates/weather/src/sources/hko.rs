@@ -29,9 +29,7 @@ pub struct HkoForecast {
 
 pub fn fetch(base_url: Option<&str>) -> Result<HkoData, String> {
     let url = base_url.unwrap_or(DEFAULT_URL);
-    let body = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(TIMEOUT_S))
-        .build()
+    let body = claw_core::http::agent(Duration::from_secs(TIMEOUT_S))
         .get(url)
         .set("Accept", "application/json")
         .call()

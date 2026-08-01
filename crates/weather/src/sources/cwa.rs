@@ -51,9 +51,7 @@ pub fn fetch(
     } else {
         format!("{base}?Authorization={api_key}&locationName={joined}")
     };
-    ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(TIMEOUT_S))
-        .build()
+    claw_core::http::agent(Duration::from_secs(TIMEOUT_S))
         .get(&url)
         .set("Accept", "application/json")
         .call()

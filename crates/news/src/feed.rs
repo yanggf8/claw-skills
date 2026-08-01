@@ -67,11 +67,11 @@ pub fn fetch_feed(url: &str, max_items: usize, timeout: Duration) -> Vec<Item> {
     // The error is reduced to a class immediately rather than carried, both
     // to keep the URL out of the diagnostic and because a `ureq::Error` owns a
     // whole response.
-    let fetched = crate::http::agent(timeout)
+    let fetched = claw_core::http::agent(timeout)
         .get(url)
         .set("User-Agent", "nullclaw-news/1.0")
         .call()
-        .map_err(|e| crate::http::error_class(&e))
+        .map_err(|e| claw_core::http::error_class(&e))
         .and_then(|r| r.into_string().map_err(|e| e.to_string()));
 
     let body = match fetched {

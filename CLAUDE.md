@@ -313,6 +313,39 @@ so cron records `exec_error`. Decide the compatibility story (keep a Python
 shim / move those skills too / vendor a copy) *before* the port, not after a
 cron finds out.
 
+## HTTP timeouts (hard constraint)
+
+Every HTTP call goes through `claw_core::http::agent(timeout)`. Nothing builds
+its own `ureq` agent, and `tools/lint-http.sh` fails the tree if anything
+starts to.
+
+`ureq`'s own `timeout` — on the builder **or** on the request — does not bound
+the connect phase. Only `timeout_connect` does. A host that *refuses* a
+connection fails instantly either way, which is why this looked fine
+everywhere; a host that drops packets hangs for ureq's 30-second connect
+default no matter what the caller asked for. Measured 2026-08-01 against an
+address routed nowhere, with a 50 ms budget:
+
+| how the timeout was set                  | elapsed |
+|------------------------------------------|---------|
+| `ureq::builder().timeout(d)`             | 30.03 s |
+| `ureq::get(u).timeout(d)`                | 30.02 s |
+| `timeout_connect` + `timeout_read/write` | 50.8 ms |
+
+Thirteen call sites had it: all twelve skills plus `claw-core`'s Telegram send,
+whose documented "~52s across three attempts" was really ~97s whenever
+api.telegram.org was unreachable rather than slow. Every one of them is a
+**port regression** — Python's `urlopen(req, timeout=N)` covers the connect, so
+each skill silently lost a bound it used to have on the way to Rust. No output
+differential can see it: the difference is time, not bytes.
+
+Three things hold the property now, and they cover different failures:
+`claw-core`'s unit tests prove the wrapper bounds a hanging connect;
+`tools/lint-http.sh` proves every crate uses the wrapper; and
+`crates/doughcon/tests/cli.rs` measures one crate end to end, because a static
+check cannot see composition. That last one costs ~20s — the crate's own budget
+— and is worth it.
+
 ## Testing
 
 `lib/test_*.py` are plain `unittest` files, runnable directly with no pytest or runner:

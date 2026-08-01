@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 /// `Upstream` (chart.error) and `NoData` (missing result / falsy closes) both
 /// become an empty series, which then produces the "yahoo {SYM}: no rows"
 /// warning. Http and Parse stay errors → "yahoo fetch {SYM}: …".
+/// Rows per symbol, plus the first fetch error if any symbol failed.
+pub type Fetched = (BTreeMap<String, Vec<Row>>, Option<String>);
+
 pub fn yahoo_rows_or_empty(result: Result<Vec<Row>, FetchError>) -> Result<Vec<Row>, FetchError> {
     match result {
         Ok(rows) => Ok(rows),
@@ -27,7 +30,7 @@ pub fn yahoo_rows_or_empty(result: Result<Vec<Row>, FetchError>) -> Result<Vec<R
 pub fn update_state(
     cfg: &Config,
     fetch: &dyn Fn(&str) -> Result<Vec<Row>, FetchError>,
-) -> Result<(BTreeMap<String, Vec<Row>>, Option<String>), String> {
+) -> Result<Fetched, String> {
     let mut warnings: Vec<String> = Vec::new();
     let mut state: BTreeMap<String, Vec<Row>> = BTreeMap::new();
 

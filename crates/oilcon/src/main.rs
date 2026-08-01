@@ -41,9 +41,7 @@ fn price_registry() -> RegistryConfig {
 
 fn fetch_chart(sym: &str, range: &str) -> Result<Vec<Row>, FetchError> {
     let url = chart_url(YAHOO_CHART_BASE, sym, range);
-    let body = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
-        .build()
+    let body = claw_core::http::agent(Duration::from_secs(FETCH_TIMEOUT_SECS))
         .get(&url)
         .set("User-Agent", USER_AGENT)
         .set("Accept", "application/json")

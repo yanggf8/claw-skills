@@ -26,10 +26,10 @@ pub struct TickerData {
 }
 
 fn get_json(url: &str) -> Option<serde_json::Value> {
-    let resp = ureq::get(url)
+    let resp = claw_core::http::agent(std::time::Duration::from_secs(TIMEOUT_S))
+        .get(url)
         .set("User-Agent", UA)
         .set("Accept", "application/json")
-        .timeout(std::time::Duration::from_secs(TIMEOUT_S))
         .call()
         .ok()?;
     if resp.status() != 200 {

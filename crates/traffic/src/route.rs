@@ -92,6 +92,8 @@ pub const DEFAULT_BASE: &str = "https://api.tomtom.com";
 ///
 /// `base` exists so a test can point the whole binary at a local stub, the same
 /// seam weather uses (`HKO_BASE_URL` and friends). Production passes None.
+const TIMEOUT_S: u64 = 20;
+
 pub fn route_url(base: Option<&str>, waypoints: &[String], api_key: &str) -> String {
     let base = base.unwrap_or(DEFAULT_BASE);
     let coords = waypoints.join(":");
@@ -101,9 +103,9 @@ pub fn route_url(base: Option<&str>, waypoints: &[String], api_key: &str) -> Str
 /// Fetch and parse. The 20-second timeout matches run.py:61.
 pub fn fetch(base: Option<&str>, waypoints: &[String], api_key: &str) -> Result<i64, RouteError> {
     let url = route_url(base, waypoints, api_key);
-    let resp = ureq::get(&url)
+    let resp = claw_core::http::agent(std::time::Duration::from_secs(TIMEOUT_S))
+        .get(&url)
         .set("Accept", "application/json")
-        .timeout(std::time::Duration::from_secs(20))
         .call()
         // Never `e.to_string()` here — see status_message().
         .map_err(|e| match e {
