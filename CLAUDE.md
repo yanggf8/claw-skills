@@ -292,8 +292,10 @@ identical on the second attempt.
 
 | Skill | Real location | Imports |
 |-------|---------------|---------|
-| `cct` | `~/a/cct/skills/cct` | `delivery`, `trace_marker`, via `_resolve_skills_lib()` → `../../lib` |
-| `autocli` | `~/.nullclaw/skills/autocli` (a real dir, not a symlink) | same |
+| `autocli` | `~/.nullclaw/skills/autocli` (a real dir, not a symlink) | `delivery`, `trace_marker` via `../../lib` |
+
+`cct` moved into this repo on 2026-08-01 and runs Rust; `autocli` is the last
+external consumer holding the Python `lib/` alive.
 
 Removing or porting Python `lib/` breaks both at import time — non-zero exit,
 so cron records `exec_error`. Decide the compatibility story (keep a Python
@@ -325,7 +327,7 @@ Prior design context lives in `docs/specs/` (`2026-04-15-oilcon-skill-design.md`
 | Skill | Script args | External API |
 |-------|-------------|--------------|
 | `news` | `--topics`, `--account-topics`, `manage list\|add\|remove` | Google News RSS |
-| `cct` | `--mode <pre-market\|eod\|...>` | CCT internal |
+| `cct` | `--mode pre-market\|intraday\|eod\|weekly` | CCT internal (Rust) |
 | `cct2` | `--mode pre-market\|eod` | Yahoo Finance + dual LLM, both over direct HTTPS (Rust) |
 | `stock` | `--market tw\|hk\|all`, `--symbol CODE` | TWSE, Yahoo Finance (Rust) |
 | `chipcon` | `--mode record`, `--deliver-to` | Yahoo Finance chart (SMH/QQQ/SOXX); observation-only report |
