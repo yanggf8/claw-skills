@@ -12,7 +12,11 @@ SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
 sys.path.insert(0, os.path.abspath(SKILLS_LIB))
 from skill_runner import strip_agent_artifacts
 
-SKILL_NAME, STREAM_NAME, SERIES_SLUG = "mindfulness-spirit", "mindfulness", "inner-algorithm"
+SKILL_NAME, STREAM_NAME = "mindfulness-spirit", "mindfulness"
+# The column is operator state, not a constant. A finished season used to turn
+# into a weekly not-found here — starting the next one should be a config edit,
+# not a code change.
+DEFAULT_COLUMN_SLUG = "machine-and-cushion"
 HISTORY_LIMIT, TAGS = 8, ["ai", "mindfulness", "spirituality", "technology"]
 
 CONFIG_PATH = Path.home() / ".nullclaw" / "config.json"
@@ -40,7 +44,14 @@ def load_skill_settings():
     slug = raw.get("persona_slug")
     if type(slug) is not str or not slug.strip():
         raise ValueError("missing skills.mindfulness_spirit.persona_slug in ~/.nullclaw/config.json")
-    return {"persona_slug": slug.strip(), "publish": raw.get("publish", True), "main_image_url": raw.get("main_image_url")}
+    column = raw.get("column_slug")
+    column = column.strip() if type(column) is str and column.strip() else DEFAULT_COLUMN_SLUG
+    return {
+        "persona_slug": slug.strip(),
+        "column_slug": column,
+        "publish": raw.get("publish", True),
+        "main_image_url": raw.get("main_image_url"),
+    }
 
 
 def pc(*args, echo=False):
@@ -121,7 +132,7 @@ def render_writer_prompt(settings, items):
         style_block=pc("style", "show", "default", "--as-prompt-block"),
         signature_block=pc("personas", "show", slug, "--as-signature"),
         history_block=pc("history", "list", "--persona", slug, "--as-prompt-block", "--limit", str(HISTORY_LIMIT)),
-        topic_block=pc("plans", "next", SKILL_NAME, SERIES_SLUG, "--as-prompt-block"),
+        topic_block=pc("plans", "next", SKILL_NAME, settings["column_slug"], "--as-prompt-block"),
         prompt_items=prompt_items(items),
     )
 
@@ -169,6 +180,7 @@ def cmd_write(args):
     print(f"Material file: {paths['material']}")
     print(f"RSS items: {len(items)}")
     print(f"Persona: {settings['persona_slug']}")
+    print(f"Column: {settings['column_slug']}")
     print(f"Legacy publish config: {settings['publish']}; main_image_url: {settings['main_image_url'] or '(none)'}")
     if args.dry_run:
         print("[Dry-run] Skip agent, prepare, update-body, and publish.")
@@ -181,7 +193,7 @@ def cmd_write(args):
     paths["body"] = work_dir / "body.md"
     paths["body"].write_text(final_body, encoding="utf-8")
 
-    raw_id = pc("columns", "installments", "prepare", SERIES_SLUG, "--print-id").strip()
+    raw_id = pc("columns", "installments", "prepare", settings["column_slug"], "--print-id").strip()
     installment_id = str(int(raw_id))
     print(f"Prepared installment: {installment_id}")
     pc(

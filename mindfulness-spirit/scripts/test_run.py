@@ -18,7 +18,7 @@ def cp(returncode, stdout="", stderr=""):
     return subprocess.CompletedProcess(["nullclaw"], returncode, stdout=stdout, stderr=stderr)
 
 
-SETTINGS = {"persona_slug": "test-persona", "publish": True, "main_image_url": None}
+SETTINGS = {"persona_slug": "test-persona", "column_slug": "test-column", "publish": True, "main_image_url": None}
 ITEMS = [{"id": 1, "title": "測試標題", "url": "https://example.com/1", "source": "Example"}]
 
 

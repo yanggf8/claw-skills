@@ -61,6 +61,47 @@ ICE/BAML series only ~3 years — a licensing cap on the keyless FRED endpoint,
 not a bug. `baa−aaa` is derived at read time from `baa` and `aaa`; it is the
 longest-history credit-stress measure available.
 
+## Message layout: what is data and what is code
+
+**Series names come from the `Label` field of `cds_series`, not from Rust.** The
+message used to print the config *key* (`hy_oas`, `baa10y`); it now prints the
+Label. Translating or renaming a series is therefore a config change and never
+touches code. The one exception is the derived quality spread, which is computed
+in `render.rs` and so is named there (`BAA_AAA_LABEL`) — there is no config row
+to carry it.
+
+**Column widths are measured, not fixed.** A label's width is data now, so a
+hard-coded `{:<9}` would be a guess about someone else's config. Widths are
+computed across the rows being rendered, using display columns rather than chars:
+「品質利差」 is 4 chars but 8 columns, and char-based padding collapses every
+column to its right the moment a label stops being ASCII. Pinned by
+`cjk_labels_keep_columns_aligned`, which asserts the byte offsets differ while
+the display columns match — so the test cannot pass trivially.
+
+**Percentiles are whole numbers, truncated — never rounded.** `p60.0` implied a
+precision a rank does not have. Truncation is not cosmetic: rounding turns 99.6
+into `p100`, which asserts that nothing in the window sits above this value while
+0.4% of it does. `p99` understates by under one percentile and stays true — at
+least 99% of the window is below. **The display may never claim a higher rank
+than the data supports.** Pinned by `percentile_never_displays_p100_by_rounding_up`.
+
+**The footer demonstrates window-dependence with the day's own numbers** instead
+of stating it abstractly, because an abstract footer gets skipped on a phone:
+
+```
+SIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。
+例:中級利差 Baa−10年債 1.64 —— 1年 排 p26,10年 排 p13。不是兩個市場,是兩把尺。
+```
+
+The example picks the first line whose first two windows actually disagree; an
+example where both agree would demonstrate nothing, and none is emitted rather
+than inventing one. **This is a demonstration, not a verdict** — it shows that one
+number has two answers, never what the situation is.
+
+**The `SIGNAL-ONLY` marker stays on the footer.** It is a project-wide boundary
+marker, not prose; only the explanation after it became concrete. Removing it
+during the readability pass was caught by the contract tests.
+
 ## Data Store
 
 - Source: FRED keyless CSV, stored in the shared `price-registry`

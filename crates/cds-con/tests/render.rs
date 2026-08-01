@@ -53,15 +53,16 @@ fn golden_lines() -> Vec<SeriesLine> {
     vec![
         SeriesLine {
             key: BAA_AAA_KEY.into(),
+            label: BAA_AAA_KEY.into(),
             kind: SeriesKind::Spread,
             value: Some(0.48),
             windows: vec![
                 WindowPct {
-                    label: "1y",
+                    label: "1年",
                     pctile: 0.0,
                 },
                 WindowPct {
-                    label: "10y",
+                    label: "10年",
                     pctile: 0.0,
                 },
                 WindowPct {
@@ -76,15 +77,16 @@ fn golden_lines() -> Vec<SeriesLine> {
         },
         SeriesLine {
             key: "baa10y".into(),
+            label: "baa10y".into(),
             kind: SeriesKind::Spread,
             value: Some(1.59),
             windows: vec![
                 WindowPct {
-                    label: "1y",
+                    label: "1年",
                     pctile: 14.8,
                 },
                 WindowPct {
-                    label: "10y",
+                    label: "10年",
                     pctile: 10.2,
                 },
                 WindowPct {
@@ -99,11 +101,12 @@ fn golden_lines() -> Vec<SeriesLine> {
         },
         SeriesLine {
             key: "hy_oas".into(),
+            label: "hy_oas".into(),
             kind: SeriesKind::Spread,
             value: Some(2.79),
             windows: vec![
                 WindowPct {
-                    label: "1y",
+                    label: "1年",
                     pctile: 30.2,
                 },
                 WindowPct {
@@ -118,11 +121,12 @@ fn golden_lines() -> Vec<SeriesLine> {
         },
         SeriesLine {
             key: "ig_oas".into(),
+            label: "ig_oas".into(),
             kind: SeriesKind::Spread,
             value: Some(0.80),
             windows: vec![
                 WindowPct {
-                    label: "1y",
+                    label: "1年",
                     pctile: 60.0,
                 },
                 WindowPct {
@@ -137,15 +141,16 @@ fn golden_lines() -> Vec<SeriesLine> {
         },
         SeriesLine {
             key: "aaa".into(),
+            label: "aaa".into(),
             kind: SeriesKind::Yield,
             value: Some(5.52),
             windows: vec![
                 WindowPct {
-                    label: "1y",
+                    label: "1年",
                     pctile: 84.6,
                 },
                 WindowPct {
-                    label: "10y",
+                    label: "10年",
                     pctile: 96.7,
                 },
                 WindowPct {
@@ -160,15 +165,16 @@ fn golden_lines() -> Vec<SeriesLine> {
         },
         SeriesLine {
             key: "baa".into(),
+            label: "baa".into(),
             kind: SeriesKind::Yield,
             value: Some(6.00),
             windows: vec![
                 WindowPct {
-                    label: "1y",
+                    label: "1年",
                     pctile: 46.2,
                 },
                 WindowPct {
-                    label: "10y",
+                    label: "10年",
                     pctile: 86.0,
                 },
                 WindowPct {
@@ -183,11 +189,12 @@ fn golden_lines() -> Vec<SeriesLine> {
         },
         SeriesLine {
             key: "hy_yield".into(),
+            label: "hy_yield".into(),
             kind: SeriesKind::Yield,
             value: Some(7.19),
             windows: vec![
                 WindowPct {
-                    label: "1y",
+                    label: "1年",
                     pctile: 97.0,
                 },
                 WindowPct {
@@ -202,11 +209,12 @@ fn golden_lines() -> Vec<SeriesLine> {
         },
         SeriesLine {
             key: "ig_yield".into(),
+            label: "ig_yield".into(),
             kind: SeriesKind::Yield,
             value: Some(5.43),
             windows: vec![
                 WindowPct {
-                    label: "1y",
+                    label: "1年",
                     pctile: 99.2,
                 },
                 WindowPct {
@@ -221,11 +229,12 @@ fn golden_lines() -> Vec<SeriesLine> {
         },
         SeriesLine {
             key: "ccc_yield".into(),
+            label: "ccc_yield".into(),
             kind: SeriesKind::Yield,
             value: Some(14.28),
             windows: vec![
                 WindowPct {
-                    label: "1y",
+                    label: "1年",
                     pctile: 99.6,
                 },
                 WindowPct {
@@ -246,24 +255,7 @@ fn golden_lines() -> Vec<SeriesLine> {
 /// sample pads some two-window / three-window lines one space wider (35) than
 /// others (34); that inconsistency is not part of the shape. Every number,
 /// label, order, unit rule and literal matches the plan.
-const GOLDEN: &str = "\
-💾 CDS-CON 信用利差
-
-利差(已扣無風險利率)
-  baa−aaa   0.48   1y p0.0 · 10y p0.0 · 全庫 p3.7      1919-01-01→ monthly
-  baa10y    1.59   1y p14.8 · 10y p10.2 · 全庫 p11.2   1986-01-02→ daily
-  hy_oas    2.79   1y p30.2 · 全庫 p18.1               2023-07-28→ daily
-  ig_oas    0.80   1y p60.0 · 全庫 p22.1               2023-07-28→ daily
-
-殖利率(含無風險利率 — 水位高低多半反映利率,不是信用壓力)
-  aaa       5.52   1y p84.6 · 10y p96.7 · 全庫 p61.6   1919-01-01→ monthly
-  baa       6.00   1y p46.2 · 10y p86.0 · 全庫 p46.7   1919-01-01→ monthly
-  hy_yield  7.19   1y p97.0 · 全庫 p93.2               2023-07-28→ daily
-  ig_yield  5.43   1y p99.2 · 全庫 p96.4               2023-07-28→ daily
-  ccc_yield 14.28  1y p99.6 · 全庫 p93.5               2023-07-28→ daily
-
-資料:daily 至 2026-07-24(7 天前) · monthly 至 2026-06-01
-SIGNAL-ONLY:百分位是窗口內的排名,窗口會翻轉結論。";
+const GOLDEN: &str = "💾 信用利差\n\n利差(已扣掉無風險利率 —— 這是信用風險本身的價格)\n  baa−aaa     0.48   1年 p0 · 10年 p0 · 全庫 p3      自1919 月\n  baa10y      1.59   1年 p14 · 10年 p10 · 全庫 p11   自1986 日\n  hy_oas      2.79   1年 p30 · 全庫 p18              自2023 日\n  ig_oas      0.80   1年 p60 · 全庫 p22              自2023 日\n\n殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)\n  aaa         5.52   1年 p84 · 10年 p96 · 全庫 p61   自1919 月\n  baa         6.00   1年 p46 · 10年 p86 · 全庫 p46   自1919 月\n  hy_yield    7.19   1年 p97 · 全庫 p93              自2023 日\n  ig_yield    5.43   1年 p99 · 全庫 p96              自2023 日\n  ccc_yield  14.28   1年 p99 · 全庫 p93              自2023 日\n\n資料:日 至 2026-07-24(7 天前) · 月 至 2026-06\nSIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。\n例:baa10y 1.59 —— 1年 排 p14,10年 排 p10。不是兩個市場,是兩把尺。";
 
 // ── exact shape ──────────────────────────────────────────────────────────
 
@@ -272,7 +264,7 @@ fn golden_message_matches_plan_exactly() {
     let rendered = render_lines(&golden_lines(), "2026-07-31");
     assert_eq!(
         rendered, GOLDEN,
-        "rendered message must match the plan golden byte-for-byte\n--- rendered ---\n{rendered}\n--- golden ---\n{GOLDEN}"
+        "rendered message must match the plan golden byte-for-byte"
     );
 }
 
@@ -381,7 +373,7 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
     let labels: Vec<&str> = lines[0].windows.iter().map(|w| w.label).collect();
     assert_eq!(
         labels,
-        vec!["1y", "全庫"],
+        vec!["1年", "全庫"],
         "10y must be omitted for short coverage, not listed; got {labels:?}"
     );
 
@@ -391,14 +383,14 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
         "must never print insufficient-coverage in the message: {msg}"
     );
     assert!(
-        !msg.contains("10y"),
+        !msg.contains("10年"),
         "unreachable 10y window must not appear: {msg}"
     );
-    assert!(msg.contains("1y p"), "1y must still appear: {msg}");
+    assert!(msg.contains("1年 p"), "1年 must still appear: {msg}");
     assert!(msg.contains("全庫 p"), "全庫 must still appear: {msg}");
     // Omission is legible because coverage start is on the same line.
     assert!(
-        msg.contains("2023-07-28→ daily"),
+        msg.contains("自2023 日"),
         "coverage start must remain on the line: {msg}"
     );
 }
@@ -429,7 +421,7 @@ fn long_coverage_series_shows_all_three_windows() {
     let labels: Vec<&str> = derived.windows.iter().map(|w| w.label).collect();
     assert_eq!(
         labels,
-        vec!["1y", "10y", "全庫"],
+        vec!["1年", "10年", "全庫"],
         "baa−aaa reaches 1919 so it shows all three windows; got {labels:?}"
     );
 }
@@ -437,14 +429,15 @@ fn long_coverage_series_shows_all_three_windows() {
 // ── precision ────────────────────────────────────────────────────────────
 
 #[test]
-fn precision_value_two_decimals_percentile_one() {
+fn precision_value_two_decimals_percentile_whole_number() {
     let line = SeriesLine {
         key: "ig_oas".into(),
+            label: "ig_oas".into(),
         kind: SeriesKind::Spread,
         value: Some(0.8),
         windows: vec![
             WindowPct {
-                label: "1y",
+                label: "1年",
                 pctile: 60.0,
             },
             WindowPct {
@@ -462,17 +455,14 @@ fn precision_value_two_decimals_percentile_one() {
         msg.contains("0.80"),
         "value must be two decimal places: {msg}"
     );
-    assert!(
-        msg.contains("p60.0"),
-        "percentile must be one decimal place: {msg}"
-    );
-    assert!(
-        msg.contains("p22.1"),
-        "percentile rounds to one decimal: {msg}"
-    );
-    // Not unrounded / three-decimal forms.
+    // A percentile is a rank, so it shows as a whole number. `p60.0` implied a
+    // precision the rank does not have; 22.14 becomes p22, not p22.1.
+    assert!(msg.contains("p60"), "percentile is a whole number: {msg}");
+    assert!(msg.contains("p22"), "percentile rounds to whole: {msg}");
+    // Not unrounded / decimal forms.
     assert!(!msg.contains("0.800"), "{msg}");
-    assert!(!msg.contains("p22.14"), "{msg}");
+    assert!(!msg.contains("p22.1"), "{msg}");
+    assert!(!msg.contains("p60.0"), "{msg}");
 }
 
 // ── units ────────────────────────────────────────────────────────────────
@@ -499,7 +489,7 @@ fn provenance_is_coverage_and_frequency_not_fred_id() {
     // series_id is FRED_baa10y via helper — must not appear.
     let msg = format_message(&series, "2026-07-31").unwrap();
     assert!(
-        msg.contains("1986-01-02→ daily"),
+        msg.contains("自1986 日"),
         "coverage start and frequency required: {msg}"
     );
     assert!(
@@ -518,11 +508,11 @@ fn provenance_is_coverage_and_frequency_not_fred_id() {
 fn freshness_line_shows_age_without_judgment() {
     let msg = render_lines(&golden_lines(), "2026-07-31");
     assert!(
-        msg.contains("資料:daily 至 2026-07-24(7 天前)"),
+        msg.contains("資料:日 至 2026-07-24(7 天前)"),
         "daily latest and age-in-days required: {msg}"
     );
     assert!(
-        msg.contains("monthly 至 2026-06-01"),
+        msg.contains("月 至 2026-06"),
         "monthly latest required: {msg}"
     );
     // No threshold, colour, or adjective about staleness.
@@ -557,11 +547,11 @@ fn monthly_freshness_uses_minimum_latest_not_maximum() {
     ];
     let msg = format_message(&series, "2026-07-31").unwrap();
     assert!(
-        msg.contains("monthly 至 2026-06-01"),
+        msg.contains("月 至 2026-06"),
         "monthly freshness must be the MIN latest (derived lags at 2026-06-01): {msg}"
     );
     assert!(
-        !msg.contains("monthly 至 2026-07-01"),
+        !msg.contains("月 至 2026-07"),
         "must not advertise max monthly latest the headline number does not have: {msg}"
     );
 }
@@ -597,7 +587,7 @@ fn missing_series_renders_na_and_is_named_in_freshness() {
     );
     // Row still present with frequency (coverage line structure intact).
     assert!(
-        msg.lines().any(|l| l.contains("hy_oas") && l.contains("n/a") && l.contains("daily")),
+        msg.lines().any(|l| l.contains("hy_oas") && l.contains("n/a") && l.contains("日")),
         "n/a row keeps frequency on the line: {msg}"
     );
     assert!(
@@ -630,9 +620,9 @@ fn missing_kind_fails_loudly_not_defaulted_to_yield() {
 #[test]
 fn spread_and_yield_blocks_are_separate_with_meaning_labels() {
     let msg = render_lines(&golden_lines(), "2026-07-31");
-    let spread_hdr = msg.find("利差(已扣無風險利率)").expect("spread header");
+    let spread_hdr = msg.find("利差(已扣掉無風險利率 —— 這是信用風險本身的價格)").expect("spread header");
     let yield_hdr = msg
-        .find("殖利率(含無風險利率 — 水位高低多半反映利率,不是信用壓力)")
+        .find("殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)")
         .expect("yield header");
     assert!(
         spread_hdr < yield_hdr,
@@ -651,11 +641,64 @@ fn spread_and_yield_blocks_are_separate_with_meaning_labels() {
 fn closes_with_signal_only_and_has_no_status_line() {
     let msg = render_lines(&golden_lines(), "2026-07-31");
     assert!(
-        msg.contains("SIGNAL-ONLY:百分位是窗口內的排名,窗口會翻轉結論。"),
+        msg.contains("SIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。"),
         "{msg}"
     );
     assert!(
         !msg.contains("狀態：") && !msg.contains("狀態:"),
         "cds-con deliberately has no 狀態 line: {msg}"
     );
+}
+
+#[test]
+fn percentile_never_displays_p100_by_rounding_up() {
+    // 99.6 must not render as p100: that asserts nothing in the window sits
+    // above this value, while 0.4% of it does. Truncation understates by under
+    // one percentile and stays true.
+    let line = SeriesLine {
+        key: "ccc_yield".into(),
+        label: "ccc_yield".into(),
+        kind: SeriesKind::Yield,
+        value: Some(14.28),
+        windows: vec![WindowPct { label: "1年", pctile: 99.6 }],
+        coverage_start: Some("2023-07-28".into()),
+        latest: Some("2026-07-24".into()),
+        frequency: Frequency::Daily,
+        config_order: 0,
+    };
+    let msg = render_lines(&[line], "2026-07-31");
+    assert!(msg.contains("p99"), "99.6 truncates to p99: {msg}");
+    assert!(!msg.contains("p100"), "must never claim the top of the window: {msg}");
+}
+
+#[test]
+fn cjk_labels_keep_columns_aligned() {
+    // Char-based padding collapses here: 「品質利差」 is 4 chars but 8 columns.
+    let mk = |label: &str, v: f64| SeriesLine {
+        key: "k".into(),
+        label: label.into(),
+        kind: SeriesKind::Spread,
+        value: Some(v),
+        windows: vec![WindowPct { label: "1年", pctile: 50.0 }],
+        coverage_start: Some("2023-07-28".into()),
+        latest: Some("2026-07-24".into()),
+        frequency: Frequency::Daily,
+        config_order: 0,
+    };
+    let msg = render_lines(&[mk("品質利差 Baa−Aaa", 0.48), mk("ig_oas", 0.80)], "2026-07-31");
+    let rows: Vec<&str> = msg.lines().filter(|l| l.contains("自2023")).collect();
+    assert_eq!(rows.len(), 2);
+    let col = |l: &str| l.find("自2023").unwrap();
+    // Same display column, even though the byte offsets differ wildly.
+    let width = |l: &str| -> usize {
+        l[..col(l)].chars().map(|c| {
+            let c = c as u32;
+            let wide = (0x1100..=0x115F).contains(&c) || (0x2E80..=0xA4CF).contains(&c)
+                || (0xAC00..=0xD7A3).contains(&c) || (0xF900..=0xFAFF).contains(&c)
+                || (0xFE30..=0xFE6F).contains(&c) || (0xFF00..=0xFF60).contains(&c);
+            if wide { 2 } else { 1 }
+        }).sum()
+    };
+    assert_eq!(width(rows[0]), width(rows[1]), "coverage column must align:\n{msg}");
+    assert_ne!(col(rows[0]), col(rows[1]), "byte offsets differ — proves the test is not trivial");
 }

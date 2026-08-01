@@ -35,7 +35,7 @@ pub struct SeriesInput {
 /// A trailing-window percentile that the series can actually support.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowPct {
-    /// Display label: `1y`, `10y`, or `全庫`.
+    /// Display label: `1年`, `10年`, or `全庫`.
     pub label: &'static str,
     pub pctile: f64,
 }
@@ -45,6 +45,11 @@ pub struct WindowPct {
 #[derive(Debug, Clone)]
 pub struct SeriesLine {
     pub key: String,
+    /// Human-facing name. Comes from the `cds_series` config's Label field --
+    /// it is data, not code, so translating the message never touches Rust.
+    /// The derived quality spread is the one exception: it is computed here, so
+    /// its name is a constant here too.
+    pub label: String,
     pub kind: SeriesKind,
     pub value: Option<f64>,
     pub windows: Vec<WindowPct>,
@@ -70,8 +75,57 @@ impl std::fmt::Display for RenderError {
 
 impl std::error::Error for RenderError {}
 
+
+/// Display width: CJK / fullwidth characters occupy two columns.
+///
+/// Column padding cannot use `{:<N}`, which counts chars. A label like
+/// 「品質利差」 is 4 chars but 8 columns, so char-based padding collapses every
+/// column to its right the moment a label stops being ASCII.
+fn display_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| {
+            let c = c as u32;
+            let wide = (0x1100..=0x115F).contains(&c)
+                || (0x2E80..=0xA4CF).contains(&c)
+                || (0xAC00..=0xD7A3).contains(&c)
+                || (0xF900..=0xFAFF).contains(&c)
+                || (0xFE30..=0xFE6F).contains(&c)
+                || (0xFF00..=0xFF60).contains(&c)
+                || (0xFFE0..=0xFFE6).contains(&c)
+                || (0x20000..=0x3FFFD).contains(&c);
+            if wide { 2 } else { 1 }
+        })
+        .sum()
+}
+
+/// Pad `s` on the right to `width` display columns.
+fn pad_to(s: &str, width: usize) -> String {
+    let mut out = s.to_string();
+    for _ in display_width(s)..width {
+        out.push(' ');
+    }
+    out
+}
+
+/// A percentile is a rank, so it shows as a whole number -- `p60.0` implied a
+/// precision the rank does not have.
+///
+/// Truncated, NOT rounded. Rounding turns 99.6 into `p100`, which asserts that
+/// nothing in the window sits above this value while 0.4% of it does. `p99`
+/// understates by less than one percentile and stays true: at least 99% of the
+/// window is below. The display may never claim a higher rank than the data
+/// supports. The stored value keeps full precision.
+fn fmt_pct(p: f64) -> String {
+    format!("p{}", p.floor() as i64)
+}
+
 /// Display key for the derived quality spread (Unicode minus U+2212).
 pub const BAA_AAA_KEY: &str = "baa−aaa";
+
+/// Name for the derived quality spread. Unlike the configured series, whose
+/// labels come from `cds_series`, this row is computed here and so is named
+/// here -- there is no config entry to carry it.
+pub const BAA_AAA_LABEL: &str = "品質利差 Baa−Aaa";
 
 /// Derived-series config_order: not in `cds_series`, so it cannot tie-break by
 /// config position. Sort by coverage only; this sentinel is never compared when
@@ -93,6 +147,7 @@ pub fn analyze(series: &[SeriesInput]) -> Result<Vec<SeriesLine>, RenderError> {
         let kind = s.spec.kind.expect("require_kind checked above");
         lines.push(series_line_from_rows(
             s.spec.key.clone(),
+            s.spec.label.clone(),
             kind,
             &s.rows,
             s.frequency,
@@ -110,6 +165,7 @@ pub fn analyze(series: &[SeriesInput]) -> Result<Vec<SeriesLine>, RenderError> {
             if !derived.is_empty() {
                 lines.push(series_line_from_rows(
                     BAA_AAA_KEY.to_string(),
+                    BAA_AAA_LABEL.to_string(),
                     SeriesKind::Spread,
                     &derived,
                     Frequency::Monthly,
@@ -146,6 +202,7 @@ fn kind_block_order(kind: SeriesKind) -> u8 {
 
 fn series_line_from_rows(
     key: String,
+    label: String,
     kind: SeriesKind,
     rows: &[Observation],
     frequency: Frequency,
@@ -154,6 +211,7 @@ fn series_line_from_rows(
     if rows.is_empty() {
         return SeriesLine {
             key,
+            label,
             kind,
             value: None,
             windows: vec![],
@@ -168,7 +226,7 @@ fn series_line_from_rows(
     let mut windows = Vec::new();
 
     // 1y, 10y: omit unreachable windows — never print `insufficient-coverage`.
-    for (years, label) in [(1u32, "1y"), (10u32, "10y")] {
+    for (years, label) in [(1u32, "1年"), (10u32, "10年")] {
         match window_stat(rows, years) {
             WindowStat::Computed { pctile, .. } => {
                 windows.push(WindowPct { label, pctile });
@@ -187,6 +245,7 @@ fn series_line_from_rows(
 
     SeriesLine {
         key,
+        label,
         kind,
         value: Some(last.value),
         windows,
@@ -202,7 +261,7 @@ fn series_line_from_rows(
 /// `as_of` is an injected YYYY-MM-DD used only for age-in-days. No clock.
 pub fn render_lines(lines: &[SeriesLine], as_of: &str) -> String {
     let mut out: Vec<String> = Vec::new();
-    out.push("💾 CDS-CON 信用利差".into());
+    out.push("💾 信用利差".into());
     out.push(String::new());
 
     let spreads: Vec<&SeriesLine> = lines
@@ -214,22 +273,61 @@ pub fn render_lines(lines: &[SeriesLine], as_of: &str) -> String {
         .filter(|l| l.kind == SeriesKind::Yield)
         .collect();
 
-    out.push("利差(已扣無風險利率)".into());
+    // One width set across BOTH blocks, so the two families still line up as a
+    // single table even though they must not be compared.
+    let all: Vec<SeriesLine> = lines.to_vec();
+    let w = row_widths(&all);
+
+    out.push("利差(已扣掉無風險利率 —— 這是信用風險本身的價格)".into());
     for line in &spreads {
-        out.push(format_series_row(line));
+        out.push(format_series_row(line, &w));
     }
 
     out.push(String::new());
-    out.push("殖利率(含無風險利率 — 水位高低多半反映利率,不是信用壓力)".into());
+    out.push("殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)".into());
     for line in &yields {
-        out.push(format_series_row(line));
+        out.push(format_series_row(line, &w));
     }
 
     out.push(String::new());
     out.push(format_freshness_line(lines, as_of));
-    out.push("SIGNAL-ONLY:百分位是窗口內的排名,窗口會翻轉結論。".into());
+    // The SIGNAL-ONLY marker stays: it is a project-wide boundary marker, not
+    // prose. Only the explanation after it became concrete.
+    out.push("SIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。".into());
+    if let Some(example) = window_example(lines) {
+        out.push(example);
+    }
 
     out.join("\n")
+}
+
+/// Show window-dependence with the message's OWN numbers instead of stating it
+/// abstractly. An abstract footer gets skipped; a worked example from today's
+/// data does not, and it stays a demonstration rather than becoming a verdict.
+///
+/// Picks the first line carrying at least two windows whose percentiles actually
+/// differ -- an example where both windows agree would demonstrate nothing.
+/// Emits nothing when no such line exists, rather than inventing one.
+fn window_example(lines: &[SeriesLine]) -> Option<String> {
+    for l in lines {
+        if l.windows.len() < 2 {
+            continue;
+        }
+        let (a, b) = (&l.windows[0], &l.windows[1]);
+        if fmt_pct(a.pctile) == fmt_pct(b.pctile) {
+            continue;
+        }
+        return Some(format!(
+            "例:{} {} —— {} 排 {},{} 排 {}。不是兩個市場,是兩把尺。",
+            l.label,
+            value_str(l),
+            a.label,
+            fmt_pct(a.pctile),
+            b.label,
+            fmt_pct(b.pctile),
+        ));
+    }
+    None
 }
 
 /// Analyze then render. Entry point for the skill once Task 3 wires the store.
@@ -238,35 +336,62 @@ pub fn format_message(series: &[SeriesInput], as_of: &str) -> Result<String, Ren
     Ok(render_lines(&lines, as_of))
 }
 
-fn format_series_row(line: &SeriesLine) -> String {
-    let value_str = match line.value {
+/// Column widths are measured across the rows being rendered rather than fixed,
+/// because a label's width is now data (config) and a fixed number would be a
+/// guess about someone else's config.
+struct RowWidths {
+    label: usize,
+    value: usize,
+    windows: usize,
+}
+
+fn row_widths(lines: &[SeriesLine]) -> RowWidths {
+    let mut w = RowWidths { label: 0, value: 0, windows: 0 };
+    for l in lines {
+        w.label = w.label.max(display_width(&l.label));
+        w.value = w.value.max(value_str(l).len());
+        w.windows = w.windows.max(display_width(&windows_str(l)));
+    }
+    w
+}
+
+fn value_str(line: &SeriesLine) -> String {
+    match line.value {
         Some(v) => format!("{v:.2}"),
         None => "n/a".into(),
+    }
+}
+
+fn windows_str(line: &SeriesLine) -> String {
+    line.windows
+        .iter()
+        .map(|w| format!("{} {}", w.label, fmt_pct(w.pctile)))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// `自1986 日` rather than `1986-01-02→ daily`: the day and month of a coverage
+/// start carry no meaning for the reader, while the year is what makes a
+/// 1-year percentile on a 3-year history read differently from one on 107 years.
+fn coverage_str(line: &SeriesLine) -> String {
+    let freq = match line.frequency {
+        Frequency::Daily => "日",
+        Frequency::Monthly => "月",
     };
+    match &line.coverage_start {
+        Some(start) => format!("自{} {}", &start[..4.min(start.len())], freq),
+        None => format!("自— {freq}"),
+    }
+}
 
-    let windows_str = if line.windows.is_empty() {
-        String::new()
-    } else {
-        line.windows
-            .iter()
-            .map(|w| format!("{} p{:.1}", w.label, w.pctile))
-            .collect::<Vec<_>>()
-            .join(" · ")
-    };
-
-    // Windows field width 34 left-aligns the coverage column across rows that
-    // show two vs three windows (see plan golden).
-    let windows_field = format!("{:<34}", windows_str);
-
-    let coverage = match &line.coverage_start {
-        Some(start) => format!("{start}→ {}", line.frequency.as_str()),
-        None => format!("—→ {}", line.frequency.as_str()),
-    };
-
-    // key width 9, value width 5, then two spaces before the windows field.
+fn format_series_row(line: &SeriesLine, w: &RowWidths) -> String {
     format!(
-        "  {:<9} {:<5}  {}{}",
-        line.key, value_str, windows_field, coverage
+        "  {}  {:>vw$}   {}   {}",
+        pad_to(&line.label, w.label),
+        value_str(line),
+        pad_to(&windows_str(line), w.windows),
+        coverage_str(line),
+        vw = w.value,
     )
 }
 
@@ -278,11 +403,11 @@ fn format_freshness_line(lines: &[SeriesLine], as_of: &str) -> String {
 
     if let Some(d) = daily_latest {
         let age = days_between(&d, as_of).unwrap_or(0);
-        parts.push(format!("daily 至 {d}({age} 天前)"));
+        parts.push(format!("日 至 {d}({age} 天前)"));
     }
     if let Some(m) = monthly_latest {
         // Monthly: state the date only — no age parenthetical in the golden.
-        parts.push(format!("monthly 至 {m}"));
+        parts.push(format!("月 至 {}", &m[..7.min(m.len())]));
     }
 
     let missing: Vec<&str> = lines

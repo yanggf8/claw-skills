@@ -58,6 +58,40 @@ forbids exactly that.
 
 "Seven days old" is `ok`. "Nothing to report at all" is `failed`.
 
+## Readability pass (2026-08-02) — what was traded and what was not
+
+Reviewed by Grok against one question: what is hard to understand here for a
+non-specialist. Three of its suggestions were **rejected**, and the reasons matter
+more than the accepted ones:
+
+- **Colloquial anchors** (「偏窄」「很高」 beside each value) — rejected. 「偏窄」 IS a
+  verdict. `baa10y` is p26 over one year and p13 over ten; calling it 「偏窄」
+  smuggles in a ladder whose window is never stated. Grok itself graded this the
+  worst offender against the standing constraint.
+- **A two-line summary at the top** — rejected, and for a harder reason than Grok
+  gave. That text would be a fixed sentence about today's shape ("yields high,
+  spreads low"). The day spreads actually widen it becomes false, with nothing to
+  catch it. It is the hardcode problem wearing a prose costume.
+- **Dropping any of: the two-block split, per-line coverage, all windows side by
+  side, the freshness line** — rejected. These are where the honesty lives.
+  Showing `品質利差` at p0/p0/p3 and `中級利差` at p26/p13/p14 is what makes "how low
+  depends on the ruler" visible; collapsing to one window would hide it.
+
+Accepted: Label instead of key, whole-number percentiles, `自1986 日` instead of
+`1986-01-02→ daily`, a worked example in the footer, and dropping the `CDS-CON`
+system name from the title (redundant for a single reader).
+
+**Grok was explicit that (e) has no good answer** — there is no way to make
+window-dependence intuitive to someone who does not know what a percentile is
+*without* collapsing it into a verdict. Colour, arrows, a single window, and
+"usually look at the 10-year" were all judged to be ladders in disguise. The
+worked example is the least-bad option, and it demonstrates rather than teaches.
+
+**Truncation over rounding was found by running the tests, not by review.** The
+golden regenerated with `ccc_yield` at `p100` (true value 99.6). That claims the
+top of the window while 0.4% sits above it. Truncation understates by under one
+percentile and is always true.
+
 ## Known limits
 
 - **Frequency is inferred, not declared.** `SeriesInput` needs a frequency and

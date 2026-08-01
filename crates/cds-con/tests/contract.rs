@@ -173,7 +173,7 @@ async fn store_unreachable_is_failed_and_does_not_deliver() {
     );
     assert!(out.contains("[trace:job-77]"), "{out}");
     assert!(
-        !out.contains("💾 CDS-CON"),
+        !out.contains("💾 信用利差"),
         "failed path must not deliver a report body: {out}"
     );
     assert!(
@@ -207,7 +207,7 @@ async fn store_read_failure_is_failed_and_does_not_deliver() {
         "a read/config failure is failed: {out}"
     );
     assert!(
-        !out.contains("💾 CDS-CON"),
+        !out.contains("💾 信用利差"),
         "failed path must not deliver: {out}"
     );
 }
@@ -234,7 +234,7 @@ async fn empty_store_is_failed_and_does_not_deliver() {
         "empty store must not leave the scheduler green: {out}"
     );
     assert!(
-        !out.contains("💾 CDS-CON"),
+        !out.contains("💾 信用利差"),
         "must not deliver an all-n/a report: {out}"
     );
     assert!(
@@ -263,7 +263,7 @@ async fn every_configured_series_missing_is_failed() {
         "all configured series missing is failed: {out}"
     );
     assert!(
-        !out.contains("💾 CDS-CON"),
+        !out.contains("💾 信用利差"),
         "must not deliver: {out}"
     );
 }
@@ -308,7 +308,7 @@ async fn missing_kind_is_failed_and_does_not_deliver() {
         "missing kind is failed: {out}"
     );
     assert!(
-        !out.contains("💾 CDS-CON"),
+        !out.contains("💾 信用利差"),
         "must not deliver without a family split: {out}"
     );
 }
@@ -336,7 +336,7 @@ async fn stale_data_is_ok_and_delivers() {
         "never degraded for data age: {out}"
     );
     assert!(
-        out.contains("💾 CDS-CON"),
+        out.contains("💾 信用利差"),
         "must deliver the report: {out}"
     );
     assert!(
@@ -376,7 +376,7 @@ async fn partial_series_missing_is_ok_and_delivers() {
         out.contains("[skill-status:ok]"),
         "partial data is ok: {out}"
     );
-    assert!(out.contains("💾 CDS-CON"), "must deliver: {out}");
+    assert!(out.contains("💾 信用利差"), "must deliver: {out}");
     assert!(
         out.contains("hy_oas") && out.contains("n/a"),
         "missing series named as n/a: {out}"
@@ -404,7 +404,7 @@ async fn deliver_then_status_then_trace_in_that_order() {
     .await;
     assert_eq!(code, 0);
     assert!(err.is_empty(), "{err}");
-    let body = out.find("💾 CDS-CON").expect("body missing");
+    let body = out.find("💾 信用利差").expect("body missing");
     let status = out
         .find("[skill-status:ok]")
         .expect("status marker missing");
@@ -441,7 +441,7 @@ async fn no_job_id_means_no_markers_at_all() {
     seed_ok(&conn).await;
     let (code, out, _) = go(&["cds-con"], None, StoreAccess::Ok(&conn), AS_OF).await;
     assert_eq!(code, 0);
-    assert!(out.contains("💾 CDS-CON"), "the report itself still prints");
+    assert!(out.contains("💾 信用利差"), "the report itself still prints");
     assert!(
         !out.contains("[skill-status:"),
         "no status marker without a job id: {out}"
@@ -531,7 +531,7 @@ async fn a_mistyped_deliver_to_is_refused_rather_than_silently_printing() {
         "{err}"
     );
     assert!(
-        !out.contains("💾 CDS-CON"),
+        !out.contains("💾 信用利差"),
         "a refused run must not render the report: {out}"
     );
 }
