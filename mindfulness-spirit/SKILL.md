@@ -17,14 +17,20 @@ persistence、dev.to / Telegram delivery、failure dump、plan mark-published �
 
 ## Script
 
-`~/a/claw-skills/mindfulness-spirit/scripts/run.py`
+```
+~/.nullclaw/skills/mindfulness-spirit/bin/mindfulness-spirit
+```
+
+Rust (`crates/mindfulness-spirit`), live since 2026-08-02. `scripts/run.py` is
+the rollback path and the differential oracle — publish the binary with
+`tools/install-skill.sh mindfulness-spirit`, never by hand.
 
 ## Commands
 
 ```bash
-python3 scripts/run.py write [--dry-run]
-python3 scripts/run.py [--dry-run]
-python3 scripts/run.py fix-signature DEVTO_ID [--dry-run]
+~/.nullclaw/skills/mindfulness-spirit/bin/mindfulness-spirit write [--dry-run]
+~/.nullclaw/skills/mindfulness-spirit/bin/mindfulness-spirit [--dry-run]
+~/.nullclaw/skills/mindfulness-spirit/bin/mindfulness-spirit fix-signature DEVTO_ID [--dry-run]
 ```
 
 `--account` / `--deliver-to` 已移除；發布目的地由 persona-core column
@@ -39,6 +45,7 @@ python3 scripts/run.py fix-signature DEVTO_ID [--dry-run]
   "skills": {
     "mindfulness_spirit": {
       "persona_slug": "ping-w",
+      "column_slug": "machine-and-cushion",
       "publish": true,
       "main_image_url": "https://example.com/cover.png"
     }
@@ -46,19 +53,24 @@ python3 scripts/run.py fix-signature DEVTO_ID [--dry-run]
 }
 ```
 
-`persona_slug` is required. `publish` and `main_image_url` are still read for
-operator visibility, but publish behavior is controlled by the persona-core
-column row.
+`persona_slug` is required. `column_slug` selects the running season and
+defaults to the current one; starting the next season is a config edit, not a
+code change. `publish` and `main_image_url` are still read for operator
+visibility, but publish behavior is controlled by the persona-core column row.
 
 ## Flow
 
-1. Fetch Google News RSS with the eight skill-local mindfulness / AI queries.
+0. Emit `[skill-status:ok]` / `[trace:]` on success. The Python emitted
+   neither, so every run — including the ones that published — was recorded as
+   `content_invalid` by the `skill_contract` cron.
+1. Fetch Google News RSS with the eight skill-local mindfulness / AI queries
+   (five English, three Chinese; the locale follows the query).
 2. Read stable prompt blocks from persona-core:
    `personas show`, `history list`, and `plans next` with `--as-prompt-block`.
 3. Render `prompts/writer.md.tmpl`; pass `prompts/checklist.md.tmpl` through.
 4. Write prompt + material TSV files to a temp directory.
 5. Run writer → checklist with `nullclaw agent --isolated` inside the skill.
-6. `columns installments prepare mindfulness-spirit --print-id`.
+6. `columns installments prepare <column_slug> --print-id`.
 7. `columns installments update-body <id>` stores the body, restores
    `[來源 #N]`, and records validation status.
 8. `columns installments publish <id>` handles title/signature/secrets,
@@ -69,18 +81,29 @@ It prints the writer prompt path and does not prepare, draft, or publish.
 
 ## Operator Notes
 
-`update-body` persists with `validation_ok=true`. A `validation_summary`
-containing `degraded` means the checklist phase failed and the skill
-intentionally used the writer output as the deliverable body; treat that as a
-partial-success state worth reviewing.
+`update-body` persists with `validation_ok=true`, and it is only ever reached
+after the checklist passed. **A failed checklist aborts** — nothing is
+prepared, stored or published, the installment stays `planned`, and next
+week's run picks up the same one. An earlier version published the unreviewed
+writer output under a `degraded` summary; that made the label the only
+difference between reviewed and not, and the skill's own tests were written to
+forbid it. This section described that behaviour for months after it was
+removed.
 
-Prompt text lives in `prompts/writer.md.tmpl` and `prompts/checklist.md.tmpl`.
-Do not reintroduce `claw-skills/lib/persona_*.py` or `heartbeat.py` imports;
-`ainews` still owns those Python helpers until its absorption step.
+An exhausted season is exit 4 from `columns installments prepare` —
+persona-core's not-found. The binary prints a hint naming both fixes. That
+state produced six consecutive weeks of Friday failures once, diagnosed as a
+broken skill.
+
+Prompt text lives in `prompts/writer.md.tmpl` and `prompts/checklist.md.tmpl`,
+resolved relative to the binary at `<skill>/bin/<name>`. A slot the renderer
+cannot fill is an error, not a blank: a silently-empty `{topic_block}` yields
+an article that reads fine and is no longer part of a series.
 
 ## Schedule
 
-Weekly Friday 07:00 Asia/Taipei cron entry for the `inner-algorithm` series:
+Weekly Friday 07:00 Asia/Taipei cron entry. The season it writes for is
+`skills.mindfulness_spirit.column_slug`, currently `machine-and-cushion`:
 
 - expression `0 7 * * 5`, timezone `+08:00`
 - job id `skill-a1c95bb5-d369-4c86-a6d0-8a03a2e92b19`

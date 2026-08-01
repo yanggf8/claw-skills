@@ -1,0 +1,17 @@
+[package]
+name = "mindfulness-spirit"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "mindfulness-spirit"
+path = "src/main.rs"
+
+[lib]
+name = "mindfulness_spirit"
+path = "src/lib.rs"
+
+[dependencies]
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
+serde_json = "1"
+quick-xml = "0.36"
