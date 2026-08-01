@@ -335,7 +335,7 @@ Prior design context lives in `docs/specs/` (`2026-04-15-oilcon-skill-design.md`
 | `oilcon` | `--mode deliver\|record` | Yahoo Finance, Turso |
 | `agent-reach` | agent-only, see SKILL.md | 13+ platforms |
 | `mindfulness-spirit` | `write`, `fix-signature DEVTO_ID`, `--dry-run` | Google News RSS, dev.to, Turso (via `persona-core` CLI) |
-| `liko-finance-weekly` | `--dry-run`, `--check` | Turso (via `persona-core` CLI) |
+| `liko-finance-weekly` | `--dry-run`, `--check` | Turso (via `persona-core` CLI) — Rust |
 
 `persona-skill` was retired (Step 10 of the persona-core absorbing
 plan). Persona CRUD, secrets, history, and editorial plans are now

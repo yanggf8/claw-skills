@@ -15,7 +15,7 @@ not call raw SQL, raw dev.to `curl`, or Telegram APIs directly.
 ## Script
 
 ```
-~/.nullclaw/skills/liko-finance-weekly/scripts/run.py
+~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly
 ```
 
 ## Usage
@@ -23,13 +23,13 @@ not call raw SQL, raw dev.to `curl`, or Telegram APIs directly.
 Dry run:
 
 ```bash
-python3 ~/.nullclaw/skills/liko-finance-weekly/scripts/run.py --dry-run
+python3 ~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly --dry-run
 ```
 
 Live weekly run:
 
 ```bash
-python3 ~/.nullclaw/skills/liko-finance-weekly/scripts/run.py
+python3 ~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly
 ```
 
 ## Workflow

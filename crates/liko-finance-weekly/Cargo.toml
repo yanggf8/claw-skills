@@ -1,0 +1,16 @@
+[package]
+name = "liko-finance-weekly"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "liko-finance-weekly"
+path = "src/main.rs"
+
+[lib]
+name = "liko_finance_weekly"
+path = "src/lib.rs"
+
+[dependencies]
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
+jiff = { version = "0.1", features = ["tzdb-bundle-always"] }
