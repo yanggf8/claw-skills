@@ -173,27 +173,51 @@ fn emit_and_exit(
     0
 }
 
+/// One instant, in the three forms the run needs.
+///
+/// Bundled rather than passed loose because they must all describe the *same*
+/// moment. Three separate arguments let a caller mix a `now` from one reading
+/// of the clock with a `today` from another, which around midnight CST means a
+/// report stamped with one date and back-filled against the next.
+pub struct Clock<'a> {
+    /// `cst_now()` without seconds, for the deliver message (`更新：…`).
+    pub now: &'a str,
+    /// `cst_now(with_seconds=True)`, for the record line.
+    pub now_with_seconds: &'a str,
+    /// Calendar day for `needs_backfill`, on the same zone boundary as `now`.
+    pub today: &'a str,
+}
+
+/// Where the price rows come from. The test seam: the binary passes the live
+/// Yahoo fetchers, the contract tests pass scripted ones.
+pub struct Upstream<'a> {
+    pub history: &'a dyn Fn(&str) -> Result<Vec<Row>, FetchError>,
+    pub latest: &'a dyn Fn(&str) -> Result<Option<Row>, FetchError>,
+}
+
 /// Core entry: parse, build_snapshot, warning check before mode dispatch,
 /// deliver vs record branches. Returns the process exit code. Does **not**
 /// call `process::exit`.
 ///
 /// Async because `build_snapshot` / the store are async.
-///
-/// - `now` — `cst_now()` without seconds, for the deliver message (`更新：…`)
-/// - `now_with_seconds` — `cst_now(with_seconds=True)`, for the record line
-/// - `today` — calendar day for `needs_backfill` (same zone boundary as `now`)
 pub async fn run(
     argv: &[String],
     env: &Env,
     conn: &Connection,
-    fetch_history: &dyn Fn(&str) -> Result<Vec<Row>, FetchError>,
-    fetch_latest: &dyn Fn(&str) -> Result<Option<Row>, FetchError>,
-    now: &str,
-    now_with_seconds: &str,
-    today: &str,
+    upstream: Upstream<'_>,
+    clock: Clock<'_>,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    let Upstream {
+        history: fetch_history,
+        latest: fetch_latest,
+    } = upstream;
+    let Clock {
+        now,
+        now_with_seconds,
+        today,
+    } = clock;
     // argparse refuses before doing any work, and so must this: a bad argument
     // must not reach build_snapshot, which fetches and writes the registry.
     let args = match parse_args(argv) {

@@ -9,7 +9,7 @@
 
 use market_fetch::yahoo::FetchError;
 use oilcon::analysis::Row;
-use oilcon::run::{deliver_options, run, Env};
+use oilcon::run::{deliver_options, run, Clock, Env, Upstream};
 use price_store::{ensure_schema, upsert};
 use std::path::PathBuf;
 
@@ -158,11 +158,12 @@ async fn go(
         &a,
         &env(job, &home),
         conn,
-        history,
-        latest,
-        NOW,
-        NOW_SECS,
-        TODAY,
+        Upstream { history, latest },
+        Clock {
+            now: NOW,
+            now_with_seconds: NOW_SECS,
+            today: TODAY,
+        },
         &mut o,
         &mut e,
     )

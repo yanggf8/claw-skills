@@ -13,7 +13,7 @@ use std::time::Duration;
 use claw_core::delivery::{deliver, DeliveryOutcome};
 use market_fetch::yahoo::{chart_url, parse_yahoo_chart, FetchError};
 use oilcon::analysis::Row;
-use oilcon::run::{deliver_options, run, Env};
+use oilcon::run::{deliver_options, run, Clock, Env, Upstream};
 use turso_util::{connect, RegistryConfig, TokenEnvPolicy, TokenTier};
 
 const YAHOO_CHART_BASE: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
@@ -211,11 +211,15 @@ async fn main() {
                     &argv,
                     &env,
                     &conn,
-                    &live_fetch_history,
-                    &live_fetch_latest,
-                    &now,
-                    &now_with_seconds,
-                    &today,
+                    Upstream {
+                        history: &live_fetch_history,
+                        latest: &live_fetch_latest,
+                    },
+                    Clock {
+                        now: &now,
+                        now_with_seconds: &now_with_seconds,
+                        today: &today,
+                    },
                     &mut out,
                     &mut err,
                 )
