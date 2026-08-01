@@ -290,12 +290,23 @@ identical on the second attempt.
 `~/.nullclaw/skills/lib` symlinks to this repo's `lib/`, and two skills that do
 **not** live here resolve their imports through it:
 
-| Skill | Real location | Imports |
-|-------|---------------|---------|
-| `autocli` | `~/.nullclaw/skills/autocli` (a real dir, not a symlink) | `delivery`, `trace_marker` via `../../lib` |
+**There are no external consumers left, as of 2026-08-01.** `cct` moved into
+this repo and runs Rust; `autocli` was retired.
 
-`cct` moved into this repo on 2026-08-01 and runs Rust; `autocli` is the last
-external consumer holding the Python `lib/` alive.
+autocli was removed rather than ported. It had no cron job, had not been
+touched since 2026-04-13, and was the only skill not under version control —
+a real directory inside `~/.nullclaw/skills` that the local repo there did not
+track, with no remote. Its advertised surface did not hold up either: of four
+sites tested, only `hackernews top` returned data. `bbc news` and
+`reddit frontpage` both failed with "Chrome extension not connected", and
+`arxiv paper` failed because the skill passes `--limit` to every subcommand and
+that one does not accept it. A copy is at
+`~/.nullclaw/skills-archive/autocli.retired.20260801-144629`.
+
+The Python `lib/` still cannot be deleted, but only because two skills in this
+repo still run Python entry points: `news` and `mindfulness-spirit`. The other
+`run.py` files are rollback copies — their `## Script` lines point at Rust
+binaries.
 
 Removing or porting Python `lib/` breaks both at import time — non-zero exit,
 so cron records `exec_error`. Decide the compatibility story (keep a Python
