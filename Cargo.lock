@@ -242,6 +242,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cct2"
+version = "0.1.0"
+dependencies = [
+ "claw-core",
+ "jiff",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "cds-con"
 version = "0.1.0"
 dependencies = [
