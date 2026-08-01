@@ -8,7 +8,7 @@ Personal agent skills invoked as cron jobs or on-demand by the **nullclaw**, **o
 
 **The repo is mid-port from Python to Rust** (standing instruction: the whole stack is Rust). Today it is both:
 
-- `lib/` + `<skill>/scripts/run.py` — the Python. **No longer live anywhere**: every skill in this repo has cut over — `weather`, `doughcon`, `oilcon`, `chipcon`, `inflation-con`, `cds-con`, `traffic`, `commute`, `stock`, `cct`, `cct2`, `liko-finance-weekly` and, as of 2026-08-01, `news` all run the Rust binary. The Python is retained as the rollback path and as the differential oracle, not as a live entry point. Check a skill's `## Script` line before assuming which implementation a cron fires — that line is the switch.
+- `lib/` + `<skill>/scripts/run.py` — the Python. **One live entry point left**: every skill has cut over except `mindfulness-spirit` — `weather`, `doughcon`, `oilcon`, `chipcon`, `inflation-con`, `cds-con`, `traffic`, `commute`, `stock`, `cct`, `cct2`, `liko-finance-weekly` and, as of 2026-08-01, `news` all run the Rust binary. The Python is retained as the rollback path and as the differential oracle, not as a live entry point. Check a skill's `## Script` line before assuming which implementation a cron fires — that line is the switch.
 - `crates/` — a Cargo workspace holding one binary crate per ported skill. **The shared `claw-core` lives in `../../b/gwebcdb/crates/claw-core`**, consumed by path dependency — gwebcdb is this ecosystem's home for cross-repo Rust crates (the same arrangement as `turso-util` → `finance-cli`), and any future cross-repo consumer will need claw-core the same way. Building claw-skills therefore requires gwebcdb checked out beside it. **Live status, 2026-08-01: every ported skill runs Rust, plus `cds-con`, which was born Rust and has no Python original.** Cutover is one line — the `## Script` path in `SKILL.md` — but **publish the binary with `tools/install-skill.sh <skill>`, never by hand**. That script builds `--locked`, stages, smoke-probes the artifact with an unknown flag and requires **exit 2**, publishes atomically, and verifies the path nullclaw will resolve. A manual `install` bypasses the probe, and on 2026-07-31 that probe caught a real defect in oilcon: its argument parser silently ignored unknown flags and accepted any `--mode` value, so a typo would have run the record branch — which never delivers — while still reporting `[skill-status:ok]`.
 
 **The Python `lib/` cannot be deleted when a skill is ported.** `cct` (`~/a/cct/skills/cct`) and `autocli` (`~/.nullclaw/skills/autocli`) import `delivery` and `trace_marker` from it from **outside this repo**. Both implementations coexist until every consumer moves.
@@ -303,8 +303,11 @@ sites tested, only `hackernews top` returned data. `bbc news` and
 that one does not accept it. A copy is at
 `~/.nullclaw/skills-archive/autocli.retired.20260801-144629`.
 
-The Python `lib/` still cannot be deleted, but only because two skills in this
-repo still run Python entry points: `news` and `mindfulness-spirit`. The other
+The Python `lib/` still cannot be deleted, but only because **one** skill in
+this repo still runs a Python entry point: `mindfulness-spirit`. Its weekly
+cron (Fri 07:00) currently ends `error`, its five-episode plan completed
+2026-05-22, and its last real run was 2026-04-17 — so the blocker is an
+editorial decision (new plan, or stop the cron), not a port. The other
 `run.py` files are rollback copies — their `## Script` lines point at Rust
 binaries.
 
