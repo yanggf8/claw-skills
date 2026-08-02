@@ -345,19 +345,31 @@ struct RowWidths {
     windows: usize,
 }
 
+/// `Label [key]`. The reader and the operator are the same person: the key is
+/// what he types into `price cds show <key>` and what he edits in `cds_series`,
+/// so dropping it from the daily message would force a lookup. The FRED series id
+/// stays out — it is longer and cannot be passed to anything.
+fn label_str(line: &SeriesLine) -> String {
+    format!("{} [{}]", line.label, line.key)
+}
+
 fn row_widths(lines: &[SeriesLine]) -> RowWidths {
     let mut w = RowWidths { label: 0, value: 0, windows: 0 };
     for l in lines {
-        w.label = w.label.max(display_width(&l.label));
+        w.label = w.label.max(display_width(&label_str(l)));
         w.value = w.value.max(value_str(l).len());
         w.windows = w.windows.max(display_width(&windows_str(l)));
     }
     w
 }
 
+/// Values carry `%`. Every configured FRED series is denominated in percent, and
+/// the unit used to ride along inside the English label text (`... pct`); short
+/// Chinese labels dropped it, leaving the number bare. OAS in particular is often
+/// quoted in basis points, so a unitless 2.84 is genuinely ambiguous.
 fn value_str(line: &SeriesLine) -> String {
     match line.value {
-        Some(v) => format!("{v:.2}"),
+        Some(v) => format!("{v:.2}%"),
         None => "n/a".into(),
     }
 }
@@ -375,19 +387,21 @@ fn windows_str(line: &SeriesLine) -> String {
 /// 1-year percentile on a 3-year history read differently from one on 107 years.
 fn coverage_str(line: &SeriesLine) -> String {
     let freq = match line.frequency {
-        Frequency::Daily => "日",
-        Frequency::Monthly => "月",
+        Frequency::Daily => "日頻",
+        Frequency::Monthly => "月頻",
     };
+    // `自1986 日` reads like a truncated date; the separator makes it a year plus
+    // a frequency, which is what it is.
     match &line.coverage_start {
-        Some(start) => format!("自{} {}", &start[..4.min(start.len())], freq),
-        None => format!("自— {freq}"),
+        Some(start) => format!("自{}・{}", &start[..4.min(start.len())], freq),
+        None => format!("自—・{freq}"),
     }
 }
 
 fn format_series_row(line: &SeriesLine, w: &RowWidths) -> String {
     format!(
         "  {}  {:>vw$}   {}   {}",
-        pad_to(&line.label, w.label),
+        pad_to(&label_str(line), w.label),
         value_str(line),
         pad_to(&windows_str(line), w.windows),
         coverage_str(line),

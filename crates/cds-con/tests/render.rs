@@ -255,7 +255,7 @@ fn golden_lines() -> Vec<SeriesLine> {
 /// sample pads some two-window / three-window lines one space wider (35) than
 /// others (34); that inconsistency is not part of the shape. Every number,
 /// label, order, unit rule and literal matches the plan.
-const GOLDEN: &str = "💾 信用利差\n\n利差(已扣掉無風險利率 —— 這是信用風險本身的價格)\n  baa−aaa     0.48   1年 p0 · 10年 p0 · 全庫 p3      自1919 月\n  baa10y      1.59   1年 p14 · 10年 p10 · 全庫 p11   自1986 日\n  hy_oas      2.79   1年 p30 · 全庫 p18              自2023 日\n  ig_oas      0.80   1年 p60 · 全庫 p22              自2023 日\n\n殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)\n  aaa         5.52   1年 p84 · 10年 p96 · 全庫 p61   自1919 月\n  baa         6.00   1年 p46 · 10年 p86 · 全庫 p46   自1919 月\n  hy_yield    7.19   1年 p97 · 全庫 p93              自2023 日\n  ig_yield    5.43   1年 p99 · 全庫 p96              自2023 日\n  ccc_yield  14.28   1年 p99 · 全庫 p93              自2023 日\n\n資料:日 至 2026-07-24(7 天前) · 月 至 2026-06\nSIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。\n例:baa10y 1.59 —— 1年 排 p14,10年 排 p10。不是兩個市場,是兩把尺。";
+const GOLDEN: &str = "💾 信用利差\n\n利差(已扣掉無風險利率 —— 這是信用風險本身的價格)\n  baa−aaa [baa−aaa]       0.48%   1年 p0 · 10年 p0 · 全庫 p3      自1919・月頻\n  baa10y [baa10y]         1.59%   1年 p14 · 10年 p10 · 全庫 p11   自1986・日頻\n  hy_oas [hy_oas]         2.79%   1年 p30 · 全庫 p18              自2023・日頻\n  ig_oas [ig_oas]         0.80%   1年 p60 · 全庫 p22              自2023・日頻\n\n殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)\n  aaa [aaa]               5.52%   1年 p84 · 10年 p96 · 全庫 p61   自1919・月頻\n  baa [baa]               6.00%   1年 p46 · 10年 p86 · 全庫 p46   自1919・月頻\n  hy_yield [hy_yield]     7.19%   1年 p97 · 全庫 p93              自2023・日頻\n  ig_yield [ig_yield]     5.43%   1年 p99 · 全庫 p96              自2023・日頻\n  ccc_yield [ccc_yield]  14.28%   1年 p99 · 全庫 p93              自2023・日頻\n\n資料:日 至 2026-07-24(7 天前) · 月 至 2026-06\nSIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。\n例:baa10y 1.59% —— 1年 排 p14,10年 排 p10。不是兩個市場,是兩把尺。";
 
 // ── exact shape ──────────────────────────────────────────────────────────
 
@@ -390,7 +390,7 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
     assert!(msg.contains("全庫 p"), "全庫 must still appear: {msg}");
     // Omission is legible because coverage start is on the same line.
     assert!(
-        msg.contains("自2023 日"),
+        msg.contains("自2023・日頻"),
         "coverage start must remain on the line: {msg}"
     );
 }
@@ -452,7 +452,7 @@ fn precision_value_two_decimals_percentile_whole_number() {
     };
     let msg = render_lines(&[line], "2026-07-31");
     assert!(
-        msg.contains("0.80"),
+        msg.contains("0.80%"),
         "value must be two decimal places: {msg}"
     );
     // A percentile is a rank, so it shows as a whole number. `p60.0` implied a
@@ -468,12 +468,40 @@ fn precision_value_two_decimals_percentile_whole_number() {
 // ── units ────────────────────────────────────────────────────────────────
 
 #[test]
-fn no_percent_units_printed() {
+fn percent_marks_values_but_never_percentiles() {
+    // This replaced a blanket "no % anywhere" rule. That rule existed because a
+    // percentile then rendered as `p12.7`, and a decimal next to `2.84%` invited
+    // reading the rank as a rate. Percentiles are whole numbers now, so the
+    // confusion it guarded against is much weaker — while a bare `2.84` is
+    // genuinely ambiguous, since OAS is commonly quoted in basis points (2.84%
+    // vs 284bp is a factor of 100).
+    //
+    // The original worry still binds in its precise form: a percentile must
+    // never carry a % sign.
     let msg = render_lines(&golden_lines(), "2026-07-31");
+    assert!(msg.contains("0.48%"), "values carry the unit: {msg}");
     assert!(
-        !msg.contains('%'),
-        "no % unit — mixing % with p12.7 invites reading a percentile as a rate: {msg}"
+        !regex_like_pct_with_percent(&msg),
+        "a percentile must never be printed with a % sign: {msg}"
     );
+}
+
+/// True if any `pNN` token is immediately followed by `%`.
+fn regex_like_pct_with_percent(msg: &str) -> bool {
+    let b: Vec<char> = msg.chars().collect();
+    for i in 0..b.len() {
+        if b[i] != 'p' {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > i + 1 && j < b.len() && b[j] == '%' {
+            return true;
+        }
+    }
+    false
 }
 
 // ── provenance ───────────────────────────────────────────────────────────
@@ -489,7 +517,7 @@ fn provenance_is_coverage_and_frequency_not_fred_id() {
     // series_id is FRED_baa10y via helper — must not appear.
     let msg = format_message(&series, "2026-07-31").unwrap();
     assert!(
-        msg.contains("自1986 日"),
+        msg.contains("自1986・日頻"),
         "coverage start and frequency required: {msg}"
     );
     assert!(
@@ -587,7 +615,7 @@ fn missing_series_renders_na_and_is_named_in_freshness() {
     );
     // Row still present with frequency (coverage line structure intact).
     assert!(
-        msg.lines().any(|l| l.contains("hy_oas") && l.contains("n/a") && l.contains("日")),
+        msg.lines().any(|l| l.contains("hy_oas") && l.contains("n/a") && l.contains("日頻")),
         "n/a row keeps frequency on the line: {msg}"
     );
     assert!(

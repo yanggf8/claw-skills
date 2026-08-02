@@ -87,6 +87,17 @@ window-dependence intuitive to someone who does not know what a percentile is
 "usually look at the 10-year" were all judged to be ladders in disguise. The
 worked example is the least-bad option, and it demonstrates rather than teaches.
 
+**Codex caught two labels that were wrong, verifiable from our own config.** The
+proposed `CCC 殖利率` dropped "and lower" (BAMLH0A3HYCEY is CCC *and lower*), and
+`中級利差 Baa−10年債` invented a generic name for what is specifically Moody's Baa
+minus the 10-year **US Treasury** — both contradicted by the English labels the
+config already carried. Corrected to `CCC 及以下殖利率` and `Baa−10年期美債利差`.
+
+Codex also flagged that the five ICE BofA series are capped by FRED at the last
+three years, so a coverage claim of `自1986` for one of them would be a lie. It
+cannot happen: `coverage_start` is taken from `rows[0].date` of what is actually
+stored, never from config. The ICE lines correctly read `自2023`.
+
 **Truncation over rounding was found by running the tests, not by review.** The
 golden regenerated with `ccc_yield` at `p100` (true value 99.6). That claims the
 top of the window while 0.4% sits above it. Truncation understates by under one

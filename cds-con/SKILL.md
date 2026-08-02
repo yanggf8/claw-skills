@@ -78,12 +78,26 @@ column to its right the moment a label stops being ASCII. Pinned by
 `cjk_labels_keep_columns_aligned`, which asserts the byte offsets differ while
 the display columns match — so the test cannot pass trivially.
 
+**Each line is `Label [key]`, and values carry `%`.** The reader and the operator
+are the same person: `[baa10y]` is what he types into `price cds show` and edits
+in `cds_series`, so dropping it would force a lookup. The FRED series id stays
+out — longer, and it cannot be passed to anything. The `%` replaced the unit that
+used to ride inside the English label text (`... pct`); short Chinese labels
+dropped it, and a bare `2.84` is genuinely ambiguous because OAS is commonly
+quoted in basis points (2.84% vs 284bp is a factor of 100).
+
+This reversed an earlier rule that printed **no** `%` anywhere, whose reason was
+that a percentile then rendered as `p12.7` and a decimal beside `2.84%` invited
+reading the rank as a rate. Percentiles are whole numbers now, so that confusion
+is much weaker. The precise form of the original worry still binds and is still
+tested: **a percentile must never carry a `%` sign.**
+
 **Percentiles are whole numbers, truncated — never rounded.** `p60.0` implied a
 precision a rank does not have. Truncation is not cosmetic: rounding turns 99.6
 into `p100`, which asserts that nothing in the window sits above this value while
 0.4% of it does. `p99` understates by under one percentile and stays true — at
-least 99% of the window is below. **The display may never claim a higher rank
-than the data supports.** Pinned by `percentile_never_displays_p100_by_rounding_up`.
+least 99% of the window is below — read `pN` as the bucket `[N, N+1)`.
+**The display may never claim a higher rank than the data supports.** Pinned by `percentile_never_displays_p100_by_rounding_up`.
 
 **The footer demonstrates window-dependence with the day's own numbers** instead
 of stating it abstractly, because an abstract footer gets skipped on a phone:
