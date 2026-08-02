@@ -38,3 +38,12 @@ recording because they would misinform anyone reviving this:
 
 So the "just inline the two imports" option that was considered was a larger
 change than it looked.
+
+## 2026-08-02
+
+`scripts/run.py` was deleted from this directory when the last Python left the
+repo. The `SKILL.md` beside this file still documents commands that need it, so
+read it as a record of what the skill was, not as instructions. A complete copy
+— script included — is at
+`~/.nullclaw/skills-archive/autocli.retired.20260801-144629`, and git history
+has it too.

@@ -124,10 +124,11 @@ export CLAW_ENV="$HOME/.openclaw/.env"           # optional, only if you keep AP
 path; it prints the body to stdout when `chat_id` is absent and, on a send
 failure, prints it anyway so the cron capture keeps the data.
 
-Most skills accept `--deliver-to CHAT_ID` and `--account NAME`. Two do not:
-`mindfulness-spirit` routes by the persona-core column's `delivery_target`, and
-`commute` delivers through `traffic`. Omitting `--deliver-to` sends output to
-stdout, which is how a cron job is debugged by hand.
+Every skill accepts `--deliver-to CHAT_ID` and `--account NAME` except
+`mindfulness-spirit`, which routes by the persona-core column's
+`delivery_target` so there is only one source of routing truth. Omitting
+`--deliver-to` sends output to stdout, which is how a cron job is debugged by
+hand.
 
 ## Registering with the agent
 
@@ -403,7 +404,7 @@ drive a local stub.
 
 - **`weather` needs `CWA_API_KEY`**: put it in `~/.nullclaw/.env` (default) or `~/.openclaw/.env` and export `CLAW_ENV` to point at it. Without the key, Taiwan forecasts silently return no data.
 - **OpenClaw `weather` name collision**: OpenClaw ships a bundled `weather` skill (wttr.in). Workspace skills take precedence, so this repo's `weather` wins. Rename the folder + frontmatter `name:` if you want both.
-- **`oilcon` no longer needs `libsql-experimental`**: the Rust build links libsql directly, so the PEP 668 pip dance Ubuntu 24.04 used to require is gone and `oilcon/requirements.txt` is dead. A `WARN: turso unavailable` from oilcon now means credentials or reachability, not a missing wheel.
+- **`oilcon` no longer needs `libsql-experimental`**: the Rust build links libsql directly, so the PEP 668 pip dance Ubuntu 24.04 used to require is gone and `oilcon/requirements.txt` was deleted with it. A `WARN: turso unavailable` from oilcon now means credentials or reachability, not a missing wheel.
 
 ## Design notes
 
