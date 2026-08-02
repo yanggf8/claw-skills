@@ -1,3 +1,7 @@
+> **歷史紀錄。** 這次審查的對象是 inflation-con 的 Python 測試，那些檔案已於
+> 2026-08-02 隨最後一批 Python 刪除。文末未勾的 F1–F5 是當時的審查建議，不是
+> 現在的待辦。
+
 # Inflation-Con Drift 測試審查（load_config / deploy-contract）— Claude Review
 
 - 日期：2026-07-13

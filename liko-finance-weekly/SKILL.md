@@ -37,8 +37,10 @@ Live weekly run:
 1. `persona-core streams issues prepare weekly-intl-wealth-signals`
 2. `persona-core personas get liko-finance`
 3. `persona-core streams get weekly-intl-wealth-signals`
-4. Read the stream-specific source policy:
-   `docs/superpowers/specs/2026-04-29-liko-finance-weekly-design/sources.md`
+4. The stream-specific source policy is the `source_policy` field of the record
+   step 3 already printed — level_1 / level_2 / level_3 with what each may be
+   used for. There is no separate file; an earlier version of this line pointed
+   at one that never existed.
 5. Ask the nullclaw agent to draft exactly one issue body in liko's voice.
 6. `persona-core streams issues validate-body @<draft>`
 7. The drafting context already includes the default style prompt block

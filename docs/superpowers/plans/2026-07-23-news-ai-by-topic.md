@@ -1,3 +1,11 @@
+> **已完成並上線。**news AI 區的主題分區（`NEWS_AI_THEME`）已在生產環境執行。
+>
+> 下面的核取方塊**在執行過程中從未被勾選**，所以它們不帶任何資訊 —— 讀作
+> 「當時規劃的步驟」，不是「尚未完成的工作」。實際落地的內容以 `git log` 為準，
+> 蒸餾後的常駐參考在 `docs/specs/*-intentional-differences.md`。
+>
+> 保留的理由是設計推理，不是待辦清單。
+
 # News AI By-Topic Theme Rendering — Implementation Plan
 
 > **Status: EXECUTED (2026-07-23).** All 7 tasks shipped to master via subagent-driven

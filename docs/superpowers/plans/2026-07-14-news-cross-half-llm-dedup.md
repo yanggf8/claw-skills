@@ -1,3 +1,11 @@
+> **已完成並上線。**news 的 P3 跨半段同事件投票去重已在生產環境執行。
+>
+> 下面的核取方塊**在執行過程中從未被勾選**，所以它們不帶任何資訊 —— 讀作
+> 「當時規劃的步驟」，不是「尚未完成的工作」。實際落地的內容以 `git log` 為準，
+> 蒸餾後的常駐參考在 `docs/specs/*-intentional-differences.md`。
+>
+> 保留的理由是設計推理，不是待辦清單。
+
 # News Cross-Half LLM Same-Event Dedup — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

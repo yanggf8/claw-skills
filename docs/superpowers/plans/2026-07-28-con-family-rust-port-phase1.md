@@ -1,3 +1,11 @@
+> **已完成並上線。**claw-core + doughcon 的第一階段移植已在生產環境執行。
+>
+> 下面的核取方塊**在執行過程中從未被勾選**，所以它們不帶任何資訊 —— 讀作
+> 「當時規劃的步驟」，不是「尚未完成的工作」。實際落地的內容以 `git log` 為準，
+> 蒸餾後的常駐參考在 `docs/specs/*-intentional-differences.md`。
+>
+> 保留的理由是設計推理，不是待辦清單。
+
 # claw-skills Rust Port — Phase ① Implementation Plan
 
 > ## ⚠ STATUS: IMPLEMENTED (commit `0ba28a1`). This plan is now a HISTORICAL RECORD.
