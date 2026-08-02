@@ -22,8 +22,8 @@ packet monthly so releases aren't missed.
 
 FRED, via the public `fredgraph.csv` endpoint — **no API key** (unlike FRED's
 JSON web-service API, which requires a 32-char key). CSV also satisfies the
-agent-first / NO-JSON rule: `scripts/fred_fetch.py` is the transport adapter;
-the rest of the skill sees only `(date, value)` rows.
+agent-first / NO-JSON rule: `crates/inflation-con/src/fetch.rs` is the transport
+adapter; the rest of the skill sees only `(date, value)` rows.
 
 Series:
 

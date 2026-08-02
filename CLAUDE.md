@@ -6,14 +6,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Personal agent skills invoked as cron jobs or on-demand by the **nullclaw**, **openclaw**, or **nanoclaw** agent. Each skill lives in its own directory. Same source, same `SKILL.md` format, three hosts.
 
-**The repo is mid-port from Python to Rust** (standing instruction: the whole stack is Rust). Today it is both:
+**The port from Python to Rust finished on 2026-08-02.** The standing instruction was that the whole stack is Rust, and it now is: every skill runs a binary built from `crates/`, and no Python remains except `docs/superpowers/seed.py`, which is a persona-webapp DB seed/restore tool rather than a skill and has no `persona-core` equivalent.
 
-- `lib/` + `<skill>/scripts/run.py` — the Python. **No live entry point left**: every skill has cut over — `weather`, `doughcon`, `oilcon`, `chipcon`, `inflation-con`, `cds-con`, `traffic`, `commute`, `stock`, `cct`, `cct2`, `liko-finance-weekly`, `news` and, as of 2026-08-02, `mindfulness-spirit` all run the Rust binary. The Python is retained as the rollback path and as the differential oracle, not as a live entry point. Check a skill's `## Script` line before assuming which implementation a cron fires — that line is the switch.
-- `crates/` — a Cargo workspace holding one binary crate per ported skill. **The shared `claw-core` lives in `../../b/gwebcdb/crates/claw-core`**, consumed by path dependency — gwebcdb is this ecosystem's home for cross-repo Rust crates (the same arrangement as `turso-util` → `finance-cli`), and any future cross-repo consumer will need claw-core the same way. Building claw-skills therefore requires gwebcdb checked out beside it. **Live status, 2026-08-01: every ported skill runs Rust, plus `cds-con`, which was born Rust and has no Python original.** Cutover is one line — the `## Script` path in `SKILL.md` — but **publish the binary with `tools/install-skill.sh <skill>`, never by hand**. That script builds `--locked`, stages, smoke-probes the artifact with an unknown flag and requires **exit 2**, publishes atomically, and verifies the path nullclaw will resolve. A manual `install` bypasses the probe, and on 2026-07-31 that probe caught a real defect in oilcon: its argument parser silently ignored unknown flags and accepted any `--mode` value, so a typo would have run the record branch — which never delivers — while still reporting `[skill-status:ok]`.
+- `crates/` — a Cargo workspace holding one binary crate per ported skill. **The shared `claw-core` lives in `../../b/gwebcdb/crates/claw-core`**, consumed by path dependency — gwebcdb is this ecosystem's home for cross-repo Rust crates (the same arrangement as `turso-util` → `finance-cli`), and any future cross-repo consumer will need claw-core the same way. Building claw-skills therefore requires gwebcdb checked out beside it. Cutover is one line — the `## Script` path in `SKILL.md` — but **publish the binary with `tools/install-skill.sh <skill>`, never by hand**. That script builds `--locked`, stages, smoke-probes the artifact with an unknown flag and requires **exit 2**, publishes atomically, and verifies the path nullclaw will resolve. A manual `install` bypasses the probe, and on 2026-07-31 that probe caught a real defect in oilcon: its argument parser silently ignored unknown flags and accepted any `--mode` value, so a typo would have run the record branch — which never delivers — while still reporting `[skill-status:ok]`.
 
-**The Python `lib/` cannot be deleted when a skill is ported.** `cct` (`~/a/cct/skills/cct`) and `autocli` (`~/.nullclaw/skills/autocli`) import `delivery` and `trace_marker` from it from **outside this repo**. Both implementations coexist until every consumer moves.
+**The oracle outlived the Python.** Every port was checked by running both
+implementations over the same inputs, and that is what caught the real bugs —
+never the test suites, which were green throughout. Deleting the Python would
+have thrown that away, so its verdicts were recorded first and committed:
 
-Porting sequence and status: `docs/superpowers/plans/2026-07-28-con-family-rust-port-phase1.md` (Phase ① done). **Before porting anything else, read `docs/specs/2026-07-28-phase1-lessons.md`** — it records the test anti-patterns that produced a fully green suite protecting nothing, the Python-vs-Rust semantic traps, and toolchain facts verified by compiling rather than assuming.
+| Frozen oracle | What it pins |
+|---|---|
+| `crates/{chipcon,inflation-con,oilcon}/fixtures/python-oracle.txt` | status, rendered message and history line per fixture set |
+| `claw-core/tests/sanitize_corpus/expected.json` | 28 corpus inputs × both modes |
+
+The comparisons in `differential.rs` are byte-for-byte and unchanged; they read
+the verdict from disk instead of re-deriving it. Regenerating any of them means
+resurrecting the Python from git history, which is deliberate — these are
+answers, not a program, and they should change only when someone decides they
+should. Emptying one fails its test rather than passing vacuously.
+
+The port is finished, but `docs/specs/2026-07-28-phase1-lessons.md` is still the first thing to read before writing tests here: it records the anti-patterns that produced a fully green suite protecting nothing, and they kept recurring right through the last skill. Porting history is in `docs/superpowers/plans/`.
 
 ## Current agent support
 
@@ -30,42 +43,43 @@ All three agents are supported by the same code. The `SKILL.md` format is the st
 | Skill discovery CLI      | `nullclaw skills list`                                 | `openclaw skills list` (source column shows `openclaw-workspace`)           | loaded by container agent at runtime                          |
 | Cron scheduling          | `nullclaw cron add-skill ...`                          | `openclaw cron ...`                                                         | `nanoclaw cron ...`                                           |
 | Memory / agent invoke    | `nullclaw agent -m "<prompt>"`                         | `openclaw agent -m "<prompt>"` (see openclaw docs)                          | via nanoclaw container agent                                  |
-| Python requirement       | host python3                                           | host python3                                                                | python3 must be installed in the container Dockerfile         |
+| Runtime requirement      | none (static binary)                                   | none (static binary)                                                        | build the binaries for the container's architecture           |
 
-`lib/telegram.py` auto-detects schema: tries the nullclaw multi-account path first, falls back to openclaw's `botToken`. This means a single install can even target both configs at once by switching `CLAW_CONFIG` — the lib does not need to know which host it is running under.
+`claw-core`'s telegram module auto-detects the schema: it tries the nullclaw multi-account path first and falls back to openclaw's `botToken`. A single install can target both configs by switching `CLAW_CONFIG` — the binary does not need to know which host it is running under.
 
 ### OpenClaw-specific constraint
 
 OpenClaw's skill loader (`src/agents/skills/workspace.ts`) calls `realpath` on every candidate path and rejects anything whose real path is not inside `<workspace>/skills/`. Consequence:
 
 - Symlinks into `<workspace>/skills/` from a sibling dir (e.g. `~/clawd/external-skills/`) are **silently ignored** — you will see `[skills] Skipping skill path that resolves outside its configured root.` warnings.
-- The working layout is to keep this git repo directly at `<workspace>/skills/`. Non-skill entries at the repo root (`README.md`, `CLAUDE.md`, `lib/`, `.git/`) are harmless — the loader only loads immediate subdirs that contain a `SKILL.md`.
+- The working layout is to keep this git repo directly at `<workspace>/skills/`. Non-skill entries at the repo root (`README.md`, `CLAUDE.md`, `crates/`, `.git/`) are harmless — the loader only loads immediate subdirs that contain a `SKILL.md`.
 
 ### Nullclaw-specific notes
 
-- Multi-account Telegram is supported; pass `--account <name>` when calling `run.py`.
-- `~/nullclaw/zig-out/bin/nullclaw` is the assumed binary path for skills that shell out to the agent (e.g. `weather/scripts/run.py`'s clothing-advice prompt). On an openclaw-only host that subprocess call will fail and the script logs `[WARN]` and continues.
+- Multi-account Telegram is supported; pass `--account <name>`.
+- `~/nullclaw/zig-out/bin/nullclaw` is the assumed binary path for skills that shell out to the agent (weather's clothing advice, news, mindfulness-spirit). On an openclaw-only host that spawn fails, and each caller logs a warning and continues rather than failing the run.
 
 ## Host layout
 
 - **nullclaw**: each skill symlinked into `~/.nullclaw/skills/<name>`. Repo may live anywhere.
-- **openclaw**: the repo itself is the workspace skills dir (`<workspace>/skills/`). OpenClaw's loader `realpath`s every candidate and rejects anything resolving outside the skills root, so sibling-dir symlinks do not work. Dotfiles and dirs without `SKILL.md` at the repo root (`lib/`, `README.md`, `.git`) are ignored by the loader.
-- **nanoclaw**: each skill symlinked into `<nanoclaw>/container/skills/<name>`. The container agent discovers `scripts/run.py` relative to `SKILL.md`. Requires `python3` in the container.
+- **openclaw**: the repo itself is the workspace skills dir (`<workspace>/skills/`). OpenClaw's loader `realpath`s every candidate and rejects anything resolving outside the skills root, so sibling-dir symlinks do not work. Dotfiles and dirs without `SKILL.md` at the repo root (`crates/`, `README.md`, `.git`) are ignored by the loader.
+- **nanoclaw**: each skill symlinked into `<nanoclaw>/container/skills/<name>`. The container agent discovers `bin/<name>` relative to `SKILL.md`. The binaries are self-contained, so the container needs no interpreter — but they must be built for its architecture.
 
 ## Skill structure
 
 Every skill directory contains:
-- `SKILL.md` — frontmatter (`name`, `description`, `always: true`) + usage docs. Both agents read this.
-- `scripts/run.py` — the executable. Always exits 0 (prints `[WARN: ...]` on failure instead of raising).
+- `SKILL.md` — frontmatter (`name`, `description`, `always: true`) + usage docs. All three agents read this.
+- `bin/<name>` — the published binary, gitignored. Put it there with
+  `tools/install-skill.sh <name>`, never by hand.
 
-The `lib/` directory is a shared Python package, not a skill. All scripts add it to
-`sys.path` via the same relative pattern, then import what they need. The canonical
-delivery import is `deliver_or_fail` from `delivery` (`telegram` is also importable
-for direct use):
-```python
-SKILLS_LIB = os.path.join(os.path.dirname(__file__), "..", "..", "lib")
-sys.path.insert(0, os.path.abspath(SKILLS_LIB))
-from delivery import deliver_or_fail   # canonical delivery path
+The source lives in `crates/<name>/`. Shared behaviour — delivery, the
+scheduler markers, env and config resolution, the bounded HTTP agent, the
+nested-agent sanitizer — comes from `claw-core`:
+
+```rust
+use claw_core::delivery::{deliver, DeliverOptions};   // canonical delivery path
+use claw_core::outcome::{finish, Finish};             // exit code + markers
+use claw_core::http::agent;                           // a timeout that bounds connect
 ```
 
 ## Config / env resolution
@@ -84,7 +98,7 @@ export CLAW_CONFIG="$HOME/.openclaw/openclaw.json"
 export CLAW_ENV="$HOME/.openclaw/.env"           # optional, only if you keep API keys here
 ```
 
-`lib/telegram.py` auto-detects schema:
+`claw-core`'s telegram module auto-detects the schema:
 
 - **nullclaw**: `channels.telegram.accounts.<account>.bot_token`
 - **openclaw**: `channels.telegram.botToken` (single token — `--account` is a no-op)
@@ -93,22 +107,27 @@ export CLAW_ENV="$HOME/.openclaw/.env"           # optional, only if you keep AP
 
 ```bash
 # nullclaw
-python3 ~/.nullclaw/skills/<name>/scripts/run.py [options]
+~/.nullclaw/skills/<name>/bin/<name> [options]
 
-# openclaw (scripts resolve their own lib via relative path)
-python3 ~/clawd/skills/<name>/scripts/run.py [options]
+# openclaw
+~/clawd/skills/<name>/bin/<name> [options]
 
 # Examples
-python3 ~/clawd/skills/stock/scripts/run.py --market tw
-python3 ~/clawd/skills/news/scripts/run.py --deliver-to 7972814626
-python3 ~/clawd/skills/weather/scripts/run.py --location 臺北市
+~/clawd/skills/stock/bin/stock --market tw
+~/clawd/skills/news/bin/news --deliver-to 7972814626
+~/clawd/skills/weather/bin/weather --location 臺北市
 ```
 
 ## Telegram delivery
 
-`lib/telegram.send(chat_id, text, account="main", config_path=None)` sends a message. `config_path` overrides the resolution order above.
+`claw_core::delivery::deliver(chat_id, body, &opts, out, err)` is the canonical
+path; it prints the body to stdout when `chat_id` is absent and, on a send
+failure, prints it anyway so the cron capture keeps the data.
 
-All skill `run.py`s accept `--deliver-to CHAT_ID` and `--account NAME`. When `--deliver-to` is omitted, output goes to stdout (useful for cron debugging).
+Most skills accept `--deliver-to CHAT_ID` and `--account NAME`. Two do not:
+`mindfulness-spirit` routes by the persona-core column's `delivery_target`, and
+`commute` delivers through `traffic`. Omitting `--deliver-to` sends output to
+stdout, which is how a cron job is debugged by hand.
 
 ## Registering with the agent
 
@@ -142,16 +161,22 @@ always: true        # load into agent context automatically
 
 The `## Script` section hints what cron should run for `job_type=skill` jobs. The `## Prompt` section (if present) is used when the skill is invoked interactively by the LLM.
 
-Note: existing `## Script` paths reference `~/.nullclaw/skills/...` — that's documentation for the nullclaw host. OpenClaw and nanoclaw both discover scripts relative to the `SKILL.md` location and ignore the literal path.
+Note: existing `## Script` paths reference `~/.nullclaw/skills/...` — that's documentation for the nullclaw host. OpenClaw and nanoclaw both discover the binary relative to the `SKILL.md` location and ignore the literal path.
 
 ## Adding a new skill
 
-1. Create `<skill>/SKILL.md` and `<skill>/scripts/run.py`
-2. Script must: accept `--deliver-to` and `--account`; deliver via `deliver_or_fail` from `lib/delivery.py` (echoes body to stdout when `--deliver-to` is omitted, and on send failure echoes the body + `exit(1)` so cron capture keeps the data); exit 0 on upstream API/fetch errors (print `[WARN: ...]` instead of raising)
-3. For nullclaw: `ln -s ~/claw/claw-skills/<skill> ~/.nullclaw/skills/<skill>`
-4. For openclaw: already discovered if the repo is at `<workspace>/skills/`
-5. For nanoclaw: `ln -s ~/claw/claw-skills/<skill> ~/claw/nanoclaw/container/skills/<skill>`
-6. Verify with `nullclaw skills list` or `openclaw skills list`
+1. Create `<skill>/SKILL.md` and `crates/<skill>/`, and add the crate to the
+   workspace `members`
+2. The binary must: reject an unknown flag with **exit 2** (the install probe
+   requires it); deliver via `claw_core::delivery::deliver`; exit the process
+   through `claw_core::outcome::finish` so the markers and the exit code stay
+   consistent; and treat an upstream failure as a degraded delivery rather than
+   a crash
+3. Publish with `tools/install-skill.sh <skill>`
+4. For nullclaw: `ln -s ~/claw/claw-skills/<skill> ~/.nullclaw/skills/<skill>`
+5. For openclaw: already discovered if the repo is at `<workspace>/skills/`
+6. For nanoclaw: `ln -s ~/claw/claw-skills/<skill> ~/claw/nanoclaw/container/skills/<skill>`
+7. Verify with `nullclaw skills list` or `openclaw skills list`
 
 ## Cron scheduling
 
@@ -272,9 +297,9 @@ If both attempts fail the user gets no Telegram message at all; that is
 intended, because the cron alert is the right channel for "the skill produced
 nothing", not a report body.
 
-Reference implementation: `cct2/scripts/run.py` → `delivery_target()`, covered
-by `lib/test_cct2_run.py`. Port it forward rather than reinventing the rule;
-the remaining deliver-then-mark skills still need it.
+Reference implementation: `crates/cct2/src/main.rs` and its delivery-target
+branch. Reuse it rather than reinventing the rule; the remaining
+deliver-then-mark skills still need it.
 
 Still open, and **not** solved by option A: `degraded` runs are *meant* to
 deliver (a stale-but-real report still has value — see `cct` pre-market), yet
@@ -303,17 +328,25 @@ sites tested, only `hackernews top` returned data. `bbc news` and
 that one does not accept it. A copy is at
 `~/.nullclaw/skills-archive/autocli.retired.20260801-144629`.
 
-The Python `lib/` has **no live importer left** as of 2026-08-02, when
-`mindfulness-spirit` cut over. It stays as the rollback path and as the
-differential oracle — deleting it would cost the only independent check a port
-gets, and every port so far has found something with it. The other
-`run.py` files are rollback copies — their `## Script` lines point at Rust
-binaries.
+`lib/` and every `scripts/run.py` were deleted on 2026-08-02, along with the
+`~/.nullclaw/skills/lib` symlink. Nothing imported them any more: `cct` had
+moved into this repo, `autocli` was retired, and `ainews` had been Rust for
+weeks — its remaining mentions of `claw-skills/lib` are provenance comments and
+an archived script, not imports.
 
-Removing or porting Python `lib/` breaks both at import time — non-zero exit,
-so cron records `exec_error`. Decide the compatibility story (keep a Python
-shim / move those skills too / vendor a copy) *before* the port, not after a
-cron finds out.
+Three things did depend on the Python at deletion time, and were dealt with
+first rather than discovered afterwards:
+
+- `crates/{chipcon,inflation-con,oilcon}/tests/differential.rs` each spawned a
+  `drive_python.py`. Their verdicts are frozen now; see the oracle table above.
+- `tools/differential/*.sh` could not survive the Python and are gone. The
+  fixture directory stays, because `crates/weather/tests/sources.rs` reads
+  `tools/differential/fixtures/cwa_past_only.json`.
+- The sanitizer corpus moved to `claw-core/tests/sanitize_corpus/`, with the
+  Python's answers recorded beside it.
+
+Rust source comments still cite `run.py:NNN`. Those are provenance for a rule,
+not links — git history is where the line lives now.
 
 ## HTTP timeouts (hard constraint)
 
@@ -350,19 +383,27 @@ check cannot see composition. That last one costs ~20s — the crate's own budge
 
 ## Testing
 
-`lib/test_*.py` are plain `unittest` files, runnable directly with no pytest or runner:
+```bash
+cargo test --workspace                 # offline, no interpreter, no API key
+cargo clippy --workspace --all-targets # expected: zero warnings
+tools/lint-http.sh                     # every HTTP call bounded
+```
+
+`claw-core` lives in another repo and is not in this workspace:
 
 ```bash
-python3 lib/test_telegram_retry.py
-python3 lib/test_oil_store.py
-# etc.
+cd ../../b/gwebcdb && cargo test -p claw-core
 ```
+
+The suites that look like they would need something — the differentials, the
+sanitizer corpus, the delivery and pipeline tests — read recorded fixtures or
+drive a local stub.
 
 ## Gotchas
 
 - **`weather` needs `CWA_API_KEY`**: put it in `~/.nullclaw/.env` (default) or `~/.openclaw/.env` and export `CLAW_ENV` to point at it. Without the key, Taiwan forecasts silently return no data.
 - **OpenClaw `weather` name collision**: OpenClaw ships a bundled `weather` skill (wttr.in). Workspace skills take precedence, so this repo's `weather` wins. Rename the folder + frontmatter `name:` if you want both.
-- **`oilcon` needs `libsql-experimental` on the host python**: declared in `oilcon/requirements.txt` and imported by `lib/oil_store.py`. If missing, oilcon degrades (`contract_degraded`) and delivers `WARN: turso unavailable - libsql-experimental not installed` — TURSO creds being present does not help. On an externally-managed host python (PEP 668, e.g. Ubuntu 24.04 `/usr/bin/python3`), both plain and `--user` pip are blocked; install with `python3 -m pip install --user --break-system-packages libsql-experimental` (lands in `~/.local`, cp312 manylinux wheel, no Rust build; `--user` keeps it out of system site, `--break-system-packages` only clears the PEP 668 gate). Cron runs bare `/usr/bin/python3`, which resolves `~/.local` user-site via `HOME`, so it picks it up. Fixes any Python skill importing `libsql_experimental`, not just oilcon.
+- **`oilcon` no longer needs `libsql-experimental`**: the Rust build links libsql directly, so the PEP 668 pip dance Ubuntu 24.04 used to require is gone and `oilcon/requirements.txt` is dead. A `WARN: turso unavailable` from oilcon now means credentials or reachability, not a missing wheel.
 
 ## Design notes
 
@@ -373,17 +414,17 @@ Prior design context lives in `docs/specs/` (`2026-04-15-oilcon-skill-design.md`
 | Skill | Script args | External API |
 |-------|-------------|--------------|
 | `news` | `--topics`, `--account-topics`, `manage list\|add\|remove` | Google News RSS |
-| `cct` | `--mode pre-market\|intraday\|eod\|weekly` | CCT internal (Rust) |
-| `cct2` | `--mode pre-market\|eod` | Yahoo Finance + dual LLM, both over direct HTTPS (Rust) |
-| `stock` | `--market tw\|hk\|all`, `--symbol CODE` | TWSE, Yahoo Finance (Rust) |
+| `cct` | `--mode pre-market\|intraday\|eod\|weekly` | CCT internal |
+| `cct2` | `--mode pre-market\|eod` | Yahoo Finance + dual LLM, both over direct HTTPS |
+| `stock` | `--market tw\|hk\|all`, `--symbol CODE` | TWSE, Yahoo Finance |
 | `chipcon` | `--mode record`, `--deliver-to` | Yahoo Finance chart (SMH/QQQ/SOXX); observation-only report |
 | `weather` | `--location NAME` (repeatable) | CWA (Taiwan), HKO (HK) |
 | `traffic` | `--from`, `--to`, `--via` | TomTom Routing API |
 | `doughcon` | `--mode deliver\|record`, `--et-hour H` (DST gate) | PizzINT API |
 | `oilcon` | `--mode deliver\|record` | Yahoo Finance, Turso |
 | `agent-reach` | agent-only, see SKILL.md | 13+ platforms |
-| `mindfulness-spirit` | `write`, `fix-signature DEVTO_ID`, `--dry-run` | Google News RSS, Turso + delivery via `persona-core` CLI — Rust |
-| `liko-finance-weekly` | `--dry-run`, `--check` | Turso (via `persona-core` CLI) — Rust |
+| `mindfulness-spirit` | `write`, `fix-signature DEVTO_ID`, `--dry-run` | Google News RSS, Turso + delivery via `persona-core` CLI |
+| `liko-finance-weekly` | `--dry-run`, `--check` | Turso (via `persona-core` CLI) |
 
 `persona-skill` was retired (Step 10 of the persona-core absorbing
 plan). Persona CRUD, secrets, history, and editorial plans are now
@@ -397,27 +438,27 @@ persona-core history list --persona <slug>
 persona-core plans list
 ```
 
-### Shared libraries (`lib/`)
+### Shared crate (`claw-core`)
 
-**Nothing live imports these.** Every skill in the repo runs its Rust binary,
-and the two outside consumers are gone (`cct` moved in, `autocli` was retired).
-They are kept as the rollback path and, more usefully, as the differential
-oracle a port is checked against — the `news` port ran 578 recorded cases
-through both implementations before cutover, and that is what caught the two
-places where the Rust and the Python disagreed.
+Lives at `../../b/gwebcdb/crates/claw-core` and is consumed by path dependency,
+so building this repo needs gwebcdb checked out beside it.
 
 | Module | Purpose |
 |--------|---------|
-| `skill_runner` | Shared agent-first skill runtime helpers (subprocess wrappers, persona-core CLI shortcut, nullclaw agent invocation, cron skill-contract markers). `strip_agent_artifacts()` sanitizes nested-agent stdout before delivery — strips `<ncchoices>` blocks (paired **and** unclosed) plus harness marker lines, so agent protocol noise never reaches Telegram. Any skill that delivers raw `nullclaw agent` stdout must run it through this. |
-| `cover_image` | CogView-4 image generation + dev.to cover update CLI |
-| `telegram` | Telegram message delivery (auto-detects nullclaw/openclaw config) |
-| `delivery` | **Canonical** delivery helper: `deliver_or_fail(chat_id, body, ...)`. Replaces ad-hoc `if args.deliver_to: telegram.send(...)`. On send failure, echoes body to stdout (so cron capture keeps the data) and `exit(1)`; on empty `chat_id`, prints body to stdout. New skills should use this, not `telegram.send` directly. |
-| `trace_marker` | Scheduler verification markers: `emit_skill_status()`, `emit_trace()`, `emit_fallback()`. Used by skills with `--verify skill_contract`/`content_has_trace` cron jobs. No-op when `NULLCLAW_JOB_ID` is unset (so manual runs stay clean). Call only *after* delivery confirmation. |
-| `heartbeat` | Wall-clock heartbeat for long-running subprocesses |
-| `oil_fetch` | Yahoo Finance chart fetch/parse helpers (oilcon) |
-| `oil_store` | Turso/libsql time-series storage for `oil_daily` (oilcon) |
-| `news_quality` | Deny/paywall classification, Google News URL decoding, article fetch (news). Ported to `crates/news/src/quality.rs`. |
+| `delivery` | **Canonical** delivery: `deliver(chat_id, body, &opts, out, err)`. Prints the body to stdout when there is no chat id, and prints it anyway on a send failure so the cron capture keeps the data. Returns an outcome; it never exits the process, because exit code and semantic status are independent in nullclaw's classification. |
+| `telegram` | Bounded-retry send. Auto-detects the nullclaw/openclaw config schema. |
+| `marker` / `outcome` | Scheduler markers and the exit path. `finish(Finish::Marked{..})` emits both lines; `finish(Finish::Unmarked{exit})` emits neither, which is right for any non-zero exit since nullclaw's exit-code branch wins. No-ops when `NULLCLAW_JOB_ID` is unset, so manual runs stay clean. |
+| `http` | `agent(timeout)` — the **only** way a skill may build an HTTP client. See the hard constraint below. |
+| `sanitize` | `strip_agent_artifacts()` — strips `<ncchoices>` blocks (paired *and* unclosed) and harness marker lines from nested-agent stdout. Any skill that delivers raw `nullclaw agent` output must run it through this. `collapse_blank_lines=false` is the markdown-safe mode for article bodies. |
+| `agent` | `call_agent()` for the simple "ask for advice, empty on failure" case. Skills that must branch on the exit code — news, mindfulness-spirit — own their own runner instead. |
+| `config` / `env` | `~/.nullclaw/config.json` and dotenv resolution, honouring `CLAW_CONFIG` / `CLAW_ENV`. |
+| `budget` | `monotonic_secs()` and the delivery deadline from `NULLCLAW_SKILL_TIMEOUT` / `NULLCLAW_SKILL_STARTED`. |
 
-`persona_registry` and `persona_history` were retired alongside
-`persona-skill`. All persona/history access goes through `persona-core`
-CLI now; no Python lib import needed.
+Skill-specific helpers that used to live in `lib/` now sit in the crate that
+owns them: `oil_fetch` / `oil_store` in `crates/oilcon`, `news_quality` in
+`crates/news/src/quality.rs`.
+
+`cover_image` (CogView-4 covers) and `heartbeat` had no caller left and were
+deleted with the rest. `persona_registry` / `persona_history` were retired
+earlier alongside `persona-skill`; persona access goes through the
+`persona-core` CLI.

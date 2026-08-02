@@ -1,3 +1,0 @@
-keep
-skill-abc1234:1
-keep2

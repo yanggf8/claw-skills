@@ -1,3 +1,0 @@
-body
-[trace:abc-def:1]
-body2

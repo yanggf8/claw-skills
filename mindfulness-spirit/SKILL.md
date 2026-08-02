@@ -4,7 +4,7 @@ description: 身心靈 × AI 系列文章自動產出，透過 persona-core 產�
 version: 0.4.0
 author: yanggf
 always: false
-requires_bins: ["python3", "persona-core", "nullclaw"]
+requires_bins: ["persona-core", "nullclaw"]
 requires_env: ["PERSONA_REGISTRY_DB_URL", "PERSONA_REGISTRY_DB_TOKEN"]
 ---
 
@@ -21,9 +21,9 @@ persistence、dev.to / Telegram delivery、failure dump、plan mark-published �
 ~/.nullclaw/skills/mindfulness-spirit/bin/mindfulness-spirit
 ```
 
-Rust (`crates/mindfulness-spirit`), live since 2026-08-02. `scripts/run.py` is
-the rollback path and the differential oracle — publish the binary with
-`tools/install-skill.sh mindfulness-spirit`, never by hand.
+Rust (`crates/mindfulness-spirit`). The Python was removed on 2026-08-02;
+recover it from git history if a rollback is ever needed. Publish the binary
+with `tools/install-skill.sh mindfulness-spirit`, never by hand.
 
 ## Commands
 

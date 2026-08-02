@@ -17,11 +17,11 @@ Fetch CCT (Capital Cloudflare Trading) 4-moment market intelligence and deliver 
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/cct/bin/cct --mode pre-market
-python3 ~/.nullclaw/skills/cct/bin/cct --mode intraday
-python3 ~/.nullclaw/skills/cct/bin/cct --mode eod
-python3 ~/.nullclaw/skills/cct/bin/cct --mode weekly
-python3 ~/.nullclaw/skills/cct/bin/cct --mode pre-market --deliver-to 7972814626
+~/.nullclaw/skills/cct/bin/cct --mode pre-market
+~/.nullclaw/skills/cct/bin/cct --mode intraday
+~/.nullclaw/skills/cct/bin/cct --mode eod
+~/.nullclaw/skills/cct/bin/cct --mode weekly
+~/.nullclaw/skills/cct/bin/cct --mode pre-market --deliver-to 7972814626
 ```
 
 ## Options
@@ -119,7 +119,7 @@ claw-skills siblings:
   genuine report; `has_eod_data()` and `format_eod()` now accept both, and
   `eod_session_date()` takes the date from the payload's own timestamps rather
   than the clock, because the scorecard has no `date` field.
-  Fixture: `scripts/testdata/eod-2026-07-29.json`, captured from the live API.
+  Fixture: `crates/cct/tests/eod_scorecard.json`, captured from the live API.
 
   Empty payloads are `degraded`, not `failed`: `failed` triggers repair/retry,
   but retrying cannot produce a report that was never generated — that fix
@@ -131,17 +131,12 @@ claw-skills siblings:
   as data and the skill delivers an empty report header.
 - Diagnostics (`[WARN: CCT ...]`) go to stderr — stdout is body + markers only.
 
-### Shared lib resolution
+### Runtime dependencies
 
-This repo does **not** vendor `delivery.py` / `trace_marker.py` / `telegram.py`;
-they are owned by `claw-skills`. `scripts/run.py` resolves them in order:
-
-1. `$CLAW_SKILLS_LIB`
-2. `../../lib` relative to the script — the deployed layout
-   (`~/.nullclaw/skills/cct` → this dir, with `~/.nullclaw/skills/lib` →
-   `~/a/claw-skills/lib`)
-3. `~/a/claw-skills/lib` — running straight out of the `a/cct` checkout, which
-   has no sibling `skills/lib`
+None beyond the binary. Delivery and the scheduler markers come from
+`claw-core`, linked in at build time — this skill used to reach back into
+`claw-skills/lib` for them at import time through a three-step path search,
+which is why the skill moved into this repo before it was ported.
 
 ## Notes
 

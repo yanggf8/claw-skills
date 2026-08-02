@@ -14,8 +14,8 @@ Fetch and summarize Taiwan news from Google RSS feeds in Traditional Chinese.
 ~/.nullclaw/skills/news/bin/news
 ```
 
-Rust (`crates/news`), live since 2026-08-01. `scripts/run.py` is the rollback
-path and the differential oracle — publish the binary with
+Rust (`crates/news`). The Python was removed on 2026-08-02; recover it from
+git history if a rollback is ever needed. Publish the binary with
 `tools/install-skill.sh news`, never by hand.
 
 ## Usage
@@ -90,7 +90,7 @@ AI 預設新聞去重：
 
 AI 區塊在切半前先做確定性群集。標題會移除 Google News 的尾端 ` - Source`，再抽出 Latin token 與 CJK 字元 bigram；兩則新聞會和既有群集的第一則候選新聞比較，token 重疊數達 `_CLUSTER_OVERLAP = 2` 才歸入同一事件群集。群集的 seed token 不會隨後續新聞擴張，避免不同事件靠累積詞彙串接在一起。群集按來源數排序，代表越多來源報導越重要。每日摘要每個群集只保留 1 則，直接採用該群集中的第一則候選新聞，不再依來源名稱做分類或分支。
 
-CJK bigram 通用詞過濾：常見的中文填充詞（`公司`、`發布`、`布新`、`新產`、`產品`、`股價`、`上漲`、`下跌`）會在 `_CJK_STOP_BIGRAMS` 中被排除，避免「甲公司發布新產品」與「乙公司發布新產品」這類完全無關的標題被視為同一事件。清單由觀察累積，若 trace 中發現新的過度群集模式，請更新 `crates/news/src/text.rs` 中的 `CJK_STOP_BIGRAMS`（以及回退用的 `scripts/run.py`）。
+CJK bigram 通用詞過濾：常見的中文填充詞（`公司`、`發布`、`布新`、`新產`、`產品`、`股價`、`上漲`、`下跌`）會在 `_CJK_STOP_BIGRAMS` 中被排除，避免「甲公司發布新產品」與「乙公司發布新產品」這類完全無關的標題被視為同一事件。清單由觀察累積，若 trace 中發現新的過度群集模式，請更新 `crates/news/src/text.rs` 中的 `CJK_STOP_BIGRAMS`。
 
 這個去重在 LLM 分段前完成，所以同一事件不會分散到兩個 half。執行時會寫入 `cluster_dedup` trace，欄位包含 `before`、`after`、`clusters_total`、`clusters_kept`。
 
@@ -194,7 +194,7 @@ nullclaw cron trace <job_id_prefix> --event ai_substage
 ## Content prechecking
 
 The skill sees only RSS titles, so a strong title on paywalled/thin/promo content used
-to slip through. Two-tier prechecking (`crates/news/src/quality.rs`; `lib/news_quality.py` in the rollback path) handles it with a **three-way
+to slip through. Two-tier prechecking (`crates/news/src/quality.rs`) handles it with a **three-way
 verdict** per item — `keep`, `drop`, or `title_only`:
 
 - **Tier 1 (every run, no network):** at the dedup site, drops deny-listed **sources** only.

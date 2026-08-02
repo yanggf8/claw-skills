@@ -1,3 +1,0 @@
-keep front
-<ncchoices>partial json
-line2

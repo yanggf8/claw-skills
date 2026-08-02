@@ -1,1 +1,0 @@
-<ncchoices>a</ncchoices>keep this middle<ncchoices>b</ncchoices>

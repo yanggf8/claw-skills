@@ -1,6 +1,6 @@
 //! Differential: Rust vs Python on committed oil fixtures (no network).
 //!
-//! Drives `fixtures/drive_python.py`, which imports run.py as a module and
+//! Compares against `fixtures/python-oracle.txt` — what the Python said when
 //! substitutes `oil_fetch`, `oil_store`, and `cst_now` — the same seam the
 //! Task 6 probe proved works without editing run.py.
 //!
@@ -14,7 +14,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use market_fetch::yahoo::FetchError;
 use oilcon::analysis::{classify_oil_trend, Row};
@@ -23,7 +22,7 @@ use oilcon::snapshot::build_snapshot;
 use oilcon::store::{load_window, YAHOO_SOURCE};
 use price_store::{ensure_schema, upsert};
 
-/// Must match fixtures/drive_python.py.
+/// Must match fixtures/python-oracle.txt.
 const PINNED_NOW: &str = "2026-07-30 22:00";
 const PINNED_NOW_SECS: &str = "2026-07-30 22:00:00 CST";
 const PINNED_TODAY: &str = "2026-07-30";
@@ -32,10 +31,6 @@ const SYMBOLS: &[(&str, &str)] = &[("CL=F", "CL_F_rows.json"), ("BZ=F", "BZ_F_ro
 
 fn fixtures_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures")
-}
-
-fn drive_python_path() -> PathBuf {
-    fixtures_root().join("drive_python.py")
 }
 
 #[derive(Debug)]
@@ -330,41 +325,37 @@ fn rows_equal(a: &[(String, f64)], b: &[(String, f64)]) -> bool {
     })
 }
 
-fn run_python_driver() -> String {
-    let script = drive_python_path();
+/// The Python's verdict, recorded once and committed.
+///
+/// This used to spawn `drive_python.py` on every run, which made the Python the
+/// live source of truth for a skill that no longer runs it. The comparison
+/// below is unchanged and still byte-for-byte — it just reads what the oracle
+/// said from disk instead of re-deriving it, so the suite is offline,
+/// python-free, and pinned to the answers the port was actually checked
+/// against.
+///
+/// Regenerating it means resurrecting the Python from git history. That is the
+/// point: these are answers, not a program, and they should only change when
+/// someone decides they should.
+fn python_oracle() -> String {
+    let path = fixtures_root().join("python-oracle.txt");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
     assert!(
-        script.is_file(),
-        "drive_python.py missing at {}",
-        script.display()
+        !text.trim().is_empty(),
+        "{} is empty — the comparison would pass vacuously",
+        path.display()
     );
-    let out = Command::new("python3")
-        .arg(&script)
-        .env("FIXTURE_ROOT", fixtures_root())
-        // Refuse accidental network: clear proxy envs; driver never opens sockets.
-        .env_remove("http_proxy")
-        .env_remove("https_proxy")
-        .env_remove("HTTP_PROXY")
-        .env_remove("HTTPS_PROXY")
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn python3: {e}"));
-    if !out.status.success() {
-        panic!(
-            "drive_python.py failed ({}):\nstdout:\n{}\nstderr:\n{}",
-            out.status,
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-    String::from_utf8(out.stdout).expect("python stdout utf-8")
+    text
 }
 
 #[tokio::test]
 async fn differential_vs_python_on_fixtures() {
-    let py_stdout = run_python_driver();
+    let py_stdout = python_oracle();
     let blocks = parse_python_output(&py_stdout);
     assert!(
         !blocks.is_empty(),
-        "no SET blocks from drive_python.py:\n{py_stdout}"
+        "no SET blocks in the recorded oracle:\n{py_stdout}"
     );
 
     let mut failures: Vec<String> = Vec::new();

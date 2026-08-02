@@ -1,6 +1,6 @@
 //! Differential: Rust vs Python on captured FRED fixtures (no network).
 //!
-//! Drives `fixtures/drive_python.py`, which imports run.py as a module and
+//! Compares against `fixtures/python-oracle.txt` — what the Python said when
 //! stubs `fred_fetch.fetch_series` to read the CSVs — the same seam as
 //! inflation-con/scripts/test_run.py. Compares three artefacts:
 //!   1. history record line
@@ -12,7 +12,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use inflation_con::analysis::{classify, Obs, Series};
 use inflation_con::config::{Config, DEFAULT_SERIES};
@@ -20,7 +19,7 @@ use inflation_con::fetch::fred_rows_or_empty;
 use inflation_con::render::{format_message, record_line};
 use market_fetch::fred::{parse_fred_csv, CreditError};
 
-/// Must match fixtures/drive_python.py PINNED_NOW.
+/// Must match the recorded oracle in fixtures/python-oracle.txt.
 const PINNED_NOW: &str = "2026-07-30 12:00:00 CST";
 
 const POLICY_STANCE: &str = "restrictive";
@@ -29,11 +28,7 @@ fn fixtures_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
-fn drive_python_path() -> PathBuf {
-    fixtures_root().join("drive_python.py")
-}
-
-/// Parse one fixture set's block from drive_python.py stdout.
+/// Parse one fixture set's block from the recorded oracle.
 #[derive(Debug)]
 struct PyBlock {
     set_name: String,
@@ -231,37 +226,37 @@ fn report_diff(label: &str, python: &str, rust: &str) -> String {
     out
 }
 
-fn run_python_driver() -> String {
-    let script = drive_python_path();
+/// The Python's verdict, recorded once and committed.
+///
+/// This used to spawn `drive_python.py` on every run, which made the Python the
+/// live source of truth for a skill that no longer runs it. The comparison
+/// below is unchanged and still byte-for-byte — it just reads what the oracle
+/// said from disk instead of re-deriving it, so the suite is offline,
+/// python-free, and pinned to the answers the port was actually checked
+/// against.
+///
+/// Regenerating it means resurrecting the Python from git history. That is the
+/// point: these are answers, not a program, and they should only change when
+/// someone decides they should.
+fn python_oracle() -> String {
+    let path = fixtures_root().join("python-oracle.txt");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
     assert!(
-        script.is_file(),
-        "drive_python.py missing at {}",
-        script.display()
+        !text.trim().is_empty(),
+        "{} is empty — the comparison would pass vacuously",
+        path.display()
     );
-    let out = Command::new("python3")
-        .arg(&script)
-        .env("FIXTURE_ROOT", fixtures_root())
-        .env("POLICY_STANCE", POLICY_STANCE)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn python3: {e}"));
-    if !out.status.success() {
-        panic!(
-            "drive_python.py failed ({}):\nstdout:\n{}\nstderr:\n{}",
-            out.status,
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-    String::from_utf8(out.stdout).expect("python stdout utf-8")
+    text
 }
 
 #[test]
 fn differential_vs_python_on_fixtures() {
-    let py_stdout = run_python_driver();
+    let py_stdout = python_oracle();
     let blocks = parse_python_output(&py_stdout);
     assert!(
         !blocks.is_empty(),
-        "no SET blocks from drive_python.py:\n{py_stdout}"
+        "no SET blocks in the recorded oracle:\n{py_stdout}"
     );
 
     let mut failures: Vec<String> = Vec::new();

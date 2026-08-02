@@ -1,3 +1,0 @@
-<ncchoices>only junk</ncchoices>
-[skill-status:ok]
-[trace:x:1]

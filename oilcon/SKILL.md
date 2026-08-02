@@ -48,7 +48,7 @@ When WTI is in a *sustained uptrend* — defined as **≥10% above its recent lo
 ⚠ JETS: oil in sustained uptrend (WTI +20.0% off low, low 49d ago, rising) — review entry-exit-rules.md JETS Reduce Rule
 ```
 
-This is a **rule-review prompt, not a recommendation.** It surfaces that a JETS reduce condition may be met and points to the human's written rule; it never says buy/sell and has no portfolio awareness. The thresholds are constants in `run.py` (`JETS_OFF_LOW_PCT`, `JETS_MIN_DAYS_SINCE_LOW`, `JETS_RISING_WINDOW`). The line is omitted when the condition is not met, and record mode is unaffected.
+This is a **rule-review prompt, not a recommendation.** It surfaces that a JETS reduce condition may be met and points to the human's written rule; it never says buy/sell and has no portfolio awareness. The thresholds are constants in `crates/oilcon/src/analysis.rs` (`JETS_OFF_LOW_PCT`, `JETS_MIN_DAYS_SINCE_LOW`, `JETS_RISING_WINDOW`). The line is omitted when the condition is not met, and record mode is unaffected.
 
 ## Record output
 

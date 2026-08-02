@@ -1,2 +1,0 @@
-prefix [skill-status:ok] suffix
-also [trace:x] mid

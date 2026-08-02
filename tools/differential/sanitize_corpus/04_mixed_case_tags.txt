@@ -1,1 +1,0 @@
-before<NCChoices>x</NCCHOICES>mid<NcChoices>y</ncchoices>after

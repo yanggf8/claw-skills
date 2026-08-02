@@ -17,10 +17,10 @@ Fetch market indices (TWSE, HSI) and individual stock quotes.
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/stock/bin/stock
-python3 ~/.nullclaw/skills/stock/bin/stock --market tw
-python3 ~/.nullclaw/skills/stock/bin/stock --market hk
-python3 ~/.nullclaw/skills/stock/bin/stock --symbol 2330
+~/.nullclaw/skills/stock/bin/stock
+~/.nullclaw/skills/stock/bin/stock --market tw
+~/.nullclaw/skills/stock/bin/stock --market hk
+~/.nullclaw/skills/stock/bin/stock --symbol 2330
 ```
 
 ## Options

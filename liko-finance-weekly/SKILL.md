@@ -23,13 +23,13 @@ not call raw SQL, raw dev.to `curl`, or Telegram APIs directly.
 Dry run:
 
 ```bash
-python3 ~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly --dry-run
+~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly --dry-run
 ```
 
 Live weekly run:
 
 ```bash
-python3 ~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly
+~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly
 ```
 
 ## Workflow

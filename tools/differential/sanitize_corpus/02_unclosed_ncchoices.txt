@@ -1,4 +1,0 @@
-advice text
-<ncchoices>
-{"a":1}
-more junk that should vanish

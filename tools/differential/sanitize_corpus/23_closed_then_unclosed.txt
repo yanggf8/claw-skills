@@ -1,3 +1,0 @@
-A<ncchoices>gone</ncchoices>B
-<ncchoices>unclosed rest
-still gone

@@ -1,7 +1,0 @@
-full_deliver_stdout	--mode deliver	full.json	t-diff-1	0
-nodata_deliver_stdout	--mode deliver	all_null.json	t-diff-2	0
-zero_with_data	--mode deliver	zero_index_with_data.json	t-diff-3	0
-record_mode	--mode record	full.json	t-diff-5	0
-deliver_fail_exit	--mode deliver --deliver-to 999	full.json	t-diff-7	1
-no_job_id	--mode deliver	full.json		0
-gate_skip	--mode deliver --et-hour 99	full.json	t-diff-6	0

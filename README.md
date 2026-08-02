@@ -10,11 +10,11 @@ Personal agent skills. One source tree runs against **nullclaw**, **openclaw**, 
 | openclaw   | supported | `~/.openclaw/openclaw.json`       | `channels.telegram.botToken` (single)                   | the whole repo lives at `<workspace>/skills/` |
 | nanoclaw   | supported | `~/.nullclaw/config.json` (default) or `$CLAW_CONFIG` | same as nullclaw or openclaw (auto-detected) | symlink each dir to `<nanoclaw>/container/skills/<skill>` |
 
-Same Python scripts, same `SKILL.md` frontmatter, same `lib/telegram.py`. The `CLAW_CONFIG` / `CLAW_ENV` env vars pick which host's config to read; the schema is then auto-detected (nullclaw's multi-account `accounts.<name>.bot_token` tried first, openclaw's single `botToken` fallback). The `--account` flag is a no-op on openclaw.
+Same Rust binaries, same `SKILL.md` frontmatter, same `claw-core` delivery. The `CLAW_CONFIG` / `CLAW_ENV` env vars pick which host's config to read; the schema is then auto-detected (nullclaw's multi-account `accounts.<name>.bot_token` tried first, openclaw's single `botToken` fallback). The `--account` flag is a no-op on openclaw.
 
-The `SKILL.md` format is the standard Claude Code skill format — all three agents use the same frontmatter (`name`, `description`, `always`). The `## Script` line hardcodes nullclaw paths as documentation; nanoclaw's container agent locates `scripts/run.py` relative to `SKILL.md`, the same way openclaw does.
+The `SKILL.md` format is the standard Claude Code skill format — all three agents use the same frontmatter (`name`, `description`, `always`). The `## Script` line hardcodes nullclaw paths as documentation; nanoclaw's container agent locates `bin/<name>` relative to `SKILL.md`, the same way openclaw does.
 
-**What is not shared**: the agent CLI itself, cron scheduling commands, and (for nanoclaw) the container must have `python3` available — add it to your `Dockerfile` if not present.
+**What is not shared**: the agent CLI itself and the cron scheduling commands. The binaries are self-contained, so a nanoclaw container needs no interpreter — build them for the container's target and mount them in.
 
 ## Install
 
@@ -39,7 +39,7 @@ Verify:
 cd ~/clawd && openclaw skills list        # skills show source=openclaw-workspace
 ```
 
-The lib/, README.md, CLAUDE.md, and .git at the repo root are harmless — OpenClaw only loads immediate subdirs that contain a SKILL.md.
+README.md, CLAUDE.md, crates/ and .git at the repo root are harmless — OpenClaw only loads immediate subdirs that contain a SKILL.md.
 
 **nanoclaw**: symlink each skill dir into nanoclaw's container skills directory.
 
@@ -47,11 +47,11 @@ The lib/, README.md, CLAUDE.md, and .git at the repo root are harmless — OpenC
 ln -s ~/claw/claw-skills/<skill> ~/claw/nanoclaw/container/skills/<skill>
 ```
 
-The container agent discovers `scripts/run.py` relative to `SKILL.md` — no path changes needed. Ensure `python3` is available in the container (add to `Dockerfile` if not present) and that `CLAW_CONFIG` / `CLAW_ENV` are set to your config paths.
+The container agent discovers `bin/<name>` relative to `SKILL.md` — no path changes needed. Build the binaries for the container's architecture and make sure `CLAW_CONFIG` / `CLAW_ENV` point at your config paths.
 
 ## Config resolution
 
-`lib/telegram.py` and the `load_env()` helpers read from the first path that exists:
+`claw-core`'s telegram and env helpers read from the first path that exists:
 
 1. `$CLAW_CONFIG` / `$CLAW_ENV` if set
 2. `~/.nullclaw/config.json` / `~/.nullclaw/.env` (default)
@@ -78,7 +78,7 @@ Config schema auto-detected:
 | traffic | Fetch TomTom route travel time between waypoints |
 | weather | Fetch weather forecast for Taiwan (CWA) and Hong Kong (HKO) |
 
-`lib/` is a shared Python package (delivery, telegram, trace_marker, oil helpers), not a skill — OpenClaw's loader ignores it since it has no `SKILL.md`.
+`crates/` is the Cargo workspace, not a skill — OpenClaw's loader ignores it since it has no `SKILL.md`.
 
 ## Gotchas
 

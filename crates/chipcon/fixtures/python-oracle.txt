@@ -1,0 +1,238 @@
+===SET===live
+===NOW===2026-04-15 12:00:00 CST
+===CLASSIFICATION===RED
+===SKILL===ok
+===WARNING===
+===RECORD===
+2026-04-15 12:00:00 CST CHIPCON RED SMH=538.90 ma20=574.22 ma50=596.24 rel_qqq5=-5.9% down=0 warning=-
+===MESSAGE===
+💾 CHIPCON 情報
+狀態：RED
+SMH：538.90 (2026-07-30)
+20DMA：574.22 (-6.2% vs 20DMA, flat/down)
+50DMA：596.24 (-9.6% vs 50DMA)
+5日：SMH -7.1% / QQQ -1.2% / SOXX -8.5%
+相對：SMH-QQQ -5.9% / SMH-SOXX +1.4%
+連跌：0 日
+原因：
+- SMH below 50DMA
+- 20DMA below 50DMA
+
+事件人工檢查：
+- NVDA / AVGO / AMD / MU guidance
+- TSMC monthly revenue
+- Microsoft / Amazon / Google / Meta capex guidance
+- Export-control escalation
+- SpaceX IPO / index-flow liquidity drain
+
+SIGNAL-ONLY：這是動能觀測信號，不是交易指令。
+===END===
+===DIAG===
+SMH: rows=251
+QQQ: rows=251
+SOXX: rows=251
+classification=RED
+reasons=['SMH below 50DMA', '20DMA below 50DMA']
+===END_DIAG===
+===SET===insufficient-history
+===NOW===2026-04-15 12:00:00 CST
+===CLASSIFICATION===INSUFFICIENT_HISTORY
+===SKILL===ok
+===WARNING===
+===RECORD===
+2026-04-15 12:00:00 CST CHIPCON INSUFFICIENT_HISTORY rows=19 warning=-
+===MESSAGE===
+💾 CHIPCON 情報
+狀態：INSUFFICIENT_HISTORY
+SMH history rows: 19 / 20 needed
+
+事件人工檢查：
+- NVDA / AVGO / AMD / MU guidance
+- TSMC monthly revenue
+- Microsoft / Amazon / Google / Meta capex guidance
+- Export-control escalation
+- SpaceX IPO / index-flow liquidity drain
+
+SIGNAL-ONLY：這是動能觀測信號，不是交易指令。
+===END===
+===DIAG===
+SMH: rows=19
+QQQ: rows=60
+SOXX: rows=60
+classification=INSUFFICIENT_HISTORY
+reasons=None
+===END_DIAG===
+===SET===ok
+===NOW===2026-04-15 12:00:00 CST
+===CLASSIFICATION===OK
+===SKILL===ok
+===WARNING===
+===RECORD===
+2026-04-15 12:00:00 CST CHIPCON OK SMH=159.00 ma20=149.50 ma50=134.50 rel_qqq5=+0.0% down=0 warning=-
+===MESSAGE===
+💾 CHIPCON 情報
+狀態：OK
+SMH：159.00 (2025-03-01)
+20DMA：149.50 (+6.4% vs 20DMA, rising)
+50DMA：134.50 (+18.2% vs 50DMA)
+5日：SMH +3.2% / QQQ +3.2% / SOXX +3.2%
+相對：SMH-QQQ +0.0% / SMH-SOXX +0.0%
+連跌：0 日
+原因：trend intact
+
+事件人工檢查：
+- NVDA / AVGO / AMD / MU guidance
+- TSMC monthly revenue
+- Microsoft / Amazon / Google / Meta capex guidance
+- Export-control escalation
+- SpaceX IPO / index-flow liquidity drain
+
+SIGNAL-ONLY：這是動能觀測信號，不是交易指令。
+===END===
+===DIAG===
+SMH: rows=60
+QQQ: rows=60
+SOXX: rows=60
+classification=OK
+reasons=[]
+===END_DIAG===
+===SET===orange
+===NOW===2026-04-15 12:00:00 CST
+===CLASSIFICATION===ORANGE
+===SKILL===ok
+===WARNING===
+===RECORD===
+2026-04-15 12:00:00 CST CHIPCON ORANGE SMH=105.90 ma20=104.95 ma50=103.45 rel_qqq5=-4.3% down=0 warning=-
+===MESSAGE===
+💾 CHIPCON 情報
+狀態：ORANGE
+SMH：105.90 (2025-03-01)
+20DMA：104.95 (+0.9% vs 20DMA, rising)
+50DMA：103.45 (+2.4% vs 50DMA)
+5日：SMH +0.5% / QQQ +4.8% / SOXX +0.5%
+相對：SMH-QQQ -4.3% / SMH-SOXX +0.0%
+連跌：0 日
+原因：
+- SMH underperformed QQQ by 4%+ over 5d
+
+事件人工檢查：
+- NVDA / AVGO / AMD / MU guidance
+- TSMC monthly revenue
+- Microsoft / Amazon / Google / Meta capex guidance
+- Export-control escalation
+- SpaceX IPO / index-flow liquidity drain
+
+SIGNAL-ONLY：這是動能觀測信號，不是交易指令。
+===END===
+===DIAG===
+SMH: rows=60
+QQQ: rows=60
+SOXX: rows=60
+classification=ORANGE
+reasons=['SMH underperformed QQQ by 4%+ over 5d']
+===END_DIAG===
+===SET===profit-protect
+===NOW===2026-04-15 12:00:00 CST
+===CLASSIFICATION===PROFIT_PROTECT
+===SKILL===ok
+===WARNING===
+===RECORD===
+2026-04-15 12:00:00 CST CHIPCON PROFIT_PROTECT SMH=129.00 ma20=102.95 ma50=101.18 rel_qqq5=+29.0% down=1 warning=-
+===MESSAGE===
+💾 CHIPCON 情報
+狀態：PROFIT_PROTECT
+SMH：129.00 (2025-03-01)
+20DMA：102.95 (+25.3% vs 20DMA, rising)
+50DMA：101.18 (+27.5% vs 50DMA)
+5日：SMH +29.0% / QQQ +0.0% / SOXX +0.0%
+相對：SMH-QQQ +29.0% / SMH-SOXX +29.0%
+連跌：1 日
+原因：
+- SMH still extended above 20DMA after a down day
+
+事件人工檢查：
+- NVDA / AVGO / AMD / MU guidance
+- TSMC monthly revenue
+- Microsoft / Amazon / Google / Meta capex guidance
+- Export-control escalation
+- SpaceX IPO / index-flow liquidity drain
+
+SIGNAL-ONLY：這是動能觀測信號，不是交易指令。
+===END===
+===DIAG===
+SMH: rows=60
+QQQ: rows=60
+SOXX: rows=60
+classification=PROFIT_PROTECT
+reasons=['SMH still extended above 20DMA after a down day']
+===END_DIAG===
+===SET===red
+===NOW===2026-04-15 12:00:00 CST
+===CLASSIFICATION===RED
+===SKILL===ok
+===WARNING===
+===RECORD===
+2026-04-15 12:00:00 CST CHIPCON RED SMH=50.00 ma20=144.05 ma50=132.32 rel_qqq5=+0.0% down=1 warning=-
+===MESSAGE===
+💾 CHIPCON 情報
+狀態：RED
+SMH：50.00 (2025-03-01)
+20DMA：144.05 (-65.3% vs 20DMA, flat/down)
+50DMA：132.32 (-62.2% vs 50DMA)
+5日：SMH -67.5% / QQQ -67.5% / SOXX -67.5%
+相對：SMH-QQQ +0.0% / SMH-SOXX +0.0%
+連跌：1 日
+原因：
+- SMH below 50DMA
+
+事件人工檢查：
+- NVDA / AVGO / AMD / MU guidance
+- TSMC monthly revenue
+- Microsoft / Amazon / Google / Meta capex guidance
+- Export-control escalation
+- SpaceX IPO / index-flow liquidity drain
+
+SIGNAL-ONLY：這是動能觀測信號，不是交易指令。
+===END===
+===DIAG===
+SMH: rows=60
+QQQ: rows=60
+SOXX: rows=60
+classification=RED
+reasons=['SMH below 50DMA']
+===END_DIAG===
+===SET===yellow
+===NOW===2026-04-15 12:00:00 CST
+===CLASSIFICATION===YELLOW
+===SKILL===ok
+===WARNING===
+===RECORD===
+2026-04-15 12:00:00 CST CHIPCON YELLOW SMH=105.38 ma20=104.10 ma50=95.40 rel_qqq5=-3.0% down=0 warning=-
+===MESSAGE===
+💾 CHIPCON 情報
+狀態：YELLOW
+SMH：105.38 (2025-03-01)
+20DMA：104.10 (+1.2% vs 20DMA, flat/down)
+50DMA：95.40 (+10.5% vs 50DMA)
+5日：SMH +3.0% / QQQ +6.0% / SOXX +0.0%
+相對：SMH-QQQ -3.0% / SMH-SOXX +3.0%
+連跌：0 日
+原因：
+- 20DMA no longer rising
+
+事件人工檢查：
+- NVDA / AVGO / AMD / MU guidance
+- TSMC monthly revenue
+- Microsoft / Amazon / Google / Meta capex guidance
+- Export-control escalation
+- SpaceX IPO / index-flow liquidity drain
+
+SIGNAL-ONLY：這是動能觀測信號，不是交易指令。
+===END===
+===DIAG===
+SMH: rows=60
+QQQ: rows=60
+SOXX: rows=60
+classification=YELLOW
+reasons=['20DMA no longer rising']
+===END_DIAG===

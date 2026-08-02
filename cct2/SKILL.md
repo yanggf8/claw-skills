@@ -19,10 +19,10 @@ When running under cron, the `NULLCLAW_JOB_ID` is appended to the Telegram messa
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/cct2/bin/cct2 --mode pre-market
-python3 ~/.nullclaw/skills/cct2/bin/cct2 --mode eod
-python3 ~/.nullclaw/skills/cct2/bin/cct2 --mode pre-market --deliver-to 7972814626
-python3 ~/.nullclaw/skills/cct2/bin/cct2 --mode eod --deliver-to 7972814626 --account main
+~/.nullclaw/skills/cct2/bin/cct2 --mode pre-market
+~/.nullclaw/skills/cct2/bin/cct2 --mode eod
+~/.nullclaw/skills/cct2/bin/cct2 --mode pre-market --deliver-to 7972814626
+~/.nullclaw/skills/cct2/bin/cct2 --mode eod --deliver-to 7972814626 --account main
 ```
 
 ## Options
