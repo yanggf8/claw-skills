@@ -366,7 +366,7 @@ dropped — see §2).
 | `monthly_status_line_absent_when_expanded` | and `・月 至` appears on the 資料 line instead — mutually exclusive |
 | `ordinary_day_carries_exactly_the_six_daily_series` | and day 1–7 carries nine |
 | `spreads_header_makes_no_claim_about_the_price_of_credit_risk` | the removed overclaim cannot creep back |
-| `every_rendered_line_fits_its_width_bound` | **covers every non-blank line, not only indented data lines** — a series title line at 80 columns wraps just as badly. See the honest scope note below |
+| `every_rendered_line_fits_its_width_bound` | covers every rendered **`Data`-kind** line — a series' title, value, and window lines, tagged structurally via `Segment::kind`, not guessed from text — so a series title line at 80 columns is caught just as a window line would be. It deliberately **skips `Prose`** segments (headers, freshness line, footer): §1's own table budgets those at up to 60 columns against this 40-column bound, so holding them to it would fail by design, not catch a regression. See the honest scope note below |
 | `golden_ordinary_day` / `golden_first_seven_days` | two byte-for-byte goldens replacing the one that encoded the table |
 
 ### What the width test is and is not

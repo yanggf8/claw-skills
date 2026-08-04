@@ -126,9 +126,10 @@ never supplied or guessed (`window_label_is_the_actual_start_year`,
 (`baa−aaa`/`baa`/`aaa`) render only on the first few days of the month.** The
 split is by publication frequency, not by value, so the rule is identical
 whichever way the market moves. The day bound is a config value,
-`cds_monthly_expand_days` (default `7` when the key is absent or
-unparseable — see **Config** below), read fresh on every run and evaluated
-against the injected `as_of` calendar date, never a wall clock
+`cds_monthly_expand_days` (mandatory — an absent key, a failed read, or an
+unparseable value each fail the run loudly and by name, same as a missing
+`cds_series` or a missing `kind`; see **Config** below), read fresh on every
+run and evaluated against the injected `as_of` calendar date, never a wall clock
 (`monthly_block_expands_only_within_the_configured_day_bound`,
 `day_bound_is_evaluated_from_as_of_never_a_clock`). `as_of` is always the CST
 date `main.rs` computes (`cst_today()`, fixed offset +8), so the bound is CST
@@ -207,9 +208,10 @@ than the clock; the `資料:` line is what makes a missed fetch visible.
   stale upstream data — it would just deliver the identical message twice.
 - **`failed`, and nothing delivered** — the store is unreachable, the read
   fails, there are zero usable observations (empty store or every configured
-  series missing), or a series lacks its `kind` so the family split cannot be
-  rendered. This follows the repo's standing rule that a hard-failure path must
-  not deliver.
+  series missing), a series lacks its `kind` so the family split cannot be
+  rendered, or `cds_monthly_expand_days` is absent, unreadable, or unparseable
+  so the daily/monthly split has no bound to evaluate. This follows the repo's
+  standing rule that a hard-failure path must not deliver.
 
 "Seven days old" is `ok`. "Nothing to report at all" is `failed`.
 
@@ -233,9 +235,10 @@ cds_monthly_expand_days = 7
 ```
 
 Days 1 through this value (inclusive) show the monthly block; later days
-collapse it to the status line described above. Absent or unparseable falls
-back to `7` — never a Rust literal in the production path, a documented
-fallback on a DB read.
+collapse it to the status line described above. **This key is mandatory.**
+Absent, unreadable, or unparseable each **fail the run** rather than being
+guessed — same as a missing `cds_series` or a missing `kind` above — so there
+is never a Rust literal standing in for it in the production path.
 
 ## Not a CDS quote
 

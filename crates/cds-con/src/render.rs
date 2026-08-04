@@ -336,11 +336,27 @@ pub fn render_parts(lines: &[SeriesLine], as_of: &str, expand_days: u32) -> Vec<
     }
     // The SIGNAL-ONLY marker stays: it is a project-wide boundary marker, not
     // prose. Only the explanation after it became concrete.
-    out.push(prose(
-        "SIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列比較——",
-    ));
-    if let Some(c) = footer_contrast(&shown) {
-        out.push(prose(c));
+    //
+    // The trailing em dash only belongs on the line when a contrast sentence
+    // actually follows it -- if every rendered series shares one coverage
+    // year (e.g. a daily-only day with baa10y missing, so every remaining
+    // daily series starts 2023), `footer_contrast` returns `None` and a
+    // dash with nothing after it would read as a cut-off sentence. This
+    // branch is structural (how many distinct coverage years are on screen),
+    // never value-based, so which way the numbers moved on a given day
+    // cannot flip it.
+    match footer_contrast(&shown) {
+        Some(c) => {
+            out.push(prose(
+                "SIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列比較——",
+            ));
+            out.push(prose(c));
+        }
+        None => {
+            out.push(prose(
+                "SIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列比較。",
+            ));
+        }
     }
 
     out
@@ -401,13 +417,22 @@ fn footer_contrast(shown: &[&SeriesLine]) -> Option<String> {
     if coverage_year(first) == coverage_year(last) {
         return None;
     }
-    let n = |l: &SeriesLine| l.windows.last().map(|w| w.n).unwrap_or(0);
+    // Match the full-history window by its label (`自{year}`), never by
+    // position. `series_line_from_rows` always pushes it last today, but that
+    // is an implementation detail of one function -- a future window reorder
+    // (or a hand-built SeriesLine) must not silently pull a count from the
+    // wrong window.
+    let full_history_n = |l: &SeriesLine| -> Option<usize> {
+        let year = coverage_year(l)?;
+        let want = format!("自{year}");
+        l.windows.iter().find(|w| w.label == want).map(|w| w.n)
+    };
     Some(format!(
         "自{} 的 {} 筆和自{} 的 {} 筆不是同一把尺。",
         coverage_year(last)?,
-        n(last),
+        full_history_n(last)?,
         coverage_year(first)?,
-        n(first)
+        full_history_n(first)?,
     ))
 }
 

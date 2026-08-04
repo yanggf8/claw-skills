@@ -156,9 +156,20 @@ proxy stays auditable**, never "nothing is ever silently dropped."
 - **Frequency is inferred, not declared.** `SeriesInput` needs a frequency and
   the config carries none, so it is derived from observation gaps: median ≥ 20
   days is monthly. This sits uneasily beside the `kind` decision, which added a
-  config field precisely because *inferring* the family was unsafe, and a
-  misclassification here would silently place a series in the wrong group on
-  the `資料:` line. Measured before accepting: the six daily series have gaps of
+  config field precisely because *inferring* the family was unsafe. **The blast
+  radius of a misclassification is larger than this note originally said.**
+  Written when frequency was only a display word on the `資料:` line, it said a
+  misclassification "would silently place a series in the wrong group" there —
+  true then, but readability v2's daily/monthly split
+  (`2026-08-04-cds-con-readability-v2-design.md` §4) made frequency the switch
+  that decides **whether the series is rendered at all** on the ~29 days a month
+  the monthly block sits collapsed. A series wrongly inferred Daily still shows
+  every day, just mislabeled. A series wrongly inferred Monthly disappears from
+  the message outright outside the day-1–7 window and survives only as a
+  headcount in the collapsed status line (or, if it is `baa`/`aaa`, silently
+  drops the derived `baa−aaa` block with it) — the exact silent-miss the v2
+  status-line safeguard exists to prevent, reopened one layer down at the
+  classifier. Measured before accepting: the six daily series have gaps of
   1–5 days and the two monthly ones 28–31, so the threshold sits in a 23-day
   void with 5.6× margin. Accepted rather than forcing a fifth config field. It
   needs revisiting if a source ever supplies calendar-daily rows — the same

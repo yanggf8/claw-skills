@@ -66,6 +66,7 @@ const CDS_SERIES_NO_KIND: &str = "baa10y|BAA10Y|Moody's Baa-10y;hy_oas|BAMLH0A0H
 
 async fn seed_ok(conn: &Connection) {
     set_config(conn, "cds_series", CDS_SERIES_OK).await;
+    set_config(conn, "cds_monthly_expand_days", "7").await;
     // Daily spacing so frequency inference yields Daily.
     seed_rows(
         conn,
@@ -96,6 +97,7 @@ async fn seed_ok(conn: &Connection) {
 /// Stale data: latest is seven days before as_of. Still a successful run.
 async fn seed_stale(conn: &Connection) {
     set_config(conn, "cds_series", CDS_SERIES_OK).await;
+    set_config(conn, "cds_monthly_expand_days", "7").await;
     seed_rows(
         conn,
         "baa10y",
@@ -273,6 +275,9 @@ async fn missing_kind_is_failed_and_does_not_deliver() {
     // Decision 6: three-field rows parse, but the family split cannot render.
     let conn = mem().await;
     set_config(&conn, "cds_series", CDS_SERIES_NO_KIND).await;
+    // Set so this run reaches analyze()'s kind check (the thing under test)
+    // rather than failing earlier on the now-mandatory expand-days bound.
+    set_config(&conn, "cds_monthly_expand_days", "7").await;
     seed_rows(
         &conn,
         "baa10y",
@@ -314,6 +319,130 @@ async fn missing_kind_is_failed_and_does_not_deliver() {
 }
 
 #[tokio::test]
+async fn missing_monthly_expand_days_is_failed_and_does_not_deliver() {
+    // cds_series present with enough history to render, but the monthly-block
+    // day bound is never set. This must fail loudly and by name -- the fix
+    // this test pins removed the old `.unwrap_or(7)` default.
+    let conn = mem().await;
+    set_config(&conn, "cds_series", CDS_SERIES_OK).await;
+    // cds_monthly_expand_days deliberately NOT set.
+    seed_rows(
+        &conn,
+        "baa10y",
+        &[
+            ("2026-07-20", 1.50),
+            ("2026-07-21", 1.55),
+            ("2026-07-22", 1.52),
+            ("2026-07-23", 1.58),
+            ("2026-07-24", 1.59),
+        ],
+    )
+    .await;
+    seed_rows(
+        &conn,
+        "hy_oas",
+        &[
+            ("2026-07-20", 2.70),
+            ("2026-07-21", 2.75),
+            ("2026-07-22", 2.72),
+            ("2026-07-23", 2.80),
+            ("2026-07-24", 2.79),
+        ],
+    )
+    .await;
+    let (code, out, err) = go(
+        &["cds-con"],
+        Some(JOB),
+        StoreAccess::Ok(&conn),
+        AS_OF,
+    )
+    .await;
+    assert_eq!(code, 1, "an absent day-bound key must fail the run");
+    assert!(
+        err.contains("CDS-CON failed:"),
+        "stderr must carry the failure: {err}"
+    );
+    assert!(
+        err.contains("cds_monthly_expand_days"),
+        "error must name the missing config key: {err}"
+    );
+    assert!(
+        err.contains("missing config key"),
+        "error must say the key is absent, not just 'not found': {err}"
+    );
+    assert!(
+        out.contains("[skill-status:failed]"),
+        "an absent day bound is failed: {out}"
+    );
+    assert!(
+        !out.contains("💾 信用利差"),
+        "must not deliver without a resolvable day bound: {out}"
+    );
+}
+
+#[tokio::test]
+async fn unparseable_monthly_expand_days_is_failed_and_does_not_deliver() {
+    // Same fixture, but the key is present with a value that does not parse
+    // as a u32 -- a distinct situation from "absent", and it must produce a
+    // distinct, actionable error rather than silently falling back to 7.
+    let conn = mem().await;
+    set_config(&conn, "cds_series", CDS_SERIES_OK).await;
+    set_config(&conn, "cds_monthly_expand_days", "not-a-number").await;
+    seed_rows(
+        &conn,
+        "baa10y",
+        &[
+            ("2026-07-20", 1.50),
+            ("2026-07-21", 1.55),
+            ("2026-07-22", 1.52),
+            ("2026-07-23", 1.58),
+            ("2026-07-24", 1.59),
+        ],
+    )
+    .await;
+    seed_rows(
+        &conn,
+        "hy_oas",
+        &[
+            ("2026-07-20", 2.70),
+            ("2026-07-21", 2.75),
+            ("2026-07-22", 2.72),
+            ("2026-07-23", 2.80),
+            ("2026-07-24", 2.79),
+        ],
+    )
+    .await;
+    let (code, out, err) = go(
+        &["cds-con"],
+        Some(JOB),
+        StoreAccess::Ok(&conn),
+        AS_OF,
+    )
+    .await;
+    assert_eq!(code, 1, "an unparseable day-bound value must fail the run");
+    assert!(
+        err.contains("CDS-CON failed:"),
+        "stderr must carry the failure: {err}"
+    );
+    assert!(
+        err.contains("cds_monthly_expand_days"),
+        "error must name the offending config key: {err}"
+    );
+    assert!(
+        err.contains("not-a-number"),
+        "error must carry the unparseable value itself: {err}"
+    );
+    assert!(
+        out.contains("[skill-status:failed]"),
+        "an unparseable day bound is failed: {out}"
+    );
+    assert!(
+        !out.contains("💾 信用利差"),
+        "must not deliver with an unresolvable day bound: {out}"
+    );
+}
+
+#[tokio::test]
 async fn stale_data_is_ok_and_delivers() {
     // Seven days old is a fact about the data, not a run failure.
     let conn = mem().await;
@@ -350,6 +479,7 @@ async fn partial_series_missing_is_ok_and_delivers() {
     // One series present, one missing → usable result; body names the gap.
     let conn = mem().await;
     set_config(&conn, "cds_series", CDS_SERIES_OK).await;
+    set_config(&conn, "cds_monthly_expand_days", "7").await;
     seed_rows(
         &conn,
         "baa10y",
@@ -594,4 +724,112 @@ async fn deliver_mode_is_accepted() {
     .await;
     assert_eq!(code, 0, "--mode deliver must be accepted: {err}");
     assert!(out.contains("[skill-status:ok]"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// Daily/monthly split, end to end — closes the gap where `run.rs`'s
+// `infer_frequency` (the only production code that ever returns
+// `Frequency::Monthly`) went untested, and the seeded config never exercised
+// `monthly_expand_days`'s success branch.
+// ---------------------------------------------------------------------------
+
+/// Two daily series plus a third ("aaa") whose observations are spaced
+/// ~30 days apart, so `infer_frequency`'s median-gap-≥-20-days rule must
+/// classify it Monthly by itself -- nothing in this fixture declares its
+/// frequency.
+const CDS_SERIES_WITH_MONTHLY: &str =
+    "baa10y|BAA10Y|Moody's Baa-10y|spread;hy_oas|BAMLH0A0HYM2|ICE HY OAS|spread;aaa|AAA|Moody's Aaa|yield";
+
+async fn seed_daily_and_monthly(conn: &Connection) {
+    set_config(conn, "cds_series", CDS_SERIES_WITH_MONTHLY).await;
+    set_config(conn, "cds_monthly_expand_days", "7").await;
+    seed_rows(
+        conn,
+        "baa10y",
+        &[
+            ("2026-07-20", 1.50),
+            ("2026-07-21", 1.55),
+            ("2026-07-22", 1.52),
+            ("2026-07-23", 1.58),
+            ("2026-07-24", 1.59),
+        ],
+    )
+    .await;
+    seed_rows(
+        conn,
+        "hy_oas",
+        &[
+            ("2026-07-20", 2.70),
+            ("2026-07-21", 2.75),
+            ("2026-07-22", 2.72),
+            ("2026-07-23", 2.80),
+            ("2026-07-24", 2.79),
+        ],
+    )
+    .await;
+    // ~30-day gaps: 04-01→05-01 is 30 days, 05-01→06-01 is 31 -- both well
+    // clear of the 20-day median threshold in `infer_frequency`.
+    seed_rows(
+        conn,
+        "aaa",
+        &[
+            ("2026-04-01", 5.30),
+            ("2026-05-01", 5.35),
+            ("2026-06-01", 5.40),
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn monthly_series_inferred_from_gaps_expands_within_the_configured_bound() {
+    let conn = mem().await;
+    seed_daily_and_monthly(&conn).await;
+    // Day 7 of the month: within the configured 1-7 expand window.
+    let (code, out, err) = go(
+        &["cds-con"],
+        Some(JOB),
+        StoreAccess::Ok(&conn),
+        "2026-08-07",
+    )
+    .await;
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("[aaa]"),
+        "a series inferred Monthly purely from its ~30-day gaps must render \
+         once the day bound is open: {out}"
+    );
+    assert!(
+        out.contains("月頻"),
+        "its coverage line must state monthly frequency: {out}"
+    );
+}
+
+#[tokio::test]
+async fn monthly_series_inferred_from_gaps_collapses_outside_the_configured_bound() {
+    let conn = mem().await;
+    seed_daily_and_monthly(&conn).await;
+    // AS_OF ("2026-07-31") is day 31: outside the configured 1-7 window.
+    let (code, out, err) = go(
+        &["cds-con"],
+        Some(JOB),
+        StoreAccess::Ok(&conn),
+        AS_OF,
+    )
+    .await;
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        !out.contains("[aaa]"),
+        "the series inferred Monthly must collapse outside the day bound: {out}"
+    );
+    assert!(
+        out.contains("未展開"),
+        "the collapsed status line must be present instead: {out}"
+    );
+    assert!(
+        out.contains("月頻 1 列"),
+        "the status line must count the one collapsed monthly series: {out}"
+    );
+    // The daily series are unaffected by the split.
+    assert!(out.contains("[baa10y]") && out.contains("[hy_oas]"), "{out}");
 }

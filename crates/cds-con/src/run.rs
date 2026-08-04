@@ -201,15 +201,28 @@ async fn load_series(conn: &Connection) -> Result<Vec<SeriesInput>, String> {
     Ok(out)
 }
 
-/// Days of the month on which the monthly block expands. Data, not code --
-/// absent or unparseable key means 7.
-async fn monthly_expand_days(conn: &Connection) -> u32 {
-    read_config(conn, "cds_monthly_expand_days")
+/// Days of the month on which the monthly block expands. Config, not code --
+/// same pattern as a missing `cds_series` or a missing `kind` (decision 6):
+/// an absent key, a failed read, and an unparseable value are three distinct
+/// situations, and each fails the run loudly and by name. No default value
+/// anywhere in Rust.
+async fn monthly_expand_days(conn: &Connection) -> Result<u32, String> {
+    let raw = read_config(conn, "cds_monthly_expand_days")
         .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(7)
+        .map_err(|e| {
+            format!(
+                "could not read config key 'cds_monthly_expand_days' from price-registry: {e}; set it with: price config set cds_monthly_expand_days <days>"
+            )
+        })?
+        .ok_or_else(|| {
+            "missing config key 'cds_monthly_expand_days' in price-registry; set it with: price config set cds_monthly_expand_days <days>"
+                .to_string()
+        })?;
+    raw.trim().parse::<u32>().map_err(|e| {
+        format!(
+            "config key 'cds_monthly_expand_days' has an unparseable value '{raw}': {e}; set it with: price config set cds_monthly_expand_days <days>"
+        )
+    })
 }
 
 async fn read_config(conn: &Connection, key: &str) -> Result<Option<String>, String> {
@@ -331,7 +344,12 @@ pub async fn run(
         );
     }
 
-    let expand_days = monthly_expand_days(conn).await;
+    let expand_days = match monthly_expand_days(conn).await {
+        Ok(d) => d,
+        Err(e) => {
+            return finish_failed(&e, env, out, err);
+        }
+    };
 
     // Missing kind fails here (RenderError) — failed, no deliver.
     let message = match format_message(&series, as_of, expand_days) {

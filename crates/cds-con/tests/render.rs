@@ -476,6 +476,81 @@ fn extract_year_refs(s: &str) -> Vec<String> {
 }
 
 #[test]
+fn footer_contrast_matches_the_full_history_window_by_label_not_position() {
+    // Both lines' `windows` are built with the full-history entry NOT last --
+    // the opposite of what `series_line_from_rows` happens to do today. If
+    // `footer_contrast` ever again reads `windows.last()` positionally, this
+    // must catch it by printing a count from the wrong window.
+    let a = SeriesLine {
+        key: "a".into(),
+        label: "A".into(),
+        kind: SeriesKind::Spread,
+        value: Some(1.59),
+        windows: vec![
+            WindowPct { label: "自1986".into(), below: 1120, n: 10000 },
+            WindowPct { label: "近1年".into(), below: 37, n: 250 },
+        ],
+        coverage_start: Some("1986-01-02".into()),
+        latest: Some("2026-07-24".into()),
+        frequency: Frequency::Daily,
+        config_order: 0,
+    };
+    let b = SeriesLine {
+        key: "b".into(),
+        label: "B".into(),
+        kind: SeriesKind::Spread,
+        value: Some(2.79),
+        windows: vec![
+            WindowPct { label: "自2023".into(), below: 136, n: 750 },
+            WindowPct { label: "近1年".into(), below: 75, n: 250 },
+        ],
+        coverage_start: Some("2023-07-28".into()),
+        latest: Some("2026-07-24".into()),
+        frequency: Frequency::Daily,
+        config_order: 1,
+    };
+    let msg = render_lines(&[a, b], "2026-07-31", 7);
+    let footer = msg.lines().last().unwrap();
+    assert!(
+        footer.contains("自1986 的 10000 筆") && footer.contains("自2023 的 750 筆"),
+        "footer must report each series' full-history count found by its \
+         `自YYYY` label, not by vec position (which would print 250 for both \
+         here, since 近1年 sits last in each windows vec): {footer}"
+    );
+}
+
+#[test]
+fn footer_is_coherent_when_only_one_coverage_year_is_shown() {
+    // If baa10y (the only 1986-start series) is missing, every remaining
+    // daily series shares 自2023 -- footer_contrast returns None because
+    // there is nothing to contrast. The footer must not end on a dangling
+    // continuation dash with nothing after it.
+    let mut lines = golden_lines();
+    for l in lines.iter_mut() {
+        if l.key == "baa10y" {
+            l.value = None;
+            l.windows.clear();
+            l.coverage_start = None;
+        }
+    }
+    let msg = render_lines(&lines, "2026-07-31", 7);
+    let footer = msg.lines().last().unwrap();
+    assert!(
+        !footer.ends_with('—') && !footer.ends_with("——"),
+        "footer must not dangle on a continuation dash with nothing to \
+         follow it: {footer}"
+    );
+    assert!(
+        footer.contains("SIGNAL-ONLY"),
+        "the marker must still be present: {footer}"
+    );
+    assert!(
+        footer.ends_with('。'),
+        "a self-contained footer sentence must close, not trail off: {footer}"
+    );
+}
+
+#[test]
 fn spreads_header_makes_no_claim_about_the_price_of_credit_risk() {
     let msg = render_lines(&golden_lines(), "2026-07-31", 7);
     assert!(!msg.contains("信用風險本身的價格"));
