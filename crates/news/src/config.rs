@@ -197,11 +197,23 @@ pub const DEDUP_RULES: &str = concat!(
 /// Injected into every prompt that produces reader-facing headlines. Half
 /// translated prose reads worse than either language alone, so the rule names
 /// the four categories that may stay in English and forbids the rest.
+///
+/// The proper-noun clause is emphatic because the earlier wording ("可以保留
+/// 英文原文") read as permission, and its examples were all names no reader
+/// could mistake for common nouns — OpenAI, Google, Microsoft. A name built
+/// out of ordinary English words falls off that cliff: on 2026-08-04 the AI
+/// section shipped 「擁抱臉書執行長」 for Hugging Face's CEO. Keeping a name
+/// in English is not a stylistic option, it is the only correct rendering.
 pub const TRANSLATION_RULES_STRICT: &str = concat!(
     "英文標題必須完整翻譯成繁體中文。",
-    "只有以下類別可以保留英文原文：公司名（例如 OpenAI、Google、Microsoft）、",
-    "人名（例如 Sam Altman）、產品名（例如 ChatGPT、Gemini）、",
+    "只有以下類別可以保留英文原文：公司名、人名、產品名、",
     "既定技術術語（例如 AGI、GPU、API、LLM）。",
+    "專有名詞（公司名、人名、產品名）一律保留英文原文，嚴禁逐字意譯，",
+    "即使該名稱是由普通英文單字組成也一樣 —— ",
+    "Hugging Face 必須維持 Hugging Face，不可寫成「擁抱臉書」或「抱抱臉」，",
+    "Meta、Apple、Alphabet、Snowflake、Perplexity、Stability AI 同理。",
+    "判斷方式：若該詞在句中指的是一家公司、一個人或一項產品，就保留英文，",
+    "不要管它字面上是什麼意思。",
     "所有普通英文詞彙必須翻譯，包括但不限於副詞（increasingly、significantly、rapidly、notably、effectively）、",
     "動詞、形容詞、連接詞。",
     "輸出中不得保留任何非上述四類的英文單字。"
