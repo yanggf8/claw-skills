@@ -27,7 +27,8 @@ fn items_for<'a>(all_items: &'a [(String, Vec<Item>)], key: &str) -> &'a [Item] 
         .unwrap_or(&[])
 }
 
-/// Record any company name the digest translated away.
+/// Record any company name that was in a source headline and is not in the
+/// line the reader gets — translated away, or summarised away.
 ///
 /// Called once the digest is final, because theming and the length revert can
 /// both rewrite which lines ship. Observation only — see
@@ -44,13 +45,13 @@ fn log_protected_name_losses(all_items: &[(String, Vec<Item>)], digest: &str) {
         return;
     }
     log_trace(
-        "protected_name_translated",
+        "protected_name_lost",
         json!({"count": lost.len(),
                "names": lost.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
                "links": lost.iter().map(|(_, l)| l.clone()).collect::<Vec<_>>()}),
     );
     eprintln!(
-        "[WARN] company name translated in the digest: {}",
+        "[WARN] company name in the source headline did not reach the reader: {}",
         lost.iter()
             .map(|(n, _)| n.as_str())
             .collect::<Vec<_>>()

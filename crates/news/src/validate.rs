@@ -232,6 +232,14 @@ pub fn language_ok(summary: &str) -> bool {
 /// Company names from [`crate::config::PROTECTED_NAMES`] that a source
 /// headline carried and its delivered line does not.
 ///
+/// Two different faults land here and the caller should not assume which.
+/// Mistranslation is the one it was built for — 「擁抱臉書」 for Hugging Face.
+/// The first real run instead caught the other: "Meta, Anthropic, Google,
+/// OpenAI to meet Trump officials" shipped as 「美國多家科技巨頭將與川普政府
+/// 會談」, every name collapsed into a generic phrase. Nothing was translated,
+/// and the reader still lost the fact. Hence "did not reach the reader"
+/// rather than "was translated".
+///
 /// Returns `(name, link)` per loss. The join is the article link, not the
 /// `#N` marker: `attach_numbered_links` strips the marker and writes the
 /// item's URL into the rendered line, so by the time a digest exists the URL

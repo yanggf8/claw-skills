@@ -255,6 +255,10 @@ pub static TRANSLATION_RULES_STRICT: std::sync::LazyLock<String> =
              {examples} 等同理。\
              判斷方式：若該詞在句中指的是一家公司、一個人或一項產品，就保留英文，\
              不要管它字面上是什麼意思。\
+             原標題點名的公司必須逐一留在譯文裡，不可併成籠統說法：\
+             「Meta, Anthropic, Google, OpenAI to meet Trump officials」\
+             要譯成「Meta、Anthropic、Google、OpenAI 將與川普政府官員會談」，\
+             不可寫成「美國多家科技巨頭將與川普政府會談」——被點名的是誰本身就是新聞。\
              所有普通英文詞彙必須翻譯，包括但不限於副詞（increasingly、significantly、rapidly、notably、effectively）、\
              動詞、形容詞、連接詞。\
              輸出中不得保留任何非上述四類的英文單字。"
