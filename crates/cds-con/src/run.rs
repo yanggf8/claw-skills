@@ -201,6 +201,17 @@ async fn load_series(conn: &Connection) -> Result<Vec<SeriesInput>, String> {
     Ok(out)
 }
 
+/// Days of the month on which the monthly block expands. Data, not code --
+/// absent or unparseable key means 7.
+async fn monthly_expand_days(conn: &Connection) -> u32 {
+    read_config(conn, "cds_monthly_expand_days")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(7)
+}
+
 async fn read_config(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     let mut rows = conn
         .query(
@@ -320,8 +331,10 @@ pub async fn run(
         );
     }
 
+    let expand_days = monthly_expand_days(conn).await;
+
     // Missing kind fails here (RenderError) — failed, no deliver.
-    let message = match format_message(&series, as_of) {
+    let message = match format_message(&series, as_of, expand_days) {
         Ok(m) => m,
         Err(e) => {
             return finish_failed(&e.message, env, out, err);

@@ -79,6 +79,40 @@ impl std::fmt::Display for RenderError {
 
 impl std::error::Error for RenderError {}
 
+/// Whether a rendered line is prose (headers, freshness, footer -- allowed to
+/// wrap on a phone) or a per-series data row (must fit [`WIDTH_BOUND`]).
+///
+/// This is a STRUCTURAL tag the renderer attaches to every line it emits, not
+/// a guess reconstructed from the line's text. Series labels come from the
+/// DB-backed `cds_series` config, so a future label that happens to start
+/// with `利差` or `殖利率` must never silently exempt a real data row from the
+/// width-bound guard -- which it would if the guard matched on text prefixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    Prose,
+    Data,
+}
+
+/// One line of the rendered message, tagged with how the renderer built it.
+/// `render_parts` is the structural seam: tests consult `kind`, never the
+/// text, to decide whether a line is subject to the width bound.
+#[derive(Debug, Clone)]
+pub struct Segment {
+    pub text: String,
+    pub kind: LineKind,
+}
+
+fn prose(text: impl Into<String>) -> Segment {
+    Segment { text: text.into(), kind: LineKind::Prose }
+}
+
+fn data(text: impl Into<String>) -> Segment {
+    Segment { text: text.into(), kind: LineKind::Data }
+}
+
+fn blank() -> Segment {
+    prose(String::new())
+}
 
 /// Width bound used only as a render-quality gate in tests -- see
 /// [`width_bound`] and `every_rendered_line_fits_its_width_bound` in
@@ -232,50 +266,160 @@ fn series_line_from_rows(
     }
 }
 
-/// Render precomputed lines into the daily message body.
-///
-/// `as_of` is an injected YYYY-MM-DD used only for age-in-days. No clock.
-pub fn render_lines(lines: &[SeriesLine], as_of: &str) -> String {
-    let mut out: Vec<String> = Vec::new();
-    out.push("💾 信用利差".into());
-    out.push(String::new());
+/// Day-of-month from an injected `YYYY-MM-DD`. No clock: `main.rs` supplies a
+/// CST calendar date, so keying the bound on `as_of` is CST by construction.
+fn day_of_month(as_of: &str) -> u32 {
+    as_of.get(8..10).and_then(|d| d.parse().ok()).unwrap_or(1)
+}
 
-    let spreads: Vec<&SeriesLine> = lines
+/// Monthly series change once a month; on the other ~29 days they do not earn
+/// a third of the message. The split is by publication frequency, never by
+/// value, so the rule is identical whichever way the market moves.
+fn expand_monthly(as_of: &str, expand_days: u32) -> bool {
+    day_of_month(as_of) <= expand_days
+}
+
+/// Render precomputed lines into the daily message body as structurally
+/// tagged segments -- the seam [`render_lines`] flattens and tests can
+/// consult directly (see `render_parts`/`Segment` doc).
+///
+/// `as_of` is an injected YYYY-MM-DD used only for age-in-days and for the
+/// daily/monthly expand decision. No clock. `expand_days` is the configured
+/// day-of-month bound (`cds_monthly_expand_days`), read by the caller from
+/// the registry `config` table -- never hardcoded here.
+pub fn render_parts(lines: &[SeriesLine], as_of: &str, expand_days: u32) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::new();
+    out.push(prose("💾 信用利差"));
+    out.push(blank());
+
+    let expand = expand_monthly(as_of, expand_days);
+    // Filtered AFTER analyze() only -- `lines` already carries the derived
+    // baa−aaa row built from the `baa`/`aaa` inputs; filtering any earlier
+    // would stop it being derived at all.
+    let shown: Vec<&SeriesLine> = lines
         .iter()
+        .filter(|l| expand || l.frequency == Frequency::Daily)
+        .collect();
+
+    let spreads: Vec<&SeriesLine> = shown
+        .iter()
+        .copied()
         .filter(|l| l.kind == SeriesKind::Spread)
         .collect();
-    let yields: Vec<&SeriesLine> = lines
+    let yields: Vec<&SeriesLine> = shown
         .iter()
+        .copied()
         .filter(|l| l.kind == SeriesKind::Yield)
         .collect();
 
-    out.push("利差(已扣掉無風險利率 —— 這是信用風險本身的價格)".into());
+    out.push(prose("利差 —— 相對某個基準多出的殖利率"));
     push_blocks(&mut out, &spreads);
 
-    out.push(String::new());
-    out.push("殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)".into());
+    out.push(blank());
+    out.push(prose(
+        "總殖利率 —— 含無風險利率在內的全部借款成本(與上一區不可互比)",
+    ));
     push_blocks(&mut out, &yields);
 
-    out.push(String::new());
-    out.push(format_freshness_line(lines, as_of));
+    out.push(blank());
+    // Freshness is drawn from what is actually shown today -- a collapsed
+    // monthly series must not advertise a date that is not on screen.
+    let shown_owned: Vec<SeriesLine> = shown.iter().map(|&l| l.clone()).collect();
+    out.push(prose(format_freshness_line(&shown_owned, as_of)));
+    // The FULL `lines` (not `shown`) so a missing monthly series is still
+    // named on the ~29 days a month the block is collapsed -- filtering the
+    // monthly rows out before this check would hide it.
+    if let Some(s) = monthly_status_line(lines, expand_days).filter(|_| !expand) {
+        out.push(prose(s));
+    }
     // The SIGNAL-ONLY marker stays: it is a project-wide boundary marker, not
     // prose. Only the explanation after it became concrete.
-    out.push("SIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。".into());
-    if let Some(example) = window_example(lines) {
-        out.push(example);
+    out.push(prose(
+        "SIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列比較——",
+    ));
+    if let Some(c) = footer_contrast(&shown) {
+        out.push(prose(c));
     }
 
-    out.join("\n")
+    out
+}
+
+/// Flatten [`render_parts`] into the plain-text message body actually sent.
+pub fn render_lines(lines: &[SeriesLine], as_of: &str, expand_days: u32) -> String {
+    render_parts(lines, as_of, expand_days)
+        .into_iter()
+        .map(|s| s.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Collapsed monthly summary. Carries the month reached AND any missing
+/// monthly series -- without the latter, filtering the rows out would hide a
+/// missing series for the ~29 days the block is collapsed.
+fn monthly_status_line(lines: &[SeriesLine], expand_days: u32) -> Option<String> {
+    let monthly: Vec<&SeriesLine> = lines
+        .iter()
+        .filter(|l| l.frequency == Frequency::Monthly)
+        .collect();
+    if monthly.is_empty() {
+        return None;
+    }
+    let reached = monthly
+        .iter()
+        .filter_map(|l| l.latest.as_ref())
+        .min()
+        .map(|d| d[..7.min(d.len())].to_string())
+        .unwrap_or_else(|| "—".into());
+    let mut s = format!(
+        "月頻 {} 列 資料至 {},未展開(每月 1–{} 日展開)",
+        monthly.len(),
+        reached,
+        expand_days
+    );
+    let missing: Vec<&str> = monthly
+        .iter()
+        .filter(|l| l.value.is_none())
+        .map(|l| l.key.as_str())
+        .collect();
+    if !missing.is_empty() {
+        s.push_str(&format!("・缺 {}", missing.join(",")));
+    }
+    Some(s)
+}
+
+/// Two rulers that are actually on screen today. Naming a collapsed series'
+/// start year would point the reader at something not in the message.
+fn footer_contrast(shown: &[&SeriesLine]) -> Option<String> {
+    let mut with_cov: Vec<&&SeriesLine> = shown
+        .iter()
+        .filter(|l| l.coverage_start.is_some() && !l.windows.is_empty())
+        .collect();
+    with_cov.sort_by_key(|l| l.coverage_start.clone());
+    let (first, last) = (with_cov.first()?, with_cov.last()?);
+    if coverage_year(first) == coverage_year(last) {
+        return None;
+    }
+    let n = |l: &SeriesLine| l.windows.last().map(|w| w.n).unwrap_or(0);
+    Some(format!(
+        "自{} 的 {} 筆和自{} 的 {} 筆不是同一把尺。",
+        coverage_year(last)?,
+        n(last),
+        coverage_year(first)?,
+        n(first)
+    ))
 }
 
 /// Push each series' block, with a blank line separating consecutive
 /// blocks -- none before the first, so it sits directly under the header.
-fn push_blocks(out: &mut Vec<String>, series: &[&SeriesLine]) {
+/// Every line a block contributes is tagged `Data`: a series' title line
+/// (`Label [key]`) wraps just as badly as its window lines if it bloats back
+/// toward the old table's column width.
+fn push_blocks(out: &mut Vec<Segment>, series: &[&SeriesLine]) {
     for (i, line) in series.iter().enumerate() {
         if i > 0 {
-            out.push(String::new());
+            out.push(blank());
         }
-        out.extend(series_block(line));
+        out.extend(series_block(line).into_iter().map(data));
     }
 }
 
@@ -306,43 +450,17 @@ fn window_lines(line: &SeriesLine) -> Vec<String> {
         .collect()
 }
 
-/// Show window-dependence with the message's OWN numbers instead of stating it
-/// abstractly. An abstract footer gets skipped; a worked example from today's
-/// data does not, and it stays a demonstration rather than becoming a verdict.
-///
-/// Picks the first line carrying at least two windows whose counts actually
-/// differ -- an example where both windows agree would demonstrate nothing.
-/// Emits nothing when no such line exists, rather than inventing one.
-fn window_example(lines: &[SeriesLine]) -> Option<String> {
-    for l in lines {
-        if l.windows.len() < 2 {
-            continue;
-        }
-        let (a, b) = (&l.windows[0], &l.windows[1]);
-        if (a.below, a.n) == (b.below, b.n) {
-            continue;
-        }
-        // The value itself carries `%` and must not share a line with a count
-        // (a count line may never carry a share/percentage sign), so this
-        // worked example names the series but leaves its value out.
-        return Some(format!(
-            "例:{} —— {} {}/{} 筆低於本次,{} {}/{} 筆低於本次。不是兩個市場,是兩把尺。",
-            l.label,
-            a.label,
-            a.below,
-            a.n,
-            b.label,
-            b.below,
-            b.n,
-        ));
-    }
-    None
-}
-
 /// Analyze then render. Entry point for the skill once Task 3 wires the store.
-pub fn format_message(series: &[SeriesInput], as_of: &str) -> Result<String, RenderError> {
+///
+/// `expand_days` gates the monthly block (see [`expand_monthly`]) and must
+/// come from the caller's config read, never a literal here.
+pub fn format_message(
+    series: &[SeriesInput],
+    as_of: &str,
+    expand_days: u32,
+) -> Result<String, RenderError> {
     let lines = analyze(series)?;
-    Ok(render_lines(&lines, as_of))
+    Ok(render_lines(&lines, as_of, expand_days))
 }
 
 /// Values carry `%`. Every configured FRED series is denominated in percent, and

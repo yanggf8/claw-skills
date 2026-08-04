@@ -6,10 +6,16 @@
 //! point at a specific failure.
 
 use cds_con::render::{
-    analyze, format_message, render_lines, width_bound, Frequency, SeriesInput, SeriesLine,
-    WindowPct, BAA_AAA_KEY,
+    analyze, format_message, render_lines, render_parts, width_bound, Frequency, LineKind,
+    SeriesInput, SeriesLine, WindowPct, BAA_AAA_KEY,
 };
 use credit_store::{below_and_total, Observation, SeriesKind, SeriesSpec};
+
+/// An `expand_days` bound that is always satisfied (day-of-month never
+/// exceeds 31). Tests that need the monthly block visible alongside a
+/// specific `as_of` (for its age-in-days arithmetic) widen the bound instead
+/// of moving the date, so the daily age math stays intact.
+const ALWAYS_EXPAND: u32 = 31;
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -283,7 +289,7 @@ const GOLDEN: &str = "💾 信用利差\n\n利差(已扣掉無風險利率 —�
 
 #[test]
 fn wording_is_strictly_below_never_at_most() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let msg = render_lines(&golden_lines(), "2026-07-31", 7);
     assert!(msg.contains("筆低於本次"), "must state 低於");
     assert!(!msg.contains("不高於"), "不高於 is <=, the implementation is <");
 }
@@ -303,13 +309,14 @@ fn zero_below_renders_as_zero_over_n() {
         frequency: Frequency::Monthly,
         config_order: 0,
     };
-    let msg = render_lines(&[line], "2026-07-31");
+    // Monthly frequency: widen the bound so this line is not collapsed away.
+    let msg = render_lines(&[line], "2026-07-31", ALWAYS_EXPAND);
     assert!(msg.contains("0/13 筆低於本次"), "got:\n{msg}");
 }
 
 #[test]
 fn no_share_percentage_is_printed_beside_a_count() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let msg = render_lines(&golden_lines(), "2026-07-31", ALWAYS_EXPAND);
     for l in msg.lines().filter(|l| l.contains("筆低於本次")) {
         assert!(!l.contains('%'), "a count line must carry no %: {l}");
     }
@@ -317,13 +324,101 @@ fn no_share_percentage_is_printed_beside_a_count() {
 
 // ── exact shape ──────────────────────────────────────────────────────────
 
+// Expected to keep failing until Task 6 rewrites GOLDEN for the new
+// vertical-block / daily-monthly-split layout. Only the call signature
+// changes here; the assertion is left broken on purpose (see task-5-brief).
 #[test]
 fn golden_message_matches_plan_exactly() {
-    let rendered = render_lines(&golden_lines(), "2026-07-31");
+    let rendered = render_lines(&golden_lines(), "2026-07-31", 7);
     assert_eq!(
         rendered, GOLDEN,
         "rendered message must match the plan golden byte-for-byte"
     );
+}
+
+// ── daily/monthly split ─────────────────────────────────────────────────
+
+#[test]
+fn ordinary_day_carries_exactly_the_six_daily_series() {
+    let msg = render_lines(&golden_lines(), "2026-07-31", 7); // day 31 > 7
+    assert!(!msg.contains("[baa]"), "monthly series must be collapsed");
+    assert!(!msg.contains("[aaa]"));
+    assert!(!msg.contains("[baa−aaa]"));
+    assert!(msg.contains("[baa10y]") && msg.contains("[ccc_yield]"));
+}
+
+#[test]
+fn monthly_block_expands_only_within_the_configured_day_bound() {
+    let inside = render_lines(&golden_lines(), "2026-08-07", 7);
+    let outside = render_lines(&golden_lines(), "2026-08-08", 7);
+    assert!(inside.contains("[baa]"), "day 7 must expand");
+    assert!(!outside.contains("[baa]"), "day 8 must not");
+    // The bound is data: moving it moves the boundary.
+    let moved = render_lines(&golden_lines(), "2026-08-08", 10);
+    assert!(moved.contains("[baa]"), "bound must come from config, not code");
+}
+
+#[test]
+fn day_bound_is_evaluated_from_as_of_never_a_clock() {
+    // main.rs injects a CST date (cst_today, offset +8). Rendering must be a
+    // pure function of as_of, so a UTC-keyed clock cannot creep in and
+    // misfire for a whole month while fixed-date tests stay green.
+    let a = render_lines(&golden_lines(), "2026-08-07", 7);
+    let b = render_lines(&golden_lines(), "2026-08-07", 7);
+    assert_eq!(a, b);
+    assert!(a.contains("[baa]"));
+}
+
+#[test]
+fn monthly_status_line_present_whenever_the_block_is_collapsed() {
+    let msg = render_lines(&golden_lines(), "2026-07-31", 7);
+    assert!(msg.contains("月頻 3 列 資料至 2026-06"), "got:\n{msg}");
+    assert!(msg.contains("未展開"));
+}
+
+#[test]
+fn monthly_status_line_absent_when_expanded() {
+    let msg = render_lines(&golden_lines(), "2026-08-07", 7);
+    assert!(!msg.contains("未展開"));
+    assert!(msg.contains("月 至 2026-06"), "資料 line carries it instead");
+}
+
+#[test]
+fn monthly_status_line_names_missing_monthly_series() {
+    // format_freshness_line finds missing series by scanning RENDERED lines.
+    // Filtering the monthly rows out must not hide a missing one for 29 days.
+    let mut lines = golden_lines();
+    for l in lines.iter_mut() {
+        if l.key == "aaa" {
+            l.value = None;
+            l.windows.clear();
+        }
+    }
+    let msg = render_lines(&lines, "2026-07-31", 7);
+    assert!(msg.contains("缺 aaa"), "got:\n{msg}");
+}
+
+#[test]
+fn footer_contrast_uses_only_series_rendered_today() {
+    let msg = render_lines(&golden_lines(), "2026-07-31", 7);
+    let shown: Vec<String> = msg
+        .lines()
+        .filter(|l| l.contains("筆低於本次"))
+        .filter_map(|l| l.split_whitespace().find(|t| t.starts_with('自')).map(|s| s.to_string()))
+        .collect();
+    for tok in msg.lines().last().unwrap().split_whitespace().filter(|t| t.starts_with('自')) {
+        assert!(
+            shown.iter().any(|s| s == tok),
+            "footer names {tok}, which is not on screen today. shown={shown:?}"
+        );
+    }
+}
+
+#[test]
+fn spreads_header_makes_no_claim_about_the_price_of_credit_risk() {
+    let msg = render_lines(&golden_lines(), "2026-07-31", 7);
+    assert!(!msg.contains("信用風險本身的價格"));
+    assert!(msg.contains("利差 —— 相對某個基準多出的殖利率"));
 }
 
 // ── order ────────────────────────────────────────────────────────────────
@@ -435,7 +530,7 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
         "10y must be omitted for short coverage, not listed; got {labels:?}"
     );
 
-    let msg = render_lines(&lines, "2026-07-31");
+    let msg = render_lines(&lines, "2026-07-31", 7);
     assert!(
         !msg.contains("insufficient-coverage"),
         "must never print insufficient-coverage in the message: {msg}"
@@ -500,7 +595,7 @@ fn long_coverage_series_shows_all_three_windows() {
 /// `start_year_label_is_derived_from_the_data_not_supplied` below.
 #[test]
 fn window_label_is_the_actual_start_year() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let msg = render_lines(&golden_lines(), "2026-07-31", 7);
     assert!(!msg.contains("全庫"), "全庫 hides that each row is a different ruler");
     assert!(msg.contains("自1919") || msg.contains("自1986"), "got:\n{msg}");
 }
@@ -511,7 +606,9 @@ fn window_label_is_the_actual_start_year() {
 /// that computes a label from a coverage-start date.
 #[test]
 fn three_series_with_different_coverage_get_three_different_labels() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    // ALWAYS_EXPAND: the golden's three coverage years (1919/1986/2023) span
+    // both the monthly and daily blocks, so the monthly block must be shown.
+    let msg = render_lines(&golden_lines(), "2026-07-31", ALWAYS_EXPAND);
     let years: std::collections::HashSet<&str> = msg
         .lines()
         .filter(|l| l.contains("筆低於本次"))
@@ -538,7 +635,7 @@ fn start_year_label_is_derived_from_the_data_not_supplied() {
         obs(&[("1986-01-02", 1.0), ("2026-07-31", 2.0)]),
     )];
     let lines = analyze(&series).expect("kind is set");
-    let msg = render_lines(&lines, "2026-07-31");
+    let msg = render_lines(&lines, "2026-07-31", 7);
     assert!(
         msg.contains("自1986"),
         "year must come from rows[0].date through year_str/coverage_year; got:\n{msg}"
@@ -582,7 +679,7 @@ fn precision_value_two_decimals_count_is_a_plain_integer() {
         frequency: Frequency::Daily,
         config_order: 0,
     };
-    let msg = render_lines(&[line], "2026-07-31");
+    let msg = render_lines(&[line], "2026-07-31", 7);
     assert!(
         msg.contains("0.80%"),
         "value must be two decimal places: {msg}"
@@ -606,7 +703,8 @@ fn percent_marks_values_but_never_percentiles() {
     //
     // The original worry still binds in its precise form: a percentile must
     // never carry a % sign.
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    // 0.48% is baa−aaa, a monthly series — widen the bound so it is shown.
+    let msg = render_lines(&golden_lines(), "2026-07-31", ALWAYS_EXPAND);
     assert!(msg.contains("0.48%"), "values carry the unit: {msg}");
     assert!(
         !regex_like_pct_with_percent(&msg),
@@ -643,7 +741,7 @@ fn provenance_is_coverage_and_frequency_not_fred_id() {
         obs(&[("1986-01-02", 1.0), ("2026-07-24", 1.59)]),
     )];
     // series_id is FRED_baa10y via helper — must not appear.
-    let msg = format_message(&series, "2026-07-31").unwrap();
+    let msg = format_message(&series, "2026-07-31", 7).unwrap();
     assert!(
         msg.contains("日頻・自1986"),
         "coverage start and frequency required: {msg}"
@@ -662,7 +760,9 @@ fn provenance_is_coverage_and_frequency_not_fred_id() {
 
 #[test]
 fn freshness_line_shows_age_without_judgment() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    // ALWAYS_EXPAND so the monthly latest is on the 資料 line too (this test
+    // predates the daily/monthly split and pins both halves at once).
+    let msg = render_lines(&golden_lines(), "2026-07-31", ALWAYS_EXPAND);
     assert!(
         msg.contains("資料:日 至 2026-07-24(7 天前)"),
         "daily latest and age-in-days required: {msg}"
@@ -701,7 +801,8 @@ fn monthly_freshness_uses_minimum_latest_not_maximum() {
         input("aaa", SeriesKind::Yield, Frequency::Monthly, aaa),
         input("baa", SeriesKind::Yield, Frequency::Monthly, baa),
     ];
-    let msg = format_message(&series, "2026-07-31").unwrap();
+    // Both inputs are Monthly — widen the bound so the block is shown.
+    let msg = format_message(&series, "2026-07-31", ALWAYS_EXPAND).unwrap();
     assert!(
         msg.contains("月 至 2026-06"),
         "monthly freshness must be the MIN latest (derived lags at 2026-06-01): {msg}"
@@ -736,7 +837,8 @@ fn missing_series_renders_na_and_is_named_in_freshness() {
             obs(&[("1919-01-01", 5.0), ("2026-06-01", 5.5)]),
         ),
     ];
-    let msg = format_message(&series, "2026-07-31").unwrap();
+    // hy_oas (missing, Daily) is shown regardless of the monthly bound.
+    let msg = format_message(&series, "2026-07-31", 7).unwrap();
     assert!(
         msg.contains("hy_oas") && msg.contains("n/a"),
         "missing series must render as n/a, not vanish: {msg}"
@@ -773,7 +875,7 @@ fn missing_kind_fails_loudly_not_defaulted_to_yield() {
         rows: obs(&[("2023-07-28", 2.0), ("2026-07-24", 2.5)]),
         frequency: Frequency::Daily,
     }];
-    let err = format_message(&series, "2026-07-31").expect_err("missing kind must err");
+    let err = format_message(&series, "2026-07-31", 7).expect_err("missing kind must err");
     assert!(
         err.message.contains("hy_oas") && err.message.contains("kind"),
         "error must name the series and the missing kind: {}",
@@ -787,10 +889,15 @@ fn missing_kind_fails_loudly_not_defaulted_to_yield() {
 
 #[test]
 fn spread_and_yield_blocks_are_separate_with_meaning_labels() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
-    let spread_hdr = msg.find("利差(已扣掉無風險利率 —— 這是信用風險本身的價格)").expect("spread header");
+    // ALWAYS_EXPAND: this test asserts BOTH the daily block (baa10y) and the
+    // monthly block (aaa) land under the right header, so the monthly block
+    // must be visible.
+    let msg = render_lines(&golden_lines(), "2026-07-31", ALWAYS_EXPAND);
+    let spread_hdr = msg
+        .find("利差 —— 相對某個基準多出的殖利率")
+        .expect("spread header");
     let yield_hdr = msg
-        .find("殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)")
+        .find("總殖利率 —— 含無風險利率在內的全部借款成本(與上一區不可互比)")
         .expect("yield header");
     assert!(
         spread_hdr < yield_hdr,
@@ -811,9 +918,9 @@ fn spread_and_yield_blocks_are_separate_with_meaning_labels() {
 
 #[test]
 fn closes_with_signal_only_and_has_no_status_line() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let msg = render_lines(&golden_lines(), "2026-07-31", 7);
     assert!(
-        msg.contains("SIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。"),
+        msg.contains("SIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列比較——"),
         "{msg}"
     );
     assert!(
@@ -856,7 +963,7 @@ fn printed_count_is_the_raw_comparison_never_derived() {
         frequency: Frequency::Daily,
         config_order: 0,
     };
-    let msg = render_lines(&[line], "2026-07-31");
+    let msg = render_lines(&[line], "2026-07-31", 7);
     assert!(msg.contains("996/1000 筆低於本次"), "must print the raw count: got:\n{msg}");
     assert!(
         !msg.contains("1000/1000"),
@@ -874,15 +981,6 @@ fn printed_count_is_the_raw_comparison_never_derived() {
 // offsets differ while display columns match, which is meaningless once
 // nothing is padded into columns. See `every_rendered_line_fits_its_width_bound`
 // below for the guarantee that replaces it.
-
-/// True if `l` is one of the message's hand-written prose lines (block
-/// headers, the freshness line, the SIGNAL-ONLY footer, the worked example)
-/// rather than a per-series data line. Prose is allowed to wrap on a phone;
-/// data lines are not.
-fn is_prose_line(l: &str) -> bool {
-    const PROSE_PREFIXES: [&str; 5] = ["利差", "殖利率", "資料:", "SIGNAL-ONLY", "例:"];
-    PROSE_PREFIXES.iter().any(|prefix| l.starts_with(prefix))
-}
 
 #[test]
 fn every_rendered_line_fits_its_width_bound() {
@@ -907,19 +1005,24 @@ fn every_rendered_line_fits_its_width_bound() {
             .sum()
     }
 
-    let msg = render_lines(&golden_lines(), "2026-07-31");
-    // Covers every non-blank line, not only indented data lines: a series
-    // title line (`Label [key]`) wraps just as badly as a data line if it
-    // bloats back toward the old table's 85 columns.
-    for l in msg.lines().filter(|l| !l.trim().is_empty()) {
-        if is_prose_line(l) {
+    // ALWAYS_EXPAND so both the daily and the monthly blocks are checked in
+    // one pass, including the derived baa−aaa row's labels.
+    let parts = render_parts(&golden_lines(), "2026-07-31", ALWAYS_EXPAND);
+    // The prose/data distinction is STRUCTURAL: it comes from `Segment::kind`,
+    // the tag the renderer itself attached to each line, never from guessing
+    // at the line's text. A future series label from `cds_series` beginning
+    // with `利差`/`殖利率` cannot silently exempt a real data row this way --
+    // it would if this test instead matched on text prefixes.
+    for seg in parts.iter().filter(|s| !s.text.trim().is_empty()) {
+        if seg.kind != LineKind::Data {
             continue;
         }
         assert!(
-            width(l) <= width_bound(),
-            "line is {} cols (bound {}): {l}",
-            width(l),
-            width_bound()
+            width(&seg.text) <= width_bound(),
+            "line is {} cols (bound {}): {}",
+            width(&seg.text),
+            width_bound(),
+            seg.text
         );
     }
 }
