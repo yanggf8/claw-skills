@@ -5,7 +5,8 @@
 //! Spreads and yields are not commensurable — they render in separate blocks.
 
 use credit_store::{
-    baa_aaa_spread, percentile_rank, window_stat, Observation, SeriesKind, SeriesSpec, WindowStat,
+    baa_aaa_spread, below_and_total, window_counts, Observation, SeriesKind, SeriesSpec,
+    WindowCounts,
 };
 
 /// Publication frequency shown on each series line and on the freshness line.
@@ -32,12 +33,15 @@ pub struct SeriesInput {
     pub frequency: Frequency,
 }
 
-/// A trailing-window percentile that the series can actually support.
+/// A trailing-window count that the series can actually support.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowPct {
-    /// Display label: `1年`, `10年`, or `全庫`.
-    pub label: &'static str,
-    pub pctile: f64,
+    /// Display label: `近1年`, `近10年`, or the coverage start year (`自1986`).
+    pub label: String,
+    /// Observations in the window strictly below the latest value.
+    pub below: usize,
+    /// Observations in the window.
+    pub n: usize,
 }
 
 /// Fully computed series row, ready to format. Tests that pin layout inject
@@ -105,18 +109,6 @@ fn pad_to(s: &str, width: usize) -> String {
         out.push(' ');
     }
     out
-}
-
-/// A percentile is a rank, so it shows as a whole number -- `p60.0` implied a
-/// precision the rank does not have.
-///
-/// Truncated, NOT rounded. Rounding turns 99.6 into `p100`, which asserts that
-/// nothing in the window sits above this value while 0.4% of it does. `p99`
-/// understates by less than one percentile and stays true: at least 99% of the
-/// window is below. The display may never claim a higher rank than the data
-/// supports. The stored value keeps full precision.
-fn fmt_pct(p: f64) -> String {
-    format!("p{}", p.floor() as i64)
 }
 
 /// Display key for the derived quality spread (Unicode minus U+2212).
@@ -225,22 +217,22 @@ fn series_line_from_rows(
     let last = rows.last().unwrap();
     let mut windows = Vec::new();
 
-    // 1y, 10y: omit unreachable windows — never print `insufficient-coverage`.
-    for (years, label) in [(1u32, "1年"), (10u32, "10年")] {
-        match window_stat(rows, years) {
-            WindowStat::Computed { pctile, .. } => {
-                windows.push(WindowPct { label, pctile });
-            }
-            WindowStat::Insufficient { .. } => {}
+    // 近1年, 近10年: omit unreachable windows — never print `insufficient-coverage`.
+    for (years, label) in [(1u32, "近1年"), (10u32, "近10年")] {
+        if let WindowCounts::Computed { below, n } = window_counts(rows, years) {
+            windows.push(WindowPct { label: label.to_string(), below, n });
         }
     }
 
-    // 全庫: full stored history (always available when rows are non-empty).
+    // Full stored history (always available when rows are non-empty), labeled
+    // by its coverage start year so the reader never has to know what "全庫"
+    // meant without looking at the coverage column.
     let vals: Vec<f64> = rows.iter().map(|r| r.value).collect();
-    let all_pct = percentile_rank(&vals, last.value);
+    let (below, n) = below_and_total(&vals, last.value);
     windows.push(WindowPct {
-        label: "全庫",
-        pctile: all_pct,
+        label: format!("自{}", &rows[0].date[..4.min(rows[0].date.len())]),
+        below,
+        n,
     });
 
     SeriesLine {
@@ -281,12 +273,14 @@ pub fn render_lines(lines: &[SeriesLine], as_of: &str) -> String {
     out.push("利差(已扣掉無風險利率 —— 這是信用風險本身的價格)".into());
     for line in &spreads {
         out.push(format_series_row(line, &w));
+        out.extend(window_lines(line));
     }
 
     out.push(String::new());
     out.push("殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)".into());
     for line in &yields {
         out.push(format_series_row(line, &w));
+        out.extend(window_lines(line));
     }
 
     out.push(String::new());
@@ -301,11 +295,41 @@ pub fn render_lines(lines: &[SeriesLine], as_of: &str) -> String {
     out.join("\n")
 }
 
+/// A trailing-window count that the series can actually support. A percentile
+/// is not printed; the count is the definition, so the reader never has to
+/// know what `p` meant.
+fn window_lines(line: &SeriesLine) -> Vec<String> {
+    let w = line
+        .windows
+        .iter()
+        .map(|w| display_width(&w.label))
+        .max()
+        .unwrap_or(0);
+    let c = line
+        .windows
+        .iter()
+        .map(|w| format!("{}/{}", w.below, w.n).len())
+        .max()
+        .unwrap_or(0);
+    line.windows
+        .iter()
+        .map(|win| {
+            let pair = format!("{}/{}", win.below, win.n);
+            format!(
+                "  {}  {:>cw$} 筆低於本次",
+                pad_to(&win.label, w),
+                pair,
+                cw = c
+            )
+        })
+        .collect()
+}
+
 /// Show window-dependence with the message's OWN numbers instead of stating it
 /// abstractly. An abstract footer gets skipped; a worked example from today's
 /// data does not, and it stays a demonstration rather than becoming a verdict.
 ///
-/// Picks the first line carrying at least two windows whose percentiles actually
+/// Picks the first line carrying at least two windows whose counts actually
 /// differ -- an example where both windows agree would demonstrate nothing.
 /// Emits nothing when no such line exists, rather than inventing one.
 fn window_example(lines: &[SeriesLine]) -> Option<String> {
@@ -314,17 +338,21 @@ fn window_example(lines: &[SeriesLine]) -> Option<String> {
             continue;
         }
         let (a, b) = (&l.windows[0], &l.windows[1]);
-        if fmt_pct(a.pctile) == fmt_pct(b.pctile) {
+        if (a.below, a.n) == (b.below, b.n) {
             continue;
         }
+        // The value itself carries `%` and must not share a line with a count
+        // (a count line may never carry a share/percentage sign), so this
+        // worked example names the series but leaves its value out.
         return Some(format!(
-            "例:{} {} —— {} 排 {},{} 排 {}。不是兩個市場,是兩把尺。",
+            "例:{} —— {} {}/{} 筆低於本次,{} {}/{} 筆低於本次。不是兩個市場,是兩把尺。",
             l.label,
-            value_str(l),
             a.label,
-            fmt_pct(a.pctile),
+            a.below,
+            a.n,
             b.label,
-            fmt_pct(b.pctile),
+            b.below,
+            b.n,
         ));
     }
     None
@@ -342,7 +370,6 @@ pub fn format_message(series: &[SeriesInput], as_of: &str) -> Result<String, Ren
 struct RowWidths {
     label: usize,
     value: usize,
-    windows: usize,
 }
 
 /// `Label [key]`. The reader and the operator are the same person: the key is
@@ -354,11 +381,10 @@ fn label_str(line: &SeriesLine) -> String {
 }
 
 fn row_widths(lines: &[SeriesLine]) -> RowWidths {
-    let mut w = RowWidths { label: 0, value: 0, windows: 0 };
+    let mut w = RowWidths { label: 0, value: 0 };
     for l in lines {
         w.label = w.label.max(display_width(&label_str(l)));
         w.value = w.value.max(value_str(l).len());
-        w.windows = w.windows.max(display_width(&windows_str(l)));
     }
     w
 }
@@ -372,14 +398,6 @@ fn value_str(line: &SeriesLine) -> String {
         Some(v) => format!("{v:.2}%"),
         None => "n/a".into(),
     }
-}
-
-fn windows_str(line: &SeriesLine) -> String {
-    line.windows
-        .iter()
-        .map(|w| format!("{} {}", w.label, fmt_pct(w.pctile)))
-        .collect::<Vec<_>>()
-        .join(" · ")
 }
 
 /// `自1986 日` rather than `1986-01-02→ daily`: the day and month of a coverage
@@ -400,10 +418,9 @@ fn coverage_str(line: &SeriesLine) -> String {
 
 fn format_series_row(line: &SeriesLine, w: &RowWidths) -> String {
     format!(
-        "  {}  {:>vw$}   {}   {}",
+        "  {}  {:>vw$}   {}",
         pad_to(&label_str(line), w.label),
         value_str(line),
-        pad_to(&windows_str(line), w.windows),
         coverage_str(line),
         vw = w.value,
     )

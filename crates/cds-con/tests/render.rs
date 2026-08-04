@@ -58,16 +58,19 @@ fn golden_lines() -> Vec<SeriesLine> {
             value: Some(0.48),
             windows: vec![
                 WindowPct {
-                    label: "1年",
-                    pctile: 0.0,
+                    label: "近1年".into(),
+                    below: 0,
+                    n: 12,
                 },
                 WindowPct {
-                    label: "10年",
-                    pctile: 0.0,
+                    label: "近10年".into(),
+                    below: 0,
+                    n: 120,
                 },
                 WindowPct {
-                    label: "全庫",
-                    pctile: 3.7,
+                    label: "自1919".into(),
+                    below: 48,
+                    n: 1287,
                 },
             ],
             coverage_start: Some("1919-01-01".into()),
@@ -82,16 +85,19 @@ fn golden_lines() -> Vec<SeriesLine> {
             value: Some(1.59),
             windows: vec![
                 WindowPct {
-                    label: "1年",
-                    pctile: 14.8,
+                    label: "近1年".into(),
+                    below: 37,
+                    n: 250,
                 },
                 WindowPct {
-                    label: "10年",
-                    pctile: 10.2,
+                    label: "近10年".into(),
+                    below: 255,
+                    n: 2500,
                 },
                 WindowPct {
-                    label: "全庫",
-                    pctile: 11.2,
+                    label: "自1986".into(),
+                    below: 1120,
+                    n: 10000,
                 },
             ],
             coverage_start: Some("1986-01-02".into()),
@@ -106,12 +112,14 @@ fn golden_lines() -> Vec<SeriesLine> {
             value: Some(2.79),
             windows: vec![
                 WindowPct {
-                    label: "1年",
-                    pctile: 30.2,
+                    label: "近1年".into(),
+                    below: 75,
+                    n: 250,
                 },
                 WindowPct {
-                    label: "全庫",
-                    pctile: 18.1,
+                    label: "自2023".into(),
+                    below: 136,
+                    n: 750,
                 },
             ],
             coverage_start: Some("2023-07-28".into()),
@@ -126,12 +134,14 @@ fn golden_lines() -> Vec<SeriesLine> {
             value: Some(0.80),
             windows: vec![
                 WindowPct {
-                    label: "1年",
-                    pctile: 60.0,
+                    label: "近1年".into(),
+                    below: 150,
+                    n: 250,
                 },
                 WindowPct {
-                    label: "全庫",
-                    pctile: 22.1,
+                    label: "自2023".into(),
+                    below: 166,
+                    n: 750,
                 },
             ],
             coverage_start: Some("2023-07-28".into()),
@@ -146,16 +156,19 @@ fn golden_lines() -> Vec<SeriesLine> {
             value: Some(5.52),
             windows: vec![
                 WindowPct {
-                    label: "1年",
-                    pctile: 84.6,
+                    label: "近1年".into(),
+                    below: 10,
+                    n: 12,
                 },
                 WindowPct {
-                    label: "10年",
-                    pctile: 96.7,
+                    label: "近10年".into(),
+                    below: 116,
+                    n: 120,
                 },
                 WindowPct {
-                    label: "全庫",
-                    pctile: 61.6,
+                    label: "自1919".into(),
+                    below: 793,
+                    n: 1287,
                 },
             ],
             coverage_start: Some("1919-01-01".into()),
@@ -170,16 +183,19 @@ fn golden_lines() -> Vec<SeriesLine> {
             value: Some(6.00),
             windows: vec![
                 WindowPct {
-                    label: "1年",
-                    pctile: 46.2,
+                    label: "近1年".into(),
+                    below: 6,
+                    n: 13,
                 },
                 WindowPct {
-                    label: "10年",
-                    pctile: 86.0,
+                    label: "近10年".into(),
+                    below: 103,
+                    n: 120,
                 },
                 WindowPct {
-                    label: "全庫",
-                    pctile: 46.7,
+                    label: "自1919".into(),
+                    below: 601,
+                    n: 1287,
                 },
             ],
             coverage_start: Some("1919-01-01".into()),
@@ -194,12 +210,14 @@ fn golden_lines() -> Vec<SeriesLine> {
             value: Some(7.19),
             windows: vec![
                 WindowPct {
-                    label: "1年",
-                    pctile: 97.0,
+                    label: "近1年".into(),
+                    below: 243,
+                    n: 250,
                 },
                 WindowPct {
-                    label: "全庫",
-                    pctile: 93.2,
+                    label: "自2023".into(),
+                    below: 699,
+                    n: 750,
                 },
             ],
             coverage_start: Some("2023-07-28".into()),
@@ -214,12 +232,14 @@ fn golden_lines() -> Vec<SeriesLine> {
             value: Some(5.43),
             windows: vec![
                 WindowPct {
-                    label: "1年",
-                    pctile: 99.2,
+                    label: "近1年".into(),
+                    below: 248,
+                    n: 250,
                 },
                 WindowPct {
-                    label: "全庫",
-                    pctile: 96.4,
+                    label: "自2023".into(),
+                    below: 723,
+                    n: 750,
                 },
             ],
             coverage_start: Some("2023-07-28".into()),
@@ -234,12 +254,14 @@ fn golden_lines() -> Vec<SeriesLine> {
             value: Some(14.28),
             windows: vec![
                 WindowPct {
-                    label: "1年",
-                    pctile: 99.6,
+                    label: "近1年".into(),
+                    below: 249,
+                    n: 250,
                 },
                 WindowPct {
-                    label: "全庫",
-                    pctile: 93.5,
+                    label: "自2023".into(),
+                    below: 701,
+                    n: 750,
                 },
             ],
             coverage_start: Some("2023-07-28".into()),
@@ -256,6 +278,42 @@ fn golden_lines() -> Vec<SeriesLine> {
 /// others (34); that inconsistency is not part of the shape. Every number,
 /// label, order, unit rule and literal matches the plan.
 const GOLDEN: &str = "💾 信用利差\n\n利差(已扣掉無風險利率 —— 這是信用風險本身的價格)\n  baa−aaa [baa−aaa]       0.48%   1年 p0 · 10年 p0 · 全庫 p3      自1919・月頻\n  baa10y [baa10y]         1.59%   1年 p14 · 10年 p10 · 全庫 p11   自1986・日頻\n  hy_oas [hy_oas]         2.79%   1年 p30 · 全庫 p18              自2023・日頻\n  ig_oas [ig_oas]         0.80%   1年 p60 · 全庫 p22              自2023・日頻\n\n殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)\n  aaa [aaa]               5.52%   1年 p84 · 10年 p96 · 全庫 p61   自1919・月頻\n  baa [baa]               6.00%   1年 p46 · 10年 p86 · 全庫 p46   自1919・月頻\n  hy_yield [hy_yield]     7.19%   1年 p97 · 全庫 p93              自2023・日頻\n  ig_yield [ig_yield]     5.43%   1年 p99 · 全庫 p96              自2023・日頻\n  ccc_yield [ccc_yield]  14.28%   1年 p99 · 全庫 p93              自2023・日頻\n\n資料:日 至 2026-07-24(7 天前) · 月 至 2026-06\nSIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。\n例:baa10y 1.59% —— 1年 排 p14,10年 排 p10。不是兩個市場,是兩把尺。";
+
+// ── counts, not percentiles ─────────────────────────────────────────────
+
+#[test]
+fn wording_is_strictly_below_never_at_most() {
+    let msg = render_lines(&golden_lines(), "2026-07-31");
+    assert!(msg.contains("筆低於本次"), "must state 低於");
+    assert!(!msg.contains("不高於"), "不高於 is <=, the implementation is <");
+}
+
+#[test]
+fn zero_below_renders_as_zero_over_n() {
+    // A series sitting at its window minimum must print 0/N, never a blank,
+    // an omitted window, or a dash. This is the p0 ambiguity fix.
+    let line = SeriesLine {
+        key: "q".into(),
+        label: "Q".into(),
+        kind: SeriesKind::Spread,
+        value: Some(0.43),
+        windows: vec![WindowPct { label: "近1年".into(), below: 0, n: 13 }],
+        coverage_start: Some("1919-01-01".into()),
+        latest: Some("2026-07-01".into()),
+        frequency: Frequency::Monthly,
+        config_order: 0,
+    };
+    let msg = render_lines(&[line], "2026-07-31");
+    assert!(msg.contains("0/13 筆低於本次"), "got:\n{msg}");
+}
+
+#[test]
+fn no_share_percentage_is_printed_beside_a_count() {
+    let msg = render_lines(&golden_lines(), "2026-07-31");
+    for l in msg.lines().filter(|l| l.contains("筆低於本次")) {
+        assert!(!l.contains('%'), "a count line must carry no %: {l}");
+    }
+}
 
 // ── exact shape ──────────────────────────────────────────────────────────
 
@@ -370,10 +428,10 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
     )];
     let lines = analyze(&series).unwrap();
     assert_eq!(lines.len(), 1);
-    let labels: Vec<&str> = lines[0].windows.iter().map(|w| w.label).collect();
+    let labels: Vec<&str> = lines[0].windows.iter().map(|w| w.label.as_str()).collect();
     assert_eq!(
         labels,
-        vec!["1年", "全庫"],
+        vec!["近1年", "自2023"],
         "10y must be omitted for short coverage, not listed; got {labels:?}"
     );
 
@@ -386,8 +444,14 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
         !msg.contains("10年"),
         "unreachable 10y window must not appear: {msg}"
     );
-    assert!(msg.contains("1年 p"), "1年 must still appear: {msg}");
-    assert!(msg.contains("全庫 p"), "全庫 must still appear: {msg}");
+    assert!(
+        msg.lines().any(|l| l.contains("近1年") && l.contains("筆低於本次")),
+        "近1年 count must still appear: {msg}"
+    );
+    assert!(
+        msg.lines().any(|l| l.contains("自2023") && l.contains("筆低於本次")),
+        "full-history count must still appear: {msg}"
+    );
     // Omission is legible because coverage start is on the same line.
     assert!(
         msg.contains("自2023・日頻"),
@@ -418,10 +482,10 @@ fn long_coverage_series_shows_all_three_windows() {
     ];
     let lines = analyze(&series).unwrap();
     let derived = lines.iter().find(|l| l.key == BAA_AAA_KEY).expect("derived");
-    let labels: Vec<&str> = derived.windows.iter().map(|w| w.label).collect();
+    let labels: Vec<&str> = derived.windows.iter().map(|w| w.label.as_str()).collect();
     assert_eq!(
         labels,
-        vec!["1年", "10年", "全庫"],
+        vec!["近1年", "近10年", "自1919"],
         "baa−aaa reaches 1919 so it shows all three windows; got {labels:?}"
     );
 }
@@ -429,20 +493,27 @@ fn long_coverage_series_shows_all_three_windows() {
 // ── precision ────────────────────────────────────────────────────────────
 
 #[test]
-fn precision_value_two_decimals_percentile_whole_number() {
+fn precision_value_two_decimals_count_is_a_plain_integer() {
+    // Percentile-rounding precision (p22.1 vs p22) is now structurally moot:
+    // `below`/`n` are `usize`, so a count can never carry a fractional digit.
+    // What remains a real behaviour worth pinning is that the *value* still
+    // renders at two decimal places, and the count renders as a bare integer
+    // pair with no decimal point.
     let line = SeriesLine {
         key: "ig_oas".into(),
-            label: "ig_oas".into(),
+        label: "ig_oas".into(),
         kind: SeriesKind::Spread,
         value: Some(0.8),
         windows: vec![
             WindowPct {
-                label: "1年",
-                pctile: 60.0,
+                label: "近1年".into(),
+                below: 150,
+                n: 250,
             },
             WindowPct {
-                label: "全庫",
-                pctile: 22.14,
+                label: "自2023".into(),
+                below: 166,
+                n: 750,
             },
         ],
         coverage_start: Some("2023-07-28".into()),
@@ -455,14 +526,10 @@ fn precision_value_two_decimals_percentile_whole_number() {
         msg.contains("0.80%"),
         "value must be two decimal places: {msg}"
     );
-    // A percentile is a rank, so it shows as a whole number. `p60.0` implied a
-    // precision the rank does not have; 22.14 becomes p22, not p22.1.
-    assert!(msg.contains("p60"), "percentile is a whole number: {msg}");
-    assert!(msg.contains("p22"), "percentile rounds to whole: {msg}");
+    assert!(msg.contains("150/250 筆低於本次"), "{msg}");
+    assert!(msg.contains("166/750 筆低於本次"), "{msg}");
     // Not unrounded / decimal forms.
     assert!(!msg.contains("0.800"), "{msg}");
-    assert!(!msg.contains("p22.1"), "{msg}");
-    assert!(!msg.contains("p60.0"), "{msg}");
 }
 
 // ── units ────────────────────────────────────────────────────────────────
@@ -678,26 +745,11 @@ fn closes_with_signal_only_and_has_no_status_line() {
     );
 }
 
-#[test]
-fn percentile_never_displays_p100_by_rounding_up() {
-    // 99.6 must not render as p100: that asserts nothing in the window sits
-    // above this value, while 0.4% of it does. Truncation understates by under
-    // one percentile and stays true.
-    let line = SeriesLine {
-        key: "ccc_yield".into(),
-        label: "ccc_yield".into(),
-        kind: SeriesKind::Yield,
-        value: Some(14.28),
-        windows: vec![WindowPct { label: "1年", pctile: 99.6 }],
-        coverage_start: Some("2023-07-28".into()),
-        latest: Some("2026-07-24".into()),
-        frequency: Frequency::Daily,
-        config_order: 0,
-    };
-    let msg = render_lines(&[line], "2026-07-31");
-    assert!(msg.contains("p99"), "99.6 truncates to p99: {msg}");
-    assert!(!msg.contains("p100"), "must never claim the top of the window: {msg}");
-}
+// `percentile_never_displays_p100_by_rounding_up` is deleted, not adapted:
+// `WindowPct` no longer has a fractional `pctile` to round, so `below: usize`
+// structurally cannot claim a rank above the window's own size — the p100
+// ambiguity this test pinned is now prevented by the type, not by a rule a
+// test needs to keep checking.
 
 #[test]
 fn cjk_labels_keep_columns_aligned() {
@@ -707,7 +759,7 @@ fn cjk_labels_keep_columns_aligned() {
         label: label.into(),
         kind: SeriesKind::Spread,
         value: Some(v),
-        windows: vec![WindowPct { label: "1年", pctile: 50.0 }],
+        windows: vec![WindowPct { label: "近1年".into(), below: 5, n: 10 }],
         coverage_start: Some("2023-07-28".into()),
         latest: Some("2026-07-24".into()),
         frequency: Frequency::Daily,
