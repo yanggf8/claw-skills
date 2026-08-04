@@ -6,8 +6,8 @@
 //! point at a specific failure.
 
 use cds_con::render::{
-    analyze, format_message, render_lines, Frequency, SeriesInput, SeriesLine, WindowPct,
-    BAA_AAA_KEY,
+    analyze, format_message, render_lines, width_bound, Frequency, SeriesInput, SeriesLine,
+    WindowPct, BAA_AAA_KEY,
 };
 use credit_store::{below_and_total, Observation, SeriesKind, SeriesSpec};
 
@@ -454,7 +454,7 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
     );
     // Omission is legible because coverage start is on the same line.
     assert!(
-        msg.contains("自2023・日頻"),
+        msg.contains("日頻・自2023"),
         "coverage start must remain on the line: {msg}"
     );
 }
@@ -645,7 +645,7 @@ fn provenance_is_coverage_and_frequency_not_fred_id() {
     // series_id is FRED_baa10y via helper — must not appear.
     let msg = format_message(&series, "2026-07-31").unwrap();
     assert!(
-        msg.contains("自1986・日頻"),
+        msg.contains("日頻・自1986"),
         "coverage start and frequency required: {msg}"
     );
     assert!(
@@ -741,10 +741,22 @@ fn missing_series_renders_na_and_is_named_in_freshness() {
         msg.contains("hy_oas") && msg.contains("n/a"),
         "missing series must render as n/a, not vanish: {msg}"
     );
-    // Row still present with frequency (coverage line structure intact).
+    // Vertical form: the key sits on its own title line (`series_block`'s
+    // first line); value + frequency are the line right after. They no
+    // longer share one row now that nothing is padded into columns, but both
+    // halves of the guarantee -- n/a rendered, frequency still shown -- must
+    // still hold, one line apart.
+    let lines: Vec<&str> = msg.lines().collect();
+    let title_idx = lines
+        .iter()
+        .position(|l| l.contains("hy_oas ["))
+        .expect("hy_oas title line must exist");
+    let value_line = lines
+        .get(title_idx + 1)
+        .expect("value line must immediately follow the title line");
     assert!(
-        msg.lines().any(|l| l.contains("hy_oas") && l.contains("n/a") && l.contains("日頻")),
-        "n/a row keeps frequency on the line: {msg}"
+        value_line.contains("n/a") && value_line.contains("日頻"),
+        "n/a row keeps frequency on the line right after the title: {value_line}"
     );
     assert!(
         msg.contains("缺 hy_oas") || msg.contains("缺") && msg.contains("hy_oas"),
@@ -784,9 +796,13 @@ fn spread_and_yield_blocks_are_separate_with_meaning_labels() {
         spread_hdr < yield_hdr,
         "spread block must precede yield block"
     );
-    // Keys land under the right header.
+    // Keys land under the right header. Vertical layout puts a series' title
+    // line (`Label [key]`) at column 0, unindented, unlike the value/window
+    // lines under it -- so anchor on "\naaa [aaa]" rather than a leading
+    // two-space table-row indent (that would also wrongly match "aaa" as a
+    // bare substring of "baa−aaa [baa−aaa]"'s own title line).
     let baa10y = msg.find("baa10y").unwrap();
-    let aaa = msg.find("\n  aaa ").unwrap_or_else(|| msg.find("aaa").unwrap());
+    let aaa = msg.find("\naaa [aaa]").expect("aaa title line");
     assert!(baa10y > spread_hdr && baa10y < yield_hdr, "baa10y under spreads");
     assert!(aaa > yield_hdr, "aaa under yields");
 }
@@ -854,34 +870,56 @@ fn printed_count_is_the_raw_comparison_never_derived() {
     );
 }
 
+// `cjk_labels_keep_columns_aligned` was deleted here: it asserted that byte
+// offsets differ while display columns match, which is meaningless once
+// nothing is padded into columns. See `every_rendered_line_fits_its_width_bound`
+// below for the guarantee that replaces it.
+
+/// True if `l` is one of the message's hand-written prose lines (block
+/// headers, the freshness line, the SIGNAL-ONLY footer, the worked example)
+/// rather than a per-series data line. Prose is allowed to wrap on a phone;
+/// data lines are not.
+fn is_prose_line(l: &str) -> bool {
+    const PROSE_PREFIXES: [&str; 5] = ["利差", "殖利率", "資料:", "SIGNAL-ONLY", "例:"];
+    PROSE_PREFIXES.iter().any(|prefix| l.starts_with(prefix))
+}
+
 #[test]
-fn cjk_labels_keep_columns_aligned() {
-    // Char-based padding collapses here: 「品質利差」 is 4 chars but 8 columns.
-    let mk = |label: &str, v: f64| SeriesLine {
-        key: "k".into(),
-        label: label.into(),
-        kind: SeriesKind::Spread,
-        value: Some(v),
-        windows: vec![WindowPct { label: "近1年".into(), below: 5, n: 10 }],
-        coverage_start: Some("2023-07-28".into()),
-        latest: Some("2026-07-24".into()),
-        frequency: Frequency::Daily,
-        config_order: 0,
-    };
-    let msg = render_lines(&[mk("品質利差 Baa−Aaa", 0.48), mk("ig_oas", 0.80)], "2026-07-31");
-    let rows: Vec<&str> = msg.lines().filter(|l| l.contains("自2023")).collect();
-    assert_eq!(rows.len(), 2);
-    let col = |l: &str| l.find("自2023").unwrap();
-    // Same display column, even though the byte offsets differ wildly.
-    let width = |l: &str| -> usize {
-        l[..col(l)].chars().map(|c| {
-            let c = c as u32;
-            let wide = (0x1100..=0x115F).contains(&c) || (0x2E80..=0xA4CF).contains(&c)
-                || (0xAC00..=0xD7A3).contains(&c) || (0xF900..=0xFAFF).contains(&c)
-                || (0xFE30..=0xFE6F).contains(&c) || (0xFF00..=0xFF60).contains(&c);
-            if wide { 2 } else { 1 }
-        }).sum()
-    };
-    assert_eq!(width(rows[0]), width(rows[1]), "coverage column must align:\n{msg}");
-    assert_ne!(col(rows[0]), col(rows[1]), "byte offsets differ — proves the test is not trivial");
+fn every_rendered_line_fits_its_width_bound() {
+    // Proxy, not proof: the transport (`parse_mode: None`) renders a
+    // proportional font, where this CJK-is-2-columns model does not describe
+    // the real wrap point. What this prevents is a line bloating back to a
+    // size that breaks even a monospace reader; it is not a guarantee
+    // against wrapping on a phone.
+    fn width(s: &str) -> usize {
+        s.chars()
+            .map(|c| {
+                let c = c as u32;
+                let wide = (0x1100..=0x115F).contains(&c)
+                    || (0x2E80..=0xA4CF).contains(&c)
+                    || (0xAC00..=0xD7A3).contains(&c)
+                    || (0xF900..=0xFAFF).contains(&c)
+                    || (0xFE30..=0xFE6F).contains(&c)
+                    || (0xFF00..=0xFF60).contains(&c)
+                    || (0xFFE0..=0xFFE6).contains(&c);
+                if wide { 2 } else { 1 }
+            })
+            .sum()
+    }
+
+    let msg = render_lines(&golden_lines(), "2026-07-31");
+    // Covers every non-blank line, not only indented data lines: a series
+    // title line (`Label [key]`) wraps just as badly as a data line if it
+    // bloats back toward the old table's 85 columns.
+    for l in msg.lines().filter(|l| !l.trim().is_empty()) {
+        if is_prose_line(l) {
+            continue;
+        }
+        assert!(
+            width(l) <= width_bound(),
+            "line is {} cols (bound {}): {l}",
+            width(l),
+            width_bound()
+        );
+    }
 }

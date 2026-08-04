@@ -80,35 +80,18 @@ impl std::fmt::Display for RenderError {
 impl std::error::Error for RenderError {}
 
 
-/// Display width: CJK / fullwidth characters occupy two columns.
-///
-/// Column padding cannot use `{:<N}`, which counts chars. A label like
-/// 「品質利差」 is 4 chars but 8 columns, so char-based padding collapses every
-/// column to its right the moment a label stops being ASCII.
-fn display_width(s: &str) -> usize {
-    s.chars()
-        .map(|c| {
-            let c = c as u32;
-            let wide = (0x1100..=0x115F).contains(&c)
-                || (0x2E80..=0xA4CF).contains(&c)
-                || (0xAC00..=0xD7A3).contains(&c)
-                || (0xF900..=0xFAFF).contains(&c)
-                || (0xFE30..=0xFE6F).contains(&c)
-                || (0xFF00..=0xFF60).contains(&c)
-                || (0xFFE0..=0xFFE6).contains(&c)
-                || (0x20000..=0x3FFFD).contains(&c);
-            if wide { 2 } else { 1 }
-        })
-        .sum()
-}
+/// Width bound used only as a render-quality gate in tests -- see
+/// [`width_bound`] and `every_rendered_line_fits_its_width_bound` in
+/// `tests/render.rs`. Production rendering does no column math anymore: the
+/// transport (`parse_mode: None`) renders a proportional font, so this bound
+/// is a coarse proxy against a line bloating back to a size that breaks even
+/// a monospace reader -- it is not a guarantee against wrapping on a phone.
+const WIDTH_BOUND: usize = 40;
 
-/// Pad `s` on the right to `width` display columns.
-fn pad_to(s: &str, width: usize) -> String {
-    let mut out = s.to_string();
-    for _ in display_width(s)..width {
-        out.push(' ');
-    }
-    out
+/// Test seam for [`WIDTH_BOUND`]. Kept private otherwise -- nothing in
+/// production rendering needs it once column alignment is gone.
+pub fn width_bound() -> usize {
+    WIDTH_BOUND
 }
 
 /// Display key for the derived quality spread (Unicode minus U+2212).
@@ -266,23 +249,12 @@ pub fn render_lines(lines: &[SeriesLine], as_of: &str) -> String {
         .filter(|l| l.kind == SeriesKind::Yield)
         .collect();
 
-    // One width set across BOTH blocks, so the two families still line up as a
-    // single table even though they must not be compared.
-    let all: Vec<SeriesLine> = lines.to_vec();
-    let w = row_widths(&all);
-
     out.push("利差(已扣掉無風險利率 —— 這是信用風險本身的價格)".into());
-    for line in &spreads {
-        out.push(format_series_row(line, &w));
-        out.extend(window_lines(line));
-    }
+    push_blocks(&mut out, &spreads);
 
     out.push(String::new());
     out.push("殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)".into());
-    for line in &yields {
-        out.push(format_series_row(line, &w));
-        out.extend(window_lines(line));
-    }
+    push_blocks(&mut out, &yields);
 
     out.push(String::new());
     out.push(format_freshness_line(lines, as_of));
@@ -296,33 +268,41 @@ pub fn render_lines(lines: &[SeriesLine], as_of: &str) -> String {
     out.join("\n")
 }
 
+/// Push each series' block, with a blank line separating consecutive
+/// blocks -- none before the first, so it sits directly under the header.
+fn push_blocks(out: &mut Vec<String>, series: &[&SeriesLine]) {
+    for (i, line) in series.iter().enumerate() {
+        if i > 0 {
+            out.push(String::new());
+        }
+        out.extend(series_block(line));
+    }
+}
+
+/// One series as a block of lines: title, then value + coverage, then one
+/// line per trailing window. No padding across series -- `parse_mode: None`
+/// means Telegram renders this in a proportional font, so column alignment
+/// across rows was never reaching the reader. See the 2026-08-04 design note.
+///
+/// Title is `Label [key]`. The reader and the operator are the same person:
+/// the key is what he types into `price cds show <key>` and what he edits in
+/// `cds_series`, so dropping it from the daily message would force a lookup.
+/// The FRED series id stays out -- it is longer and cannot be passed to
+/// anything.
+fn series_block(line: &SeriesLine) -> Vec<String> {
+    let mut out = vec![format!("{} [{}]", line.label, line.key)];
+    out.push(format!("  {}  {}", value_str(line), coverage_str(line)));
+    out.extend(window_lines(line));
+    out
+}
+
 /// A trailing-window count that the series can actually support. A percentile
 /// is not printed; the count is the definition, so the reader never has to
 /// know what `p` meant.
 fn window_lines(line: &SeriesLine) -> Vec<String> {
-    let w = line
-        .windows
-        .iter()
-        .map(|w| display_width(&w.label))
-        .max()
-        .unwrap_or(0);
-    let c = line
-        .windows
-        .iter()
-        .map(|w| format!("{}/{}", w.below, w.n).len())
-        .max()
-        .unwrap_or(0);
     line.windows
         .iter()
-        .map(|win| {
-            let pair = format!("{}/{}", win.below, win.n);
-            format!(
-                "  {}  {:>cw$} 筆低於本次",
-                pad_to(&win.label, w),
-                pair,
-                cw = c
-            )
-        })
+        .map(|w| format!("  {}  {}/{} 筆低於本次", w.label, w.below, w.n))
         .collect()
 }
 
@@ -365,31 +345,6 @@ pub fn format_message(series: &[SeriesInput], as_of: &str) -> Result<String, Ren
     Ok(render_lines(&lines, as_of))
 }
 
-/// Column widths are measured across the rows being rendered rather than fixed,
-/// because a label's width is now data (config) and a fixed number would be a
-/// guess about someone else's config.
-struct RowWidths {
-    label: usize,
-    value: usize,
-}
-
-/// `Label [key]`. The reader and the operator are the same person: the key is
-/// what he types into `price cds show <key>` and what he edits in `cds_series`,
-/// so dropping it from the daily message would force a lookup. The FRED series id
-/// stays out — it is longer and cannot be passed to anything.
-fn label_str(line: &SeriesLine) -> String {
-    format!("{} [{}]", line.label, line.key)
-}
-
-fn row_widths(lines: &[SeriesLine]) -> RowWidths {
-    let mut w = RowWidths { label: 0, value: 0 };
-    for l in lines {
-        w.label = w.label.max(display_width(&label_str(l)));
-        w.value = w.value.max(value_str(l).len());
-    }
-    w
-}
-
 /// Values carry `%`. Every configured FRED series is denominated in percent, and
 /// the unit used to ride along inside the English label text (`... pct`); short
 /// Chinese labels dropped it, leaving the number bare. OAS in particular is often
@@ -417,29 +372,20 @@ fn coverage_year(line: &SeriesLine) -> Option<&str> {
     line.coverage_start.as_deref().map(year_str)
 }
 
-/// `自1986・日頻` rather than `1986-01-02→ daily`: the day and month of a
-/// coverage start carry no meaning for the reader, while the year is what
-/// makes a 1-year percentile on a 3-year history read differently from one
-/// on 107 years.
+/// `日頻・自1986` rather than `1986-01-02→ daily`: frequency leads because it
+/// is the axis that changes between blocks (daily vs monthly), while within
+/// a block the day and month of a coverage start carry no meaning for the
+/// reader -- the year is what makes a 1-year percentile on a 3-year history
+/// read differently from one on 107 years.
 fn coverage_str(line: &SeriesLine) -> String {
     let freq = match line.frequency {
         Frequency::Daily => "日頻",
         Frequency::Monthly => "月頻",
     };
     match coverage_year(line) {
-        Some(y) => format!("自{y}・{freq}"),
-        None => format!("自—・{freq}"),
+        Some(y) => format!("{freq}・自{y}"),
+        None => format!("{freq}・自—"),
     }
-}
-
-fn format_series_row(line: &SeriesLine, w: &RowWidths) -> String {
-    format!(
-        "  {}  {:>vw$}   {}",
-        pad_to(&label_str(line), w.label),
-        value_str(line),
-        coverage_str(line),
-        vw = w.value,
-    )
 }
 
 fn format_freshness_line(lines: &[SeriesLine], as_of: &str) -> String {
