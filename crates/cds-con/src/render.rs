@@ -313,12 +313,14 @@ pub fn render_parts(lines: &[SeriesLine], as_of: &str, expand_days: u32) -> Vec<
         .collect();
 
     out.push(prose("利差 —— 相對某個基準多出的殖利率"));
+    out.push(blank());
     push_blocks(&mut out, &spreads);
 
     out.push(blank());
     out.push(prose(
         "總殖利率 —— 含無風險利率在內的全部借款成本(與上一區不可互比)",
     ));
+    out.push(blank());
     push_blocks(&mut out, &yields);
 
     out.push(blank());
