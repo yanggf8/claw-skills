@@ -404,14 +404,50 @@ fn footer_contrast_uses_only_series_rendered_today() {
     let shown: Vec<String> = msg
         .lines()
         .filter(|l| l.contains("筆低於本次"))
-        .filter_map(|l| l.split_whitespace().find(|t| t.starts_with('自')).map(|s| s.to_string()))
+        .flat_map(extract_year_refs)
         .collect();
-    for tok in msg.lines().last().unwrap().split_whitespace().filter(|t| t.starts_with('自')) {
+    let footer = msg.lines().last().unwrap();
+    let footer_refs = extract_year_refs(footer);
+    // The defect this test exists to catch is a footer naming a ruler that
+    // isn't on screen. If extraction silently found nothing, the loop below
+    // would pass vacuously and the guard would be defeated -- so pin that the
+    // footer actually names both rulers it claims to contrast.
+    assert!(
+        footer_refs.len() >= 2,
+        "footer must name both rulers it contrasts: {footer}"
+    );
+    for tok in &footer_refs {
         assert!(
             shown.iter().any(|s| s == tok),
             "footer names {tok}, which is not on screen today. shown={shown:?}"
         );
     }
+}
+
+/// Every `自YYYY` occurrence in `s`, found by scanning for the `自` marker and
+/// taking the following 4 characters -- not by splitting on whitespace.
+///
+/// The footer sentence joins its second ruler with no leading space
+/// (`...筆和自{year}...`), so a `split_whitespace` scan only ever isolates the
+/// FIRST `自YYYY` in the line. That is exactly the ruler the original defect
+/// (naming a collapsed series in the footer) did not get wrong -- the second
+/// one did. A test that can't see the second token can't catch a regression
+/// in it, so this scans by character instead of relying on a delimiter the
+/// renderer never promised to put there.
+fn extract_year_refs(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '自' && i + 4 < chars.len() {
+            let year: String = chars[i + 1..=i + 4].iter().collect();
+            if year.chars().all(|c| c.is_ascii_digit()) {
+                out.push(format!("自{year}"));
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 #[test]
