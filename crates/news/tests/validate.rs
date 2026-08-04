@@ -220,3 +220,99 @@ fn a_marker_id_too_large_for_u32_is_still_a_marker() {
 fn leading_zeros_name_the_same_item() {
     assert_eq!(leading_marker("- #0001 甲"), Some(1));
 }
+
+// ── protected company names ──────────────────────────────────────────────────
+
+/// The real 2026-08-04 failure, in the shape it shipped: a rendered bullet
+/// with the article link attached, and the company name gone.
+#[test]
+fn a_company_name_translated_away_is_reported() {
+    let sources = vec![(
+        "Hugging Face CEO says China is winning the AI race".to_string(),
+        "https://news.google.com/x1".to_string(),
+    )];
+    let lines = vec![
+        "- 擁抱臉書執行長：中國在 AI 競賽中勝出 [🔗](https://news.google.com/x1)".to_string(),
+    ];
+    assert_eq!(
+        dropped_protected_names(&sources, &lines),
+        vec![("Hugging Face".to_string(), "https://news.google.com/x1".to_string())]
+    );
+}
+
+#[test]
+fn a_company_name_kept_in_english_is_not_reported() {
+    let sources = vec![(
+        "Hugging Face CEO says China is winning the AI race".to_string(),
+        "https://news.google.com/x1".to_string(),
+    )];
+    let lines = vec![
+        "- Hugging Face 執行長表示中國在 AI 競賽中勝出 [🔗](https://news.google.com/x1)".to_string(),
+    ];
+    assert!(dropped_protected_names(&sources, &lines).is_empty());
+}
+
+/// Most candidates are never selected. Their absence is the editor working,
+/// not a lost name, and reporting it would bury the real signal — the AI
+/// section picks a handful out of forty.
+#[test]
+fn a_headline_that_was_never_selected_is_not_a_loss() {
+    let sources = vec![(
+        "Snowflake adds native model hosting".to_string(),
+        "https://news.google.com/unpicked".to_string(),
+    )];
+    let lines = vec!["- 別則新聞 [🔗](https://news.google.com/other)".to_string()];
+    assert!(dropped_protected_names(&sources, &lines).is_empty());
+}
+
+/// A paywalled story renders as a pair — the free replacement leads and the
+/// original follows indented — and both lines carry the item's link. Surviving
+/// in either one is the name surviving.
+#[test]
+fn surviving_in_either_half_of_a_paywall_pair_counts() {
+    let sources = vec![(
+        "Databricks acquires a vector search company".to_string(),
+        "https://news.google.com/pw".to_string(),
+    )];
+    let lines = vec![
+        "- 某資料庫公司併購向量搜尋業者 [🔗](https://news.google.com/free)".to_string(),
+        "　原文：Databricks 併購向量搜尋業者 [🔗](https://news.google.com/pw)".to_string(),
+    ];
+    assert!(dropped_protected_names(&sources, &lines).is_empty());
+}
+
+/// Apple and Microsoft are absent from the list on purpose: 蘋果 and 微軟 are
+/// what a Taiwanese reader expects, so translating them is correct and
+/// flagging it would be noise.
+#[test]
+fn a_company_with_a_settled_chinese_name_is_not_protected() {
+    let sources = vec![(
+        "Apple delays its on-device assistant again".to_string(),
+        "https://news.google.com/ap".to_string(),
+    )];
+    let lines = vec!["- 蘋果再度延後裝置端助理 [🔗](https://news.google.com/ap)".to_string()];
+    assert!(dropped_protected_names(&sources, &lines).is_empty());
+}
+
+/// One headline can carry two of them.
+#[test]
+fn every_lost_name_in_one_headline_is_reported() {
+    let sources = vec![(
+        "Stability AI and Character.AI face a funding crunch".to_string(),
+        "https://news.google.com/two".to_string(),
+    )];
+    let lines = vec!["- 穩定性AI與角色AI面臨資金緊縮 [🔗](https://news.google.com/two)".to_string()];
+    let lost = dropped_protected_names(&sources, &lines);
+    let names: Vec<&str> = lost.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["Stability AI", "Character.AI"]);
+}
+
+/// The prompt must quote from the same list the check enforces, or the
+/// instruction and the detector drift apart and neither is trustworthy.
+#[test]
+fn the_prompt_quotes_the_list_the_check_enforces() {
+    let rules = &*news::config::TRANSLATION_RULES_STRICT;
+    for name in news::config::PROTECTED_NAMES.iter().take(3) {
+        assert!(rules.contains(name), "prompt does not mention {name}");
+    }
+}

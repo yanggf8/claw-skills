@@ -194,6 +194,39 @@ pub const DEDUP_RULES: &str = concat!(
     "泛板塊震盪綜述可同時保留）"
 );
 
+/// Company and product names that read as ordinary English, and so get
+/// translated when a model is not told otherwise.
+///
+/// Membership test: the name is made of ordinary words *and* has no settled
+/// Chinese rendering. Apple and Microsoft fail the second half — 蘋果 and 微軟
+/// are what a Taiwanese reader expects — so translating those is right and
+/// they are deliberately absent. 「雪花」 for Snowflake is not.
+///
+/// One list, two uses: the prompt quotes from it and
+/// [`crate::validate::dropped_protected_names`] checks the delivered digest
+/// against it, so the instruction and the detector cannot drift apart.
+pub const PROTECTED_NAMES: &[&str] = &[
+    "Hugging Face",
+    "Stability AI",
+    "Character.AI",
+    "Perplexity",
+    "Anthropic",
+    "Snowflake",
+    "Databricks",
+    "Palantir",
+    "Salesforce",
+    "Notion",
+    "Discord",
+    "Slack",
+    "Stripe",
+    "Figma",
+];
+
+/// How many of [`PROTECTED_NAMES`] the prompt quotes. Enough to establish the
+/// pattern; the whole list would cost tokens the model does not need, since
+/// the rule it has to generalise is stated outright.
+const PROMPT_NAME_EXAMPLES: usize = 5;
+
 /// Injected into every prompt that produces reader-facing headlines. Half
 /// translated prose reads worse than either language alone, so the rule names
 /// the four categories that may stay in English and forbids the rest.
@@ -204,20 +237,29 @@ pub const DEDUP_RULES: &str = concat!(
 /// out of ordinary English words falls off that cliff: on 2026-08-04 the AI
 /// section shipped 「擁抱臉書執行長」 for Hugging Face's CEO. Keeping a name
 /// in English is not a stylistic option, it is the only correct rendering.
-pub const TRANSLATION_RULES_STRICT: &str = concat!(
-    "英文標題必須完整翻譯成繁體中文。",
-    "只有以下類別可以保留英文原文：公司名、人名、產品名、",
-    "既定技術術語（例如 AGI、GPU、API、LLM）。",
-    "專有名詞（公司名、人名、產品名）一律保留英文原文，嚴禁逐字意譯，",
-    "即使該名稱是由普通英文單字組成也一樣 —— ",
-    "Hugging Face 必須維持 Hugging Face，不可寫成「擁抱臉書」或「抱抱臉」，",
-    "Meta、Apple、Alphabet、Snowflake、Perplexity、Stability AI 同理。",
-    "判斷方式：若該詞在句中指的是一家公司、一個人或一項產品，就保留英文，",
-    "不要管它字面上是什麼意思。",
-    "所有普通英文詞彙必須翻譯，包括但不限於副詞（increasingly、significantly、rapidly、notably、effectively）、",
-    "動詞、形容詞、連接詞。",
-    "輸出中不得保留任何非上述四類的英文單字。"
-);
+pub static TRANSLATION_RULES_STRICT: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| {
+        let examples = PROTECTED_NAMES
+            .iter()
+            .take(PROMPT_NAME_EXAMPLES)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("、");
+        format!(
+            "英文標題必須完整翻譯成繁體中文。\
+             只有以下類別可以保留英文原文：公司名、人名、產品名、\
+             既定技術術語（例如 AGI、GPU、API、LLM）。\
+             專有名詞（公司名、人名、產品名）一律保留英文原文，嚴禁逐字意譯，\
+             即使該名稱是由普通英文單字組成也一樣 —— \
+             Hugging Face 必須維持 Hugging Face，不可寫成「擁抱臉書」或「抱抱臉」，\
+             {examples} 等同理。\
+             判斷方式：若該詞在句中指的是一家公司、一個人或一項產品，就保留英文，\
+             不要管它字面上是什麼意思。\
+             所有普通英文詞彙必須翻譯，包括但不限於副詞（increasingly、significantly、rapidly、notably、effectively）、\
+             動詞、形容詞、連接詞。\
+             輸出中不得保留任何非上述四類的英文單字。"
+        )
+    });
 
 // ── theme classification ─────────────────────────────────────────────────────
 

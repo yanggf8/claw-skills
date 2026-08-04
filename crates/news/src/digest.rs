@@ -13,6 +13,7 @@ use crate::summarize::{
 use crate::text::Item;
 use crate::theme::theme_ai_section;
 use crate::trace::log_trace;
+use crate::validate::dropped_protected_names;
 use serde_json::json;
 use std::time::Instant;
 
@@ -24,6 +25,37 @@ fn items_for<'a>(all_items: &'a [(String, Vec<Item>)], key: &str) -> &'a [Item] 
         .find(|(k, _)| k == key)
         .map(|(_, v)| v.as_slice())
         .unwrap_or(&[])
+}
+
+/// Record any company name the digest translated away.
+///
+/// Called once the digest is final, because theming and the length revert can
+/// both rewrite which lines ship. Observation only — see
+/// [`crate::validate::dropped_protected_names`] for why this must not gate.
+fn log_protected_name_losses(all_items: &[(String, Vec<Item>)], digest: &str) {
+    let sources: Vec<(String, String)> = all_items
+        .iter()
+        .flat_map(|(_, items)| items)
+        .map(|i| (i.title.clone(), i.link.clone()))
+        .collect();
+    let lines: Vec<String> = digest.lines().map(str::to_string).collect();
+    let lost = dropped_protected_names(&sources, &lines);
+    if lost.is_empty() {
+        return;
+    }
+    log_trace(
+        "protected_name_translated",
+        json!({"count": lost.len(),
+               "names": lost.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+               "links": lost.iter().map(|(_, l)| l.clone()).collect::<Vec<_>>()}),
+    );
+    eprintln!(
+        "[WARN] company name translated in the digest: {}",
+        lost.iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 }
 
 /// The default AI/tech/general digest.
@@ -129,7 +161,9 @@ pub fn summarize_llm(
         }
     }
 
-    Ok(trim_digest_links(&digest))
+    let digest = trim_digest_links(&digest);
+    log_protected_name_losses(all_items, &digest);
+    Ok(digest)
 }
 
 /// The per-topic digest, one model call per topic.
@@ -210,7 +244,9 @@ pub fn summarize_llm_custom(
         "custom_substage_complete",
         json!({"topic_count": topics.len(), "degraded_count": degraded.len()}),
     );
-    trim_links_to_limit(&digest, 4000)
+    let digest = trim_links_to_limit(&digest, 4000);
+    log_protected_name_losses(all_items, &digest);
+    digest
 }
 
 /// The whole-digest non-LLM fallback, used when no section could be curated.

@@ -229,6 +229,53 @@ pub fn language_ok(summary: &str) -> bool {
     })
 }
 
+/// Company names from [`crate::config::PROTECTED_NAMES`] that a source
+/// headline carried and its delivered line does not.
+///
+/// Returns `(name, link)` per loss. The join is the article link, not the
+/// `#N` marker: `attach_numbered_links` strips the marker and writes the
+/// item's URL into the rendered line, so by the time a digest exists the URL
+/// is the only thing tying a line back to the headline it came from.
+///
+/// This never gates delivery, and the caller must not make it one. A rejected
+/// section falls back to an untranslated English dump and raises
+/// `section_fallback_used`, which is a worse digest and a false alarm — both
+/// strictly worse than one company name rendered in Chinese. It exists so a
+/// recurrence is countable instead of depending on a reader noticing.
+///
+/// A headline that was never selected produces no line and is not a loss;
+/// only items whose link actually appears in the digest are checked.
+pub fn dropped_protected_names(
+    sources: &[(String, String)],
+    digest_lines: &[String],
+) -> Vec<(String, String)> {
+    let mut lost = Vec::new();
+    for (title, link) in sources {
+        if link.is_empty() {
+            continue;
+        }
+        let names: Vec<&&str> = crate::config::PROTECTED_NAMES
+            .iter()
+            .filter(|n| title.contains(**n))
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        // A paywall replacement renders two lines for one item, both carrying
+        // the link; surviving in either is enough.
+        let rendered: Vec<&String> = digest_lines.iter().filter(|l| l.contains(link)).collect();
+        if rendered.is_empty() {
+            continue;
+        }
+        for name in names {
+            if !rendered.iter().any(|l| l.contains(*name)) {
+                lost.push(((*name).to_string(), link.clone()));
+            }
+        }
+    }
+    lost
+}
+
 /// Telegram's legacy Markdown parser rejects a message with an unmatched `*`
 /// or `_`. Taiwanese stock notation uses `*` literally ("長科*成關鍵受惠股"),
 /// so substitute the full-width forms: visually identical, no control meaning.

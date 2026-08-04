@@ -146,12 +146,13 @@ pub fn translate_selected_section(
     let prompt = format!(
         "你是新聞標題翻譯編輯。以下是今天({date_str})已選出的新聞標題，每則有編號 #N。\n\n\
 {raw}\n\n\
-{TRANSLATION_RULES_STRICT}\n\
+{translation_rules}\n\
 輸出格式必須只有 dash bullets：\n\
 - #N 繁體中文標題\n\
 - #N ...\n\n\
 每行必須以繁體中文新聞句子開始；不要先輸出英文原標題，也不要用「英文（中文）」格式。\n\
-不要輸出開場白、區塊標題、解釋或英文原標題。"
+不要輸出開場白、區塊標題、解釋或英文原標題。",
+        translation_rules = &*TRANSLATION_RULES_STRICT,
     );
 
     let counts = vec![(key.to_string(), selected.len())];
@@ -325,12 +326,13 @@ pub fn summarize_default_section(
 - #N ...\n\n\
 規則：\n\
 - 每則新聞前面必須保留原始編號 #N\n\
-- {TRANSLATION_RULES_STRICT}\n\
+- {translation_rules}\n\
 - 每行必須以繁體中文新聞句子開始，不要輸出英文原標題或「英文（中文）」格式\n\
 - 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n\
 {DEDUP_RULES}",
         header = spec.header,
         pick = spec.pick,
+        translation_rules = &*TRANSLATION_RULES_STRICT,
         focus = spec.focus,
     );
 
@@ -506,10 +508,11 @@ pub fn run_ai_substage(
 - #N ...\n\n\
 規則：\n\
 - 每則新聞前面必須保留原始編號 #N\n\
-- {TRANSLATION_RULES_STRICT}\n\
+- {translation_rules}\n\
 - 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n\
 {DEDUP_RULES}",
         header = spec.header,
+        translation_rules = &*TRANSLATION_RULES_STRICT,
         focus = spec.focus,
     );
 
@@ -805,9 +808,10 @@ pub fn run_custom_topic(
 - #N ...\n\n\
 規則：\n\
 - 每則新聞前面必須保留原始編號 #N\n\
-- {TRANSLATION_RULES_STRICT}\n\
+- {translation_rules}\n\
 {DEDUP_RULES}\n\
-- 如果今日無相關新聞，輸出「{NO_NEWS}」"
+- 如果今日無相關新聞，輸出「{NO_NEWS}」",
+        translation_rules = &*TRANSLATION_RULES_STRICT,
     );
 
     let safe_topic: String = topic
