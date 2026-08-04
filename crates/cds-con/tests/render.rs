@@ -1009,6 +1009,42 @@ fn closes_with_signal_only_and_has_no_status_line() {
 
 // ── width bound ──────────────────────────────────────────────────────────
 
+/// Display-column width under the CJK-is-2 model the width bound assumes.
+/// Kept as an independent copy from `src/render.rs`'s `display_width` (not
+/// imported) so this test verifies the renderer's split decision against its
+/// OWN arithmetic, rather than the two sides trusting the same possibly-wrong
+/// model.
+fn width(s: &str) -> usize {
+    s.chars()
+        .map(|c| {
+            let c = c as u32;
+            let wide = (0x1100..=0x115F).contains(&c)
+                || (0x2E80..=0xA4CF).contains(&c)
+                || (0xAC00..=0xD7A3).contains(&c)
+                || (0xF900..=0xFAFF).contains(&c)
+                || (0xFE30..=0xFE6F).contains(&c)
+                || (0xFF00..=0xFF60).contains(&c)
+                || (0xFFE0..=0xFFE6).contains(&c);
+            if wide { 2 } else { 1 }
+        })
+        .sum()
+}
+
+fn check(parts: &[cds_con::render::Segment]) {
+    for seg in parts.iter().filter(|s| !s.text.trim().is_empty()) {
+        if seg.kind != LineKind::Data {
+            continue;
+        }
+        assert!(
+            width(&seg.text) <= width_bound(),
+            "line is {} cols (bound {}): {}",
+            width(&seg.text),
+            width_bound(),
+            seg.text
+        );
+    }
+}
+
 #[test]
 fn every_rendered_line_fits_its_width_bound() {
     // Proxy, not proof: the transport (`parse_mode: None`) renders a
@@ -1016,36 +1052,6 @@ fn every_rendered_line_fits_its_width_bound() {
     // the real wrap point. What this prevents is a line bloating back to a
     // size that breaks even a monospace reader; it is not a guarantee
     // against wrapping on a phone.
-    fn width(s: &str) -> usize {
-        s.chars()
-            .map(|c| {
-                let c = c as u32;
-                let wide = (0x1100..=0x115F).contains(&c)
-                    || (0x2E80..=0xA4CF).contains(&c)
-                    || (0xAC00..=0xD7A3).contains(&c)
-                    || (0xF900..=0xFAFF).contains(&c)
-                    || (0xFE30..=0xFE6F).contains(&c)
-                    || (0xFF00..=0xFF60).contains(&c)
-                    || (0xFFE0..=0xFFE6).contains(&c);
-                if wide { 2 } else { 1 }
-            })
-            .sum()
-    }
-
-    fn check(parts: &[cds_con::render::Segment]) {
-        for seg in parts.iter().filter(|s| !s.text.trim().is_empty()) {
-            if seg.kind != LineKind::Data {
-                continue;
-            }
-            assert!(
-                width(&seg.text) <= width_bound(),
-                "line is {} cols (bound {}): {}",
-                width(&seg.text),
-                width_bound(),
-                seg.text
-            );
-        }
-    }
 
     // Short ASCII-label fixture (structural coverage: every block, both
     // frequencies, derived row).
@@ -1055,4 +1061,149 @@ fn every_rendered_line_fits_its_width_bound() {
     // the title line). Without this, a regression in label length would only
     // be caught in production.
     check(&render_parts(&v3_golden_lines(), "2026-08-04"));
+}
+
+/// A series-line fixture shaped exactly like the real `hy_oas` row (same
+/// value, windows, coverage, key) except for the label -- lets a test drive
+/// an absurdly long label through the renderer without touching any other
+/// dimension of the layout.
+fn line_with_label(label: &str) -> SeriesLine {
+    SeriesLine {
+        key: "hy_oas".into(),
+        label: label.to_string(),
+        kind: SeriesKind::Spread,
+        value: Some(2.84),
+        windows: vec![
+            WindowPct { label: "近1年".into(), below: 117, n: 265 },
+            WindowPct { label: "自2023".into(), below: 194, n: 789 },
+        ],
+        coverage_start: Some("2023-07-28".into()),
+        latest: Some("2026-07-30".into()),
+        frequency: Frequency::Daily,
+        config_order: 2,
+    }
+}
+
+/// Swap the `hy_oas` slot in the real v3 fixture for `label`, keeping every
+/// other series (and therefore the headers, block headers, freshness line
+/// and footer) exactly as the live message renders them -- so the assertion
+/// below exercises the FULL message shape, not an isolated single-series
+/// snippet.
+fn v3_lines_with_hy_oas_label(label: &str) -> Vec<SeriesLine> {
+    let mut lines = v3_golden_lines();
+    lines[2] = line_with_label(label);
+    lines
+}
+
+/// Asserts the renderer's actual guarantee for an overlong label: every
+/// `Data` line EXCEPT the label's own line fits [`width_bound`]. Headers,
+/// block headers, the freshness line and the footer are `LineKind::Prose`
+/// (see its doc comment -- "allowed to wrap on a phone") and are present in
+/// `parts` (the fixture is the full v3 message, not an isolated snippet) but
+/// deliberately out of scope for this bound, same as
+/// `every_rendered_line_fits_its_width_bound` already treats them -- the
+/// `LineKind::Data` filter below is what skips them, same mechanism as
+/// `check`.
+///
+/// This is the one case `series_block` cannot fix: a label that alone
+/// exceeds the bound still overflows on its own line, because the renderer
+/// must never truncate a configured label to force a layout -- discarding
+/// real `cds_series` data would be worse than one wrapped line. The label's
+/// own line is therefore the single line this helper does not check.
+fn assert_only_the_label_line_may_overflow(parts: &[cds_con::render::Segment], label: &str) {
+    let mut saw_label_alone = false;
+    for seg in parts.iter().filter(|s| s.kind == LineKind::Data) {
+        if seg.text == label {
+            saw_label_alone = true;
+        } else {
+            assert!(
+                width(&seg.text) <= width_bound(),
+                "line other than the overlong label itself must fit the bound \
+                 ({} cols, bound {}): {}",
+                width(&seg.text),
+                width_bound(),
+                seg.text
+            );
+        }
+    }
+    assert!(
+        saw_label_alone,
+        "expected the overlong label to render on its own line"
+    );
+}
+
+#[test]
+fn overlong_ascii_label_splits_the_title_line() {
+    let label = "x".repeat(200);
+    let parts = render_parts(&v3_lines_with_hy_oas_label(&label), "2026-08-04");
+    assert_only_the_label_line_may_overflow(&parts, &label);
+
+    // The split actually happened: the value/key line is a SEPARATE segment
+    // from the label, not the label with the value appended to it.
+    let value_key_line = parts
+        .iter()
+        .filter(|s| s.kind == LineKind::Data)
+        .find(|s| s.text.contains("[hy_oas]"))
+        .expect("expected a value/key line carrying [hy_oas]");
+    assert!(
+        !value_key_line.text.contains(&label),
+        "value must no longer share the label's line: {}",
+        value_key_line.text
+    );
+    assert!(
+        value_key_line.text.starts_with("  2.84%"),
+        "value/key line must be indented like a window row: {}",
+        value_key_line.text
+    );
+}
+
+#[test]
+fn overlong_cjk_label_splits_the_title_line() {
+    // 200 CJK characters -> 400 display columns under the CJK-is-2 model:
+    // the case WIDTH_BOUND's doc comment specifically calls out, since the
+    // real `cds_series` labels are themselves CJK.
+    let label = "測".repeat(200);
+    let parts = render_parts(&v3_lines_with_hy_oas_label(&label), "2026-08-04");
+    assert_only_the_label_line_may_overflow(&parts, &label);
+
+    let value_key_line = parts
+        .iter()
+        .filter(|s| s.kind == LineKind::Data)
+        .find(|s| s.text.contains("[hy_oas]"))
+        .expect("expected a value/key line carrying [hy_oas]");
+    assert!(
+        !value_key_line.text.contains(&label),
+        "value must no longer share the label's line: {}",
+        value_key_line.text
+    );
+    assert!(
+        value_key_line.text.starts_with("  2.84%"),
+        "value/key line must be indented like a window row: {}",
+        value_key_line.text
+    );
+}
+
+#[test]
+fn todays_real_labels_never_split_and_golden_is_unchanged() {
+    // The widest real title today is 47 columns -- one under the 48 bound --
+    // so nothing should split. golden_message already pins byte-identical
+    // output; this test additionally pins the STRUCTURAL signature of "no
+    // split occurred" (no line equal to a bare label) so a future change
+    // that started splitting real config without changing the golden text
+    // (impossible today, but not load-bearing on that being impossible
+    // forever) would still be caught.
+    let rendered = render_lines(&v3_golden_lines(), "2026-08-04");
+    assert_eq!(
+        rendered, GOLDEN,
+        "today's real labels must not change the golden"
+    );
+    for line in v3_golden_lines() {
+        assert!(
+            !rendered.lines().any(|l| l == line.label),
+            "label '{}' must not render alone on its own line -- nothing \
+             should split today: {}",
+            line.label,
+            rendered
+        );
+    }
 }

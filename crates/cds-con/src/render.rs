@@ -127,12 +127,23 @@ fn blank() -> Segment {
     prose(String::new())
 }
 
-/// Width bound used only as a render-quality gate in tests -- see
-/// [`width_bound`] and `every_rendered_line_fits_its_width_bound` in
-/// `tests/render.rs`. Production rendering does no column math anymore: the
-/// transport (`parse_mode: None`) renders a proportional font, so this bound
-/// is a coarse proxy against a line bloating back to a size that breaks even
-/// a monospace reader -- it is not a guarantee against wrapping on a phone.
+/// Width bound the renderer *enforces* on every per-series title line (see
+/// [`series_block`]/[`display_width`]), and the gate
+/// `every_rendered_line_fits_its_width_bound` in `tests/render.rs` checks the
+/// rest of a series' block against via [`width_bound`]. The transport
+/// (`parse_mode: None`) renders a proportional font, so this CJK-is-2-columns
+/// model is a coarse proxy, not a guarantee against wrapping on a real phone
+/// -- but as of 2026-08 it is an active guarantee for the title line, not a
+/// hope that the `cds_series` config's label stays short: a title line that
+/// would exceed this bound splits (label alone, then `  value   [key]`
+/// indented like a window row) instead of quietly growing past it.
+///
+/// The one line this cannot guarantee: a label that alone exceeds the bound
+/// still overflows on its own line. The renderer never truncates a
+/// configured label to force a fit -- discarding real `cds_series` data
+/// would be worse than one wrapped line. See
+/// `overlong_ascii_label_splits_the_title_line` /
+/// `overlong_cjk_label_splits_the_title_line` in `tests/render.rs`.
 ///
 /// Raised from 40 to 48 for v3: the value moved onto the title line (v3 §3),
 /// and the widest title measured against the live 2026-07-30 data --
@@ -140,10 +151,39 @@ fn blank() -> Segment {
 /// columns under the CJK-is-2 model below.
 const WIDTH_BOUND: usize = 48;
 
-/// Test seam for [`WIDTH_BOUND`]. Kept private otherwise -- nothing in
-/// production rendering needs it once column alignment is gone.
+/// Test seam for [`WIDTH_BOUND`]. Kept private otherwise -- nothing else in
+/// production rendering needs the raw constant once [`series_block`] does its
+/// own comparison.
 pub fn width_bound() -> usize {
     WIDTH_BOUND
+}
+
+/// Display-column width of `s` under the CJK-is-2 model [`WIDTH_BOUND`]
+/// assumes: CJK ideographs, Hangul syllables and fullwidth forms count as 2,
+/// everything else as 1. This is the one place production rendering does
+/// column math -- [`series_block`] uses it to decide whether a title line
+/// must split, which is what turns the width bound from a hope about
+/// `cds_series.label` staying short into something the renderer actually
+/// enforces. Mirrors (as an independent copy, not a shared import) the model
+/// `tests/render.rs` checks output against.
+fn display_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| {
+            let c = c as u32;
+            let wide = (0x1100..=0x115F).contains(&c)
+                || (0x2E80..=0xA4CF).contains(&c)
+                || (0xAC00..=0xD7A3).contains(&c)
+                || (0xF900..=0xFAFF).contains(&c)
+                || (0xFE30..=0xFE6F).contains(&c)
+                || (0xFF00..=0xFF60).contains(&c)
+                || (0xFFE0..=0xFFE6).contains(&c);
+            if wide {
+                2
+            } else {
+                1
+            }
+        })
+        .sum()
 }
 
 /// Display key for the derived quality spread (Unicode minus U+2212).
@@ -383,8 +423,26 @@ fn push_blocks(out: &mut Vec<Segment>, series: &[&SeriesLine]) {
 /// edits in `cds_series`, so dropping it from the daily message would force a
 /// lookup. The FRED series id stays out -- it is longer and cannot be passed
 /// to anything.
+///
+/// The combined title line comes from the `cds_series` config's label, which
+/// no Rust test can see -- so this bound was previously a hope, not a
+/// guarantee (a two-character label edit was enough to silently overflow
+/// [`WIDTH_BOUND`] with every test still green). When the combined line would
+/// exceed the bound, it splits: the label alone on its own line, then
+/// `  value   [key]` indented like a window row on the next -- the same shape
+/// as today's single-line form when nothing needs to split, so short config
+/// renders byte-identical to before. See [`display_width`] and the
+/// `overlong_*_label_splits_the_title_line` tests in `tests/render.rs`.
 fn series_block(line: &SeriesLine) -> Vec<String> {
-    let mut out = vec![format!("{}  {}   [{}]", line.label, value_str(line), line.key)];
+    let combined = format!("{}  {}   [{}]", line.label, value_str(line), line.key);
+    let mut out = if display_width(&combined) <= WIDTH_BOUND {
+        vec![combined]
+    } else {
+        vec![
+            line.label.clone(),
+            format!("  {}   [{}]", value_str(line), line.key),
+        ]
+    };
     out.extend(window_lines(line));
     out
 }
