@@ -230,7 +230,7 @@ fn series_line_from_rows(
     let vals: Vec<f64> = rows.iter().map(|r| r.value).collect();
     let (below, n) = below_and_total(&vals, last.value);
     windows.push(WindowPct {
-        label: format!("自{}", &rows[0].date[..4.min(rows[0].date.len())]),
+        label: format!("自{}", year_str(&rows[0].date)),
         below,
         n,
     });
@@ -400,18 +400,33 @@ fn value_str(line: &SeriesLine) -> String {
     }
 }
 
-/// `自1986 日` rather than `1986-01-02→ daily`: the day and month of a coverage
-/// start carry no meaning for the reader, while the year is what makes a
-/// 1-year percentile on a 3-year history read differently from one on 107 years.
+/// The 4-char year prefix of a `YYYY-MM-DD` date. The day and month carry no
+/// meaning for the reader; the year is what makes a 1-year window on a
+/// 3-year history read differently from one on 107 years. Shared by
+/// [`coverage_year`] and the full-history window label in
+/// [`series_line_from_rows`] so the slice bound lives in exactly one place.
+fn year_str(date: &str) -> &str {
+    &date[..4.min(date.len())]
+}
+
+/// Coverage start year, the only part of a start date that carries meaning:
+/// it is what makes a 1-year window over a 3-year history read differently
+/// from one over 107 years.
+fn coverage_year(line: &SeriesLine) -> Option<&str> {
+    line.coverage_start.as_deref().map(year_str)
+}
+
+/// `自1986・日頻` rather than `1986-01-02→ daily`: the day and month of a
+/// coverage start carry no meaning for the reader, while the year is what
+/// makes a 1-year percentile on a 3-year history read differently from one
+/// on 107 years.
 fn coverage_str(line: &SeriesLine) -> String {
     let freq = match line.frequency {
         Frequency::Daily => "日頻",
         Frequency::Monthly => "月頻",
     };
-    // `自1986 日` reads like a truncated date; the separator makes it a year plus
-    // a frequency, which is what it is.
-    match &line.coverage_start {
-        Some(start) => format!("自{}・{}", &start[..4.min(start.len())], freq),
+    match coverage_year(line) {
+        Some(y) => format!("自{y}・{freq}"),
         None => format!("自—・{freq}"),
     }
 }

@@ -490,6 +490,27 @@ fn long_coverage_series_shows_all_three_windows() {
     );
 }
 
+#[test]
+fn window_label_is_the_actual_start_year() {
+    let msg = render_lines(&golden_lines(), "2026-07-31");
+    assert!(!msg.contains("全庫"), "全庫 hides that each row is a different ruler");
+    assert!(msg.contains("自1919") || msg.contains("自1986"), "got:\n{msg}");
+}
+
+#[test]
+fn three_series_with_different_coverage_get_three_different_labels() {
+    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let years: std::collections::HashSet<&str> = msg
+        .lines()
+        .filter(|l| l.contains("筆低於本次"))
+        .filter_map(|l| l.split_whitespace().find(|t| t.starts_with('自')))
+        .collect();
+    assert!(
+        years.len() >= 3,
+        "the golden spans 1919/1986/2023; each must print its own ruler, got {years:?}"
+    );
+}
+
 // ── precision ────────────────────────────────────────────────────────────
 
 #[test]
