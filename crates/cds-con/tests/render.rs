@@ -278,12 +278,44 @@ fn golden_lines() -> Vec<SeriesLine> {
     ]
 }
 
-/// Golden message: plan's 2026-07-31 live values under a consistent layout rule
-/// (`key` w9, `value` w5, windows field w34). The plan document's hand-typed
-/// sample pads some two-window / three-window lines one space wider (35) than
-/// others (34); that inconsistency is not part of the shape. Every number,
-/// label, order, unit rule and literal matches the plan.
-const GOLDEN: &str = "💾 信用利差\n\n利差(已扣掉無風險利率 —— 這是信用風險本身的價格)\n  baa−aaa [baa−aaa]       0.48%   1年 p0 · 10年 p0 · 全庫 p3      自1919・月頻\n  baa10y [baa10y]         1.59%   1年 p14 · 10年 p10 · 全庫 p11   自1986・日頻\n  hy_oas [hy_oas]         2.79%   1年 p30 · 全庫 p18              自2023・日頻\n  ig_oas [ig_oas]         0.80%   1年 p60 · 全庫 p22              自2023・日頻\n\n殖利率(含無風險利率 —— 高低多半是利率在動,不是信用在動)\n  aaa [aaa]               5.52%   1年 p84 · 10年 p96 · 全庫 p61   自1919・月頻\n  baa [baa]               6.00%   1年 p46 · 10年 p86 · 全庫 p46   自1919・月頻\n  hy_yield [hy_yield]     7.19%   1年 p97 · 全庫 p93              自2023・日頻\n  ig_yield [ig_yield]     5.43%   1年 p99 · 全庫 p96              自2023・日頻\n  ccc_yield [ccc_yield]  14.28%   1年 p99 · 全庫 p93              自2023・日頻\n\n資料:日 至 2026-07-24(7 天前) · 月 至 2026-06\nSIGNAL-ONLY:百分位 = 在那個窗口裡排第幾,換一把尺就換一個答案。\n例:baa10y 1.59% —— 1年 排 p14,10年 排 p10。不是兩個市場,是兩把尺。";
+/// Ordinary-day golden (`as_of = "2026-07-31"`, day 31 > 7 → monthly
+/// collapsed). Captured verbatim from `render_lines(&golden_lines(), ...)`
+/// (not hand-typed) and then read against the design doc's §「Target
+/// output」 ordinary-day mock.
+///
+/// **Reconciled against the design doc, one real difference found and kept
+/// as the code's behaviour, not the doc's:** the design doc's mock shows a
+/// blank line between each block header (`利差 ——`/`總殖利率 ——`) and the
+/// first series title in that block. The actual renderer does not produce
+/// one — `push_blocks` only inserts a blank *between* series (`if i > 0`),
+/// never before the first one, so the header sits directly above the first
+/// title line. Fixing that is a `render.rs` layout change, and this task's
+/// scope is goldens + docs (the only sanctioned `render.rs` edit is
+/// `BAA_AAA_LABEL`, which Step 3 — deliberately skipped — would have used).
+/// This golden therefore pins the renderer's real output; see
+/// `docs/specs/2026-08-01-cds-con-intentional-differences.md` §「Readability
+/// pass v2」 for the writeup. Every other structural element — line order,
+/// both header sentences, `Label [key]` titles, `value  日頻/月頻・自YYYY`,
+/// `label  below/n 筆低於本次` with no extra alignment padding (§1 abandons
+/// alignment on purpose), the 資料 line, the monthly-status line, and the
+/// SIGNAL-ONLY + footer-contrast sentences — matches the design doc. Window
+/// counts here also don't carry the doc's illustrative extra spaces (`  61/250`
+/// vs `61/250`); that padding is the doc typesetting the mock for human
+/// legibility, not a literal spec — §1 explicitly abandons alignment.
+/// `golden_lines()`'s titles print `key [key]` rather than the doc's prose
+/// `Label [key]` (e.g. `baa10y [baa10y]` not `Baa 比 10年期美債多出的殖利率
+/// [baa10y]`) because the fixture has no config `Label` to draw from — those
+/// labels are Step 3's live-config change, explicitly out of scope here.
+const GOLDEN_ORDINARY: &str = "💾 信用利差\n\n利差 —— 相對某個基準多出的殖利率\nbaa10y [baa10y]\n  1.59%  日頻・自1986\n  近1年  37/250 筆低於本次\n  近10年  255/2500 筆低於本次\n  自1986  1120/10000 筆低於本次\n\nhy_oas [hy_oas]\n  2.79%  日頻・自2023\n  近1年  75/250 筆低於本次\n  自2023  136/750 筆低於本次\n\nig_oas [ig_oas]\n  0.80%  日頻・自2023\n  近1年  150/250 筆低於本次\n  自2023  166/750 筆低於本次\n\n總殖利率 —— 含無風險利率在內的全部借款成本(與上一區不可互比)\nhy_yield [hy_yield]\n  7.19%  日頻・自2023\n  近1年  243/250 筆低於本次\n  自2023  699/750 筆低於本次\n\nig_yield [ig_yield]\n  5.43%  日頻・自2023\n  近1年  248/250 筆低於本次\n  自2023  723/750 筆低於本次\n\nccc_yield [ccc_yield]\n  14.28%  日頻・自2023\n  近1年  249/250 筆低於本次\n  自2023  701/750 筆低於本次\n\n資料:日 至 2026-07-24(7 天前)\n月頻 3 列 資料至 2026-06,未展開(每月 1–7 日展開)\nSIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列比較——\n自2023 的 750 筆和自1986 的 10000 筆不是同一把尺。";
+
+/// Days-1–7 golden (`as_of = "2026-08-07"`, day 7 ≤ 7 → monthly expanded).
+/// Same capture-then-reconcile method as [`GOLDEN_ORDINARY`]; the only
+/// structural difference from the design doc is the same missing
+/// block-header blank line, documented there. The monthly status line is
+/// replaced by `・月 至 2026-06` on the 資料 line (per §4), and the footer
+/// contrast names `自1919`/`自2023` — both match the design doc's days-1–7
+/// paragraph.
+const GOLDEN_EXPANDED: &str = "💾 信用利差\n\n利差 —— 相對某個基準多出的殖利率\nbaa−aaa [baa−aaa]\n  0.48%  月頻・自1919\n  近1年  0/12 筆低於本次\n  近10年  0/120 筆低於本次\n  自1919  48/1287 筆低於本次\n\nbaa10y [baa10y]\n  1.59%  日頻・自1986\n  近1年  37/250 筆低於本次\n  近10年  255/2500 筆低於本次\n  自1986  1120/10000 筆低於本次\n\nhy_oas [hy_oas]\n  2.79%  日頻・自2023\n  近1年  75/250 筆低於本次\n  自2023  136/750 筆低於本次\n\nig_oas [ig_oas]\n  0.80%  日頻・自2023\n  近1年  150/250 筆低於本次\n  自2023  166/750 筆低於本次\n\n總殖利率 —— 含無風險利率在內的全部借款成本(與上一區不可互比)\naaa [aaa]\n  5.52%  月頻・自1919\n  近1年  10/12 筆低於本次\n  近10年  116/120 筆低於本次\n  自1919  793/1287 筆低於本次\n\nbaa [baa]\n  6.00%  月頻・自1919\n  近1年  6/13 筆低於本次\n  近10年  103/120 筆低於本次\n  自1919  601/1287 筆低於本次\n\nhy_yield [hy_yield]\n  7.19%  日頻・自2023\n  近1年  243/250 筆低於本次\n  自2023  699/750 筆低於本次\n\nig_yield [ig_yield]\n  5.43%  日頻・自2023\n  近1年  248/250 筆低於本次\n  自2023  723/750 筆低於本次\n\nccc_yield [ccc_yield]\n  14.28%  日頻・自2023\n  近1年  249/250 筆低於本次\n  自2023  701/750 筆低於本次\n\n資料:日 至 2026-07-24(14 天前) · 月 至 2026-06\nSIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列比較——\n自2023 的 750 筆和自1919 的 1287 筆不是同一把尺。";
 
 // ── counts, not percentiles ─────────────────────────────────────────────
 
@@ -324,15 +356,21 @@ fn no_share_percentage_is_printed_beside_a_count() {
 
 // ── exact shape ──────────────────────────────────────────────────────────
 
-// Expected to keep failing until Task 6 rewrites GOLDEN for the new
-// vertical-block / daily-monthly-split layout. Only the call signature
-// changes here; the assertion is left broken on purpose (see task-5-brief).
 #[test]
-fn golden_message_matches_plan_exactly() {
+fn golden_ordinary_day() {
     let rendered = render_lines(&golden_lines(), "2026-07-31", 7);
     assert_eq!(
-        rendered, GOLDEN,
-        "rendered message must match the plan golden byte-for-byte"
+        rendered, GOLDEN_ORDINARY,
+        "ordinary-day message must match the design doc byte-for-byte"
+    );
+}
+
+#[test]
+fn golden_first_seven_days() {
+    let rendered = render_lines(&golden_lines(), "2026-08-07", 7);
+    assert_eq!(
+        rendered, GOLDEN_EXPANDED,
+        "days 1-7 message must match the design doc byte-for-byte"
     );
 }
 

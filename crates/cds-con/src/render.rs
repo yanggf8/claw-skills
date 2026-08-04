@@ -134,7 +134,7 @@ pub const BAA_AAA_KEY: &str = "baa−aaa";
 /// Name for the derived quality spread. Unlike the configured series, whose
 /// labels come from `cds_series`, this row is computed here and so is named
 /// here -- there is no config entry to carry it.
-pub const BAA_AAA_LABEL: &str = "品質利差 Baa−Aaa";
+pub const BAA_AAA_LABEL: &str = "Baa 比 Aaa 多出的殖利率";
 
 /// Derived-series config_order: not in `cds_series`, so it cannot tie-break by
 /// config position. Sort by coverage only; this sentinel is never compared when
