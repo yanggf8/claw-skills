@@ -64,9 +64,15 @@ const CDS_SERIES_OK: &str =
 /// Same keys without kind — render must fail loudly (decision 6).
 const CDS_SERIES_NO_KIND: &str = "baa10y|BAA10Y|Moody's Baa-10y;hy_oas|BAMLH0A0HYM2|ICE HY OAS";
 
+/// Lead pair for `CDS_SERIES_OK`'s two series -- this crate does not
+/// validate lead kinds against each other, so two spreads is fine for a
+/// plumbing fixture. See `cds_message_lead` doc comments in `src/render.rs`.
+const CDS_MESSAGE_LEAD_OK: &str = "baa10y|LEAD-BAA10Y;hy_oas|LEAD-HYOAS";
+
 async fn seed_ok(conn: &Connection) {
     set_config(conn, "cds_series", CDS_SERIES_OK).await;
     set_config(conn, "cds_message_series", "baa10y,hy_oas").await;
+    set_config(conn, "cds_message_lead", CDS_MESSAGE_LEAD_OK).await;
     // Daily spacing so frequency inference yields Daily.
     seed_rows(
         conn,
@@ -98,6 +104,7 @@ async fn seed_ok(conn: &Connection) {
 async fn seed_stale(conn: &Connection) {
     set_config(conn, "cds_series", CDS_SERIES_OK).await;
     set_config(conn, "cds_message_series", "baa10y,hy_oas").await;
+    set_config(conn, "cds_message_lead", CDS_MESSAGE_LEAD_OK).await;
     seed_rows(
         conn,
         "baa10y",
@@ -276,8 +283,10 @@ async fn missing_kind_is_failed_and_does_not_deliver() {
     let conn = mem().await;
     set_config(&conn, "cds_series", CDS_SERIES_NO_KIND).await;
     // Set so this run reaches analyze()'s kind check (the thing under test)
-    // rather than failing earlier on the now-mandatory message-series read.
+    // rather than failing earlier on the now-mandatory message-series /
+    // message-lead reads.
     set_config(&conn, "cds_message_series", "baa10y,hy_oas").await;
+    set_config(&conn, "cds_message_lead", CDS_MESSAGE_LEAD_OK).await;
     seed_rows(
         &conn,
         "baa10y",
@@ -445,6 +454,10 @@ async fn cds_message_series_naming_an_unknown_series_is_failed_and_does_not_deli
     let conn = mem().await;
     set_config(&conn, "cds_series", CDS_SERIES_OK).await;
     set_config(&conn, "cds_message_series", "baa10y,doesnotexist").await;
+    // Set so this run reaches select_message_series's check (the thing under
+    // test) rather than failing earlier on the now-mandatory message-lead
+    // read.
+    set_config(&conn, "cds_message_lead", CDS_MESSAGE_LEAD_OK).await;
     seed_rows(
         &conn,
         "baa10y",
@@ -495,6 +508,127 @@ async fn cds_message_series_naming_an_unknown_series_is_failed_and_does_not_deli
     );
 }
 
+// ---------------------------------------------------------------------------
+// cds_message_lead — the opening pair (2026-08-04 lead-block redesign).
+// Same no-default standard as cds_message_series: absent, unreadable, and
+// unparseable are three distinct situations, and a lead key that does not
+// resolve inside cds_message_series is a fourth. Each fails loudly and by
+// name, never silently.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn missing_message_lead_config_is_failed_and_does_not_deliver() {
+    // cds_series and cds_message_series both present and enough history to
+    // render, but cds_message_lead is never set.
+    let conn = mem().await;
+    set_config(&conn, "cds_series", CDS_SERIES_OK).await;
+    set_config(&conn, "cds_message_series", "baa10y,hy_oas").await;
+    // cds_message_lead deliberately NOT set.
+    seed_rows(
+        &conn,
+        "baa10y",
+        &[
+            ("2026-07-20", 1.50),
+            ("2026-07-24", 1.59),
+        ],
+    )
+    .await;
+    seed_rows(
+        &conn,
+        "hy_oas",
+        &[
+            ("2026-07-20", 2.70),
+            ("2026-07-24", 2.79),
+        ],
+    )
+    .await;
+    let (code, out, err) = go(&["cds-con"], Some(JOB), StoreAccess::Ok(&conn), AS_OF).await;
+    assert_eq!(code, 1, "an absent cds_message_lead key must fail the run");
+    assert!(
+        err.contains("CDS-CON failed:"),
+        "stderr must carry the failure: {err}"
+    );
+    assert!(
+        err.contains("cds_message_lead"),
+        "error must name the missing config key: {err}"
+    );
+    assert!(
+        err.contains("missing config key"),
+        "error must say the key is absent, not just 'not found': {err}"
+    );
+    assert!(
+        out.contains("[skill-status:failed]"),
+        "an absent message-lead key is failed: {out}"
+    );
+    assert!(
+        !out.contains("💾 信用利差"),
+        "must not deliver without a resolvable lead pair: {out}"
+    );
+}
+
+#[tokio::test]
+async fn cds_message_lead_with_wrong_entry_count_is_failed_and_does_not_deliver() {
+    // Present, but malformed -- only one entry, not the required pair.
+    let conn = mem().await;
+    set_config(&conn, "cds_series", CDS_SERIES_OK).await;
+    set_config(&conn, "cds_message_series", "baa10y,hy_oas").await;
+    set_config(&conn, "cds_message_lead", "baa10y|扣掉利率").await;
+    seed_rows(&conn, "baa10y", &[("2026-07-20", 1.50), ("2026-07-24", 1.59)]).await;
+    seed_rows(&conn, "hy_oas", &[("2026-07-20", 2.70), ("2026-07-24", 2.79)]).await;
+    let (code, out, err) = go(&["cds-con"], Some(JOB), StoreAccess::Ok(&conn), AS_OF).await;
+    assert_eq!(code, 1, "a lead value naming only one series must fail the run");
+    assert!(
+        err.contains("CDS-CON failed:"),
+        "stderr must carry the failure: {err}"
+    );
+    assert!(
+        err.contains("cds_message_lead") && err.contains("exactly two"),
+        "error must name the key and say a pair is required: {err}"
+    );
+    assert!(
+        out.contains("[skill-status:failed]"),
+        "a malformed message-lead value is failed: {out}"
+    );
+    assert!(
+        !out.contains("💾 信用利差"),
+        "must not deliver with an unparseable lead value: {out}"
+    );
+}
+
+#[tokio::test]
+async fn cds_message_lead_naming_a_series_absent_from_message_series_is_failed_and_does_not_deliver()
+{
+    // Parses fine and names two real cds_series keys, but one of them is not
+    // in cds_message_series -- resolve_lead must catch this, not just parse.
+    let conn = mem().await;
+    set_config(&conn, "cds_series", CDS_SERIES_OK).await;
+    set_config(&conn, "cds_message_series", "baa10y").await;
+    set_config(&conn, "cds_message_lead", "baa10y|扣掉利率;hy_oas|沒扣").await;
+    seed_rows(&conn, "baa10y", &[("2026-07-20", 1.50), ("2026-07-24", 1.59)]).await;
+    seed_rows(&conn, "hy_oas", &[("2026-07-20", 2.70), ("2026-07-24", 2.79)]).await;
+    let (code, out, err) = go(&["cds-con"], Some(JOB), StoreAccess::Ok(&conn), AS_OF).await;
+    assert_eq!(
+        code, 1,
+        "a lead key absent from cds_message_series must fail the run"
+    );
+    assert!(
+        err.contains("CDS-CON failed:"),
+        "stderr must carry the failure: {err}"
+    );
+    assert!(
+        err.contains("hy_oas"),
+        "error must name the unresolved lead key itself: {err}"
+    );
+    assert!(
+        out.contains("[skill-status:failed]"),
+        "a lead key outside cds_message_series is failed: {out}"
+    );
+    assert!(
+        !out.contains("💾 信用利差"),
+        "must not deliver when a lead key does not resolve: {out}"
+    );
+}
+
 #[tokio::test]
 async fn stale_data_is_ok_and_delivers() {
     // Seven days old is a fact about the data, not a run failure.
@@ -533,6 +667,7 @@ async fn partial_series_missing_is_ok_and_delivers() {
     let conn = mem().await;
     set_config(&conn, "cds_series", CDS_SERIES_OK).await;
     set_config(&conn, "cds_message_series", "baa10y,hy_oas").await;
+    set_config(&conn, "cds_message_lead", CDS_MESSAGE_LEAD_OK).await;
     seed_rows(
         &conn,
         "baa10y",
@@ -799,6 +934,9 @@ const CDS_SERIES_WITH_MONTHLY: &str =
 async fn seed_daily_and_monthly(conn: &Connection) {
     set_config(conn, "cds_series", CDS_SERIES_WITH_MONTHLY).await;
     set_config(conn, "cds_message_series", "baa10y,hy_oas,aaa").await;
+    // aaa (the sole yield here) leads, so the two daily spreads left in 佐證
+    // are single-kind.
+    set_config(conn, "cds_message_lead", "baa10y|LEAD-BAA10Y;aaa|LEAD-AAA").await;
     seed_rows(
         conn,
         "baa10y",
@@ -850,15 +988,17 @@ async fn monthly_series_inferred_from_gaps_reaches_the_month_freshness_line() {
     .await;
     assert_eq!(code, 0, "{err}");
     assert!(
-        out.contains("[aaa]"),
+        out.contains("LEAD-AAA"),
         "a series inferred Monthly purely from its ~30-day gaps renders like \
-         any other configured series -- v3 has no day-of-month gate: {out}"
+         any other configured series -- there is no day-of-month gate: {out}"
     );
     assert!(
         out.contains("月 至 2026-06"),
         "infer_frequency's Monthly classification must still land it in the \
          monthly freshness bucket, not the daily one: {out}"
     );
-    // The daily series render alongside it, unaffected.
-    assert!(out.contains("[baa10y]") && out.contains("[hy_oas]"), "{out}");
+    // The daily series render alongside it, unaffected: baa10y (lead
+    // override label) and hy_oas (its own cds_series label "ICE HY OAS", in
+    // 佐證).
+    assert!(out.contains("LEAD-BAA10Y") && out.contains("ICE HY OAS"), "{out}");
 }

@@ -1,15 +1,21 @@
-//! Render-layer tests for cds-con v3.
+//! Render-layer tests for cds-con.
 //!
 //! The golden message (owner-approved, real data from 2026-07-30) is the
 //! oracle for exact shape. Every fixed rule (order, windows, precision,
 //! units, provenance, freshness, missing series, missing kind, message-series
-//! selection) has its own named test so a mutation gate can point at a
-//! specific failure.
+//! selection, the lead pair) has its own named test so a mutation gate can
+//! point at a specific failure.
+//!
+//! **2026-08-04 lead-block redesign.** The message now opens with a guided
+//! pair (`cds_message_lead`) -- the same Baa bonds with and without the
+//! risk-free rate -- before the older per-series `──── 佐證 ────` block.
+//! See `docs/specs/2026-08-04-cds-con-readability-v2-design.md` and
+//! `src/render.rs`'s module doc comment for the full rationale.
 
 use cds_con::render::{
-    analyze, format_message, parse_message_series, render_lines, render_parts,
-    select_message_series, width_bound, Frequency, LineKind, SeriesInput, SeriesLine, WindowPct,
-    BAA_AAA_KEY, BAA_AAA_LABEL,
+    analyze, format_message, parse_message_lead, parse_message_series, render_lines,
+    render_parts, resolve_lead, select_message_series, width_bound, Frequency, LeadEntry,
+    LineKind, SeriesInput, SeriesLine, WindowPct, BAA_AAA_KEY, BAA_AAA_LABEL,
 };
 use credit_store::{Observation, SeriesKind, SeriesSpec};
 
@@ -54,13 +60,29 @@ fn keys(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
 }
 
+/// Build a two-entry lead from `lines`, keyed by `k0`/`k1`, displayed as
+/// `l0`/`l1`. Panics (via `expect`) if either key is absent -- a test that
+/// asks for a lead pair the fixture cannot supply is a broken test, not a
+/// case to handle gracefully.
+fn lead_pair<'a>(
+    lines: &'a [SeriesLine],
+    k0: &str,
+    l0: &'a str,
+    k1: &str,
+    l1: &'a str,
+) -> Vec<(&'a SeriesLine, &'a str)> {
+    vec![
+        (lines.iter().find(|l| l.key == k0).expect(k0), l0),
+        (lines.iter().find(|l| l.key == k1).expect(k1), l1),
+    ]
+}
+
 /// General-purpose 9-series fixture (labels are just the key -- these tests
 /// exercise layout/ordering/freshness rules, not the live Chinese labels,
 /// which are config, not Rust). Spans three coverage years (1919/1986/2023)
 /// across both frequencies so order/window/freshness rules all have
-/// something to bite on. Unlike v2, nothing filters this list before
-/// rendering -- v3 has no daily/monthly split, so every series here always
-/// renders.
+/// something to bite on. Every series here always renders in `shown`;
+/// individual tests decide which (if any) two become the lead pair.
 fn golden_lines() -> Vec<SeriesLine> {
     vec![
         SeriesLine {
@@ -196,10 +218,11 @@ fn golden_lines() -> Vec<SeriesLine> {
     ]
 }
 
-/// The exact five series `cds_message_series` shows (design doc v3 §1), with
-/// the real 2026-07-30 values/counts the owner approved. Hand-authored
-/// SeriesLines, not run through `analyze()` -- this is the layout oracle for
-/// [`golden_message`], the byte-for-byte test.
+/// The exact five series `cds_message_series` shows, with the real
+/// 2026-07-30 values/counts the owner approved. Hand-authored SeriesLines,
+/// not run through `analyze()` -- this is the layout oracle for
+/// [`golden_message`], the byte-for-byte test. `baa10y` and `baa` are the
+/// lead pair; `baa−aaa`, `hy_oas` and `ig_oas` are the 佐證 block.
 fn v3_golden_lines() -> Vec<SeriesLine> {
     vec![
         SeriesLine {
@@ -278,7 +301,17 @@ fn v3_golden_lines() -> Vec<SeriesLine> {
     ]
 }
 
-const GOLDEN: &str = "💾 信用利差 · 2026-07-30\n\n利差 —— 相對某個基準多出的殖利率\n已扣掉利率,動的是市場對「借錢給公司」的要價\n\nBaa 比 Aaa 多出的殖利率  0.43%   [baa−aaa]\n  近1年 13 筆裡 0 筆比現在低(0.0%)\n  近10年 121 筆裡 0 筆比現在低(0.0%)\n  自1919 1291 筆裡 22 筆比現在低(1.7%)\n\nBaa 比 10年期美債多出的殖利率  1.63%   [baa10y]\n  近1年 250 筆裡 61 筆比現在低(24.4%)\n  近10年 2495 筆裡 316 筆比現在低(12.6%)\n  自1986 10145 筆裡 1397 筆比現在低(13.7%)\n\n高收益債相對基準多出的殖利率  2.84%   [hy_oas]\n  近1年 265 筆裡 117 筆比現在低(44.1%)\n  自2023 789 筆裡 194 筆比現在低(24.5%)\n\n投資級債相對基準多出的殖利率  0.80%   [ig_oas]\n  近1年 265 筆裡 155 筆比現在低(58.4%)\n  自2023 788 筆裡 173 筆比現在低(21.9%)\n\n總殖利率 —— 含利率在內的全部借款成本,與上一區不可互比\n留這一條當對照:同一批 Baa 債,上面那條扣掉了利率,這條沒扣\n所以這條數字高,可能是央行升息,不是公司快倒閉\n\nBaa 級公司債總殖利率  6.19%   [baa]\n  近1年 13 筆裡 12 筆比現在低(92.3%)\n  近10年 121 筆裡 116 筆比現在低(95.8%)\n  自1919 1291 筆裡 652 筆比現在低(50.5%)\n\n資料:日 至 2026-07-30(5 天前)・月 至 2026-07\nSIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。它們回答不同的問題,不可跨列比。";
+/// The owner-approved lead labels for `v3_golden_lines()` -- prose about the
+/// PAIRING (`cds_message_lead`'s own field), never `cds_series`' own
+/// per-series `Label`.
+const LEAD_SPREAD_LABEL: &str = "扣掉利率(利差)";
+const LEAD_YIELD_LABEL: &str = "沒扣(總殖利率)";
+
+fn golden_lead(lines: &[SeriesLine]) -> Vec<(&SeriesLine, &str)> {
+    lead_pair(lines, "baa10y", LEAD_SPREAD_LABEL, "baa", LEAD_YIELD_LABEL)
+}
+
+const GOLDEN: &str = "💾 信用利差 · 2026-07-30\n%＝該窗口內,比今天更低的觀測比例\n\n同一批 Baa 公司債,一條扣掉利率、一條沒扣\n\n扣掉利率(利差)  1.63%\n  近1年 24.4%  近10年 12.6%  自1986 13.7%\n\n沒扣(總殖利率)  6.19%\n  近1年 92.3%  近10年 95.8%  自1919 50.5%\n\n兩條的差就是十年期美債\n所以下面那條高,可能是利率,不是公司快倒閉\n\n──── 佐證 ────\n\nBaa 比 Aaa 多出的殖利率  0.43%\n  近1年 13 筆裡 0 筆比現在低\n  近10年 121 筆裡 0 筆比現在低\n  自1919 1291 筆裡 22 筆比現在低(1.7%)\n\n高收益債相對基準多出的殖利率  2.84%\n  近1年 265 筆裡 117 筆比現在低(44.1%)\n  自2023 789 筆裡 194 筆比現在低(24.5%)\n\n投資級債相對基準多出的殖利率  0.80%\n  近1年 265 筆裡 155 筆比現在低(58.4%)\n  自2023 788 筆裡 173 筆比現在低(21.9%)\n\n資料:日 至 2026-07-30(5 天前)・月 至 2026-07\nSIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。";
 
 // ── exact shape ──────────────────────────────────────────────────────────
 
@@ -286,30 +319,68 @@ const GOLDEN: &str = "💾 信用利差 · 2026-07-30\n\n利差 —— 相對某
 fn golden_message() {
     // as_of 2026-08-04 is 5 days after the daily latest (2026-07-30), matching
     // the freshness line's "(5 天前)" -- there is now only one message shape,
-    // so only one golden (v2 had two, for the ordinary/expanded days a split
-    // that no longer exists produced).
-    let rendered = render_lines(&v3_golden_lines(), "2026-08-04");
+    // so only one golden.
+    let lines = v3_golden_lines();
+    let lead = golden_lead(&lines);
+    let rendered = render_lines(&lines, &lead, "2026-08-04");
     assert_eq!(
         rendered, GOLDEN,
-        "the v3 message must match the owner-approved target byte-for-byte"
+        "the lead-block message must match the owner-approved target byte-for-byte"
     );
 }
 
-// ── counts, share, truncation ───────────────────────────────────────────
+#[test]
+fn golden_message_also_reachable_through_format_message() {
+    // The golden fixture is hand-authored SeriesLines; this test drives the
+    // SAME shape through the real production pipeline (SeriesInput ->
+    // analyze -> select_message_series -> resolve_lead -> render), using
+    // raw config strings parsed by the real parsers, so a bug in any one
+    // layer (not just render_lines' formatting) would be caught.
+    let baa_aaa_inputs_baa = input(
+        "baa",
+        SeriesKind::Yield,
+        Frequency::Monthly,
+        obs(&[("1919-01-01", 5.50), ("2026-07-01", 6.19)]),
+    );
+    // Only two real observations aren't enough to reproduce the exact golden
+    // counts (those depend on the full historical series), so this test
+    // checks structure and presence, not byte-for-byte equality with GOLDEN.
+    let series = vec![
+        baa_aaa_inputs_baa,
+        input(
+            "baa10y",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("1986-01-02", 1.0), ("2026-07-30", 1.63)]),
+        ),
+    ];
+    let message_keys = parse_message_series("baa10y,baa").unwrap();
+    let lead_config = parse_message_lead("baa10y|扣掉利率(利差);baa|沒扣(總殖利率)").unwrap();
+    let msg = format_message(&series, "2026-08-04", &message_keys, &lead_config).unwrap();
+    assert!(msg.contains("扣掉利率(利差)  1.63%"), "{msg}");
+    assert!(msg.contains("沒扣(總殖利率)  6.19%"), "{msg}");
+    assert!(msg.contains("兩條的差就是十年期美債"), "{msg}");
+}
+
+// ── counts, share, truncation (佐證 block) ─────────────────────────────
 
 #[test]
 fn wording_is_strictly_below_never_at_most() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(msg.contains("筆比現在低"), "must state 低於 in some form");
     assert!(!msg.contains("不高於"), "不高於 is <=, the implementation is <");
 }
 
 #[test]
-fn zero_below_renders_as_zero_count_not_omitted() {
+fn zero_below_renders_as_zero_count_with_no_parenthetical_share() {
     // A series sitting at its window minimum must print `N 筆裡 0 筆比現在低`,
-    // never a blank, an omitted window, or a dash. This is the p0-ambiguity
-    // fix carried over from v2: a count can never be ambiguous the way a
-    // rounded percentile could.
+    // never a blank, an omitted window, or a dash -- the p0-ambiguity fix
+    // carried from v2/v3. The lead-block redesign additionally DROPS the
+    // `(0.0%)` parenthetical for this case: a bare `0.0%` cannot tell a
+    // reader "exactly zero" from "truncated down from something small", but
+    // the count sitting right there can. This is a deliberate asymmetry
+    // (non-zero windows keep the parenthetical) -- see
+    // `share_percent_is_truncated_never_rounded_up` below.
     let line = SeriesLine {
         key: "q".into(),
         label: "Q".into(),
@@ -321,14 +392,19 @@ fn zero_below_renders_as_zero_count_not_omitted() {
         frequency: Frequency::Monthly,
         config_order: 0,
     };
-    let msg = render_lines(&[line], "2026-07-31");
-    assert!(msg.contains("13 筆裡 0 筆比現在低(0.0%)"), "got:\n{msg}");
+    let msg = render_lines(&[line], &[], "2026-07-31");
+    assert!(msg.contains("13 筆裡 0 筆比現在低"), "got:\n{msg}");
+    assert!(
+        !msg.contains("(0.0%)"),
+        "zero-below must never print a parenthetical share: {msg}"
+    );
 }
 
 #[test]
 fn share_percent_is_truncated_never_rounded_up() {
-    // 2/3 = 66.666...% -- standard 1-decimal rounding gives 66.7%, but v3 §3
-    // requires truncation, so the correct printed share is 66.6%.
+    // 2/3 = 66.666...% -- standard 1-decimal rounding gives 66.7%, but the
+    // required behaviour is truncation, so the correct printed share is
+    // 66.6%. below > 0 here, so the parenthetical still appears.
     let line = SeriesLine {
         key: "q".into(),
         label: "Q".into(),
@@ -340,7 +416,7 @@ fn share_percent_is_truncated_never_rounded_up() {
         frequency: Frequency::Daily,
         config_order: 0,
     };
-    let msg = render_lines(&[line], "2026-07-31");
+    let msg = render_lines(&[line], &[], "2026-07-31");
     assert!(
         msg.contains("3 筆裡 2 筆比現在低(66.6%)"),
         "must truncate, not round: got:\n{msg}"
@@ -367,7 +443,7 @@ fn printed_count_is_the_raw_comparison_never_derived() {
         frequency: Frequency::Daily,
         config_order: 0,
     };
-    let msg = render_lines(&[line], "2026-07-31");
+    let msg = render_lines(&[line], &[], "2026-07-31");
     assert!(
         msg.contains("1000 筆裡 996 筆比現在低(99.6%)"),
         "must print the raw count and its truncated share: got:\n{msg}"
@@ -379,32 +455,30 @@ fn printed_count_is_the_raw_comparison_never_derived() {
     assert!(
         msg.lines()
             .filter(|l| l.contains("筆比現在低"))
-            .all(|l| l.matches('%').count() == 1),
-        "a window line carries exactly one %, the share: {msg}"
+            .all(|l| l.matches('%').count() <= 1),
+        "a 佐證 window line carries at most one %, the share: {msg}"
     );
 }
 
 // ── rate and share never share a line ───────────────────────────────────
 
-/// Rewritten from `percent_marks_values_but_never_percentiles` (v2's rule --
-/// "a percentile never carries `%`" -- is moot now that v3 puts a share back
-/// beside every count). The *reason* behind that rule survives in a new
-/// form: v3 §3 moved the value onto the title line specifically so a rate
-/// (the title's `%`) and a share (a window line's `%`) never sit on the same
-/// line, which is what made the v2-era collision (`(24.4%)` sitting one line
-/// under `1.63%`) confusing in the first place.
 #[test]
-fn rate_and_share_never_share_a_line() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+fn rate_and_share_never_share_a_line_in_the_supporting_block() {
+    // The 佐證 block is unchanged in shape from before the lead-block
+    // redesign: the value's `%` (a rate) sits on the title line, and a
+    // window's `%` (a share) sits on its own line below -- never both on one
+    // line, so a rate and a share can never collide as two meanings of one
+    // symbol.
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     let mut saw_rate_line = false;
     let mut saw_share_line = false;
     for line in msg.lines() {
         let pct_count = line.matches('%').count();
         assert!(
             pct_count <= 1,
-            "a rate and a share must never appear on the same line: {line}"
+            "in the 佐證 block a rate and a share must never appear on the same line: {line}"
         );
-        if pct_count == 1 && line.contains('[') {
+        if pct_count == 1 && !line.starts_with(' ') {
             saw_rate_line = true;
         }
         if pct_count == 1 && line.contains("筆比現在低") {
@@ -415,23 +489,61 @@ fn rate_and_share_never_share_a_line() {
     assert!(saw_share_line, "expected at least one window (share) line: {msg}");
 }
 
-// ── block headers ────────────────────────────────────────────────────────
+#[test]
+fn lead_title_and_windows_are_always_separate_lines() {
+    // The lead block compresses ALL windows onto one line, which
+    // reintroduces multiple `%` per line (24.4%, 12.6%, 13.7% are all
+    // shares) -- but the collision the original rule guarded against was a
+    // RATE's `%` (the title's `1.63%`) sitting on the SAME line as a
+    // share's `%`. That must still never happen: the title line carries
+    // exactly the rate, the windows line carries only shares.
+    let lines = v3_golden_lines();
+    let lead = golden_lead(&lines);
+    let msg = render_lines(&lines, &lead, "2026-08-04");
+    for title in [LEAD_SPREAD_LABEL, LEAD_YIELD_LABEL] {
+        let title_line = msg
+            .lines()
+            .find(|l| l.starts_with(title))
+            .unwrap_or_else(|| panic!("expected a title line starting with {title}: {msg}"));
+        assert_eq!(
+            title_line.matches('%').count(),
+            1,
+            "lead title line must carry exactly the rate: {title_line}"
+        );
+        assert!(
+            !title_line.contains("筆比現在低") && !title_line.contains("近1年"),
+            "lead title line must not also carry window content: {title_line}"
+        );
+    }
+    // The compressed windows line, conversely, never carries the rate.
+    let windows_line = msg
+        .lines()
+        .find(|l| l.contains("近1年") && l.contains("自1986"))
+        .expect("expected the baa10y compressed windows line");
+    assert!(
+        !windows_line.contains("1.63%"),
+        "windows line must never carry the title's rate: {windows_line}"
+    );
+}
+
+// ── block headers / lead prose ──────────────────────────────────────────
 
 #[test]
-fn block_headers_carry_fixed_explanatory_prose() {
-    // Fixed prose about what each block measures, not a read of today's
-    // market shape -- these strings never interpolate a live number, so they
-    // cannot become false on a day the market moves.
-    let msg = render_lines(&golden_lines(), "2026-07-31");
-    assert!(msg.contains("已扣掉利率,動的是市場對「借錢給公司」的要價"));
-    assert!(msg.contains("留這一條當對照:同一批 Baa 債,上面那條扣掉了利率,這條沒扣"));
+fn lead_block_carries_fixed_explanatory_prose() {
+    // Fixed prose about the pairing, not a read of today's market shape --
+    // these strings never interpolate a live number, so they cannot become
+    // false on a day the market moves.
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
+    assert!(msg.contains("%＝該窗口內,比今天更低的觀測比例"));
+    assert!(msg.contains("同一批 Baa 公司債,一條扣掉利率、一條沒扣"));
+    assert!(msg.contains("兩條的差就是十年期美債"));
+    assert!(msg.contains("所以下面那條高,可能是利率,不是公司快倒閉"));
 }
 
 #[test]
-fn spreads_header_makes_no_claim_about_the_price_of_credit_risk() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+fn spreads_never_claim_to_be_the_price_of_credit_risk() {
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(!msg.contains("信用風險本身的價格"));
-    assert!(msg.contains("利差 —— 相對某個基準多出的殖利率"));
 }
 
 // ── header date ──────────────────────────────────────────────────────────
@@ -441,7 +553,7 @@ fn header_carries_the_most_recent_daily_date() {
     // golden_lines()'s daily series all latest at 2026-07-24; the header is a
     // fact about the data ("what date do these numbers reflect"), not the
     // run date.
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(
         msg.starts_with("💾 信用利差 · 2026-07-24"),
         "header must carry the daily latest date: {msg}"
@@ -461,7 +573,7 @@ fn header_falls_back_to_monthly_when_no_daily_series_is_shown() {
         frequency: Frequency::Monthly,
         config_order: 0,
     };
-    let msg = render_lines(&[line], "2026-07-31");
+    let msg = render_lines(&[line], &[], "2026-07-31");
     assert!(
         msg.starts_with("💾 信用利差 · 2026-06-01"),
         "must fall back to the monthly latest when no daily series is present: {msg}"
@@ -493,11 +605,138 @@ fn message_series_empty_value_fails() {
 #[test]
 fn message_series_empty_token_fails() {
     // A doubled comma or a trailing comma leaves an empty token -- must fail
-    // loudly rather than silently skip it (v3 §5 / task item 2).
+    // loudly rather than silently skip it.
     let err = parse_message_series("baa10y,,hy_oas").unwrap_err();
     assert!(err.contains("empty") && err.contains("position 2"), "{err}");
     let err = parse_message_series("baa10y,hy_oas,").unwrap_err();
     assert!(err.contains("empty"), "{err}");
+}
+
+// ── message-lead config: parsing ────────────────────────────────────────
+
+#[test]
+fn message_lead_parses_two_key_label_records_in_order() {
+    let got = parse_message_lead("baa10y|扣掉利率(利差);baa|沒扣(總殖利率)").unwrap();
+    assert_eq!(
+        got,
+        vec![
+            LeadEntry { key: "baa10y".into(), label: "扣掉利率(利差)".into() },
+            LeadEntry { key: "baa".into(), label: "沒扣(總殖利率)".into() },
+        ]
+    );
+}
+
+#[test]
+fn message_lead_trims_whitespace_around_fields() {
+    let got = parse_message_lead(" baa10y | 扣掉利率 ; baa | 沒扣 ").unwrap();
+    assert_eq!(got[0].key, "baa10y");
+    assert_eq!(got[0].label, "扣掉利率");
+    assert_eq!(got[1].key, "baa");
+    assert_eq!(got[1].label, "沒扣");
+}
+
+#[test]
+fn message_lead_empty_value_fails() {
+    let err = parse_message_lead("").unwrap_err();
+    assert!(err.contains("empty"), "{err}");
+    let err = parse_message_lead("   ").unwrap_err();
+    assert!(err.contains("empty"), "{err}");
+}
+
+#[test]
+fn message_lead_wrong_field_count_fails() {
+    let err = parse_message_lead("baa10y;baa|沒扣").unwrap_err();
+    assert!(err.contains("key|Label"), "{err}");
+    let err = parse_message_lead("baa10y|a|b;baa|c").unwrap_err();
+    assert!(err.contains("key|Label"), "{err}");
+}
+
+#[test]
+fn message_lead_wrong_entry_count_fails() {
+    // Not zero, not one, not three -- exactly two, since it is a pair by
+    // construction, not an open-ended list.
+    let err = parse_message_lead("baa10y|A").unwrap_err();
+    assert!(err.contains("exactly two"), "{err}");
+    let err = parse_message_lead("baa10y|A;baa|B;hy_oas|C").unwrap_err();
+    assert!(err.contains("exactly two"), "{err}");
+}
+
+#[test]
+fn message_lead_duplicate_key_fails() {
+    let err = parse_message_lead("baa10y|A;baa10y|B").unwrap_err();
+    assert!(err.contains("duplicate") && err.contains("baa10y"), "{err}");
+}
+
+// ── message-lead config: resolution ─────────────────────────────────────
+
+#[test]
+fn resolve_lead_finds_series_by_key_in_config_order() {
+    let series = vec![
+        input(
+            "baa10y",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("1986-01-02", 1.0), ("2026-07-24", 1.59)]),
+        ),
+        input(
+            "baa",
+            SeriesKind::Yield,
+            Frequency::Monthly,
+            obs(&[("1919-01-01", 5.5), ("2026-06-01", 6.0)]),
+        ),
+    ];
+    let lines = analyze(&series).unwrap();
+    let shown = select_message_series(&lines, &keys(&["baa10y", "baa"])).unwrap();
+    let lead_config = parse_message_lead("baa|沒扣;baa10y|扣掉").unwrap();
+    let resolved = resolve_lead(&shown, &lead_config).unwrap();
+    // Order follows lead_config, not shown's (analyze/select) order.
+    assert_eq!(resolved[0].0.key, "baa");
+    assert_eq!(resolved[0].1, "沒扣");
+    assert_eq!(resolved[1].0.key, "baa10y");
+    assert_eq!(resolved[1].1, "扣掉");
+}
+
+#[test]
+fn resolve_lead_unknown_key_fails_by_name() {
+    let series = vec![input(
+        "baa10y",
+        SeriesKind::Spread,
+        Frequency::Daily,
+        obs(&[("1986-01-02", 1.0), ("2026-07-24", 1.59)]),
+    )];
+    let lines = analyze(&series).unwrap();
+    let shown = select_message_series(&lines, &keys(&["baa10y"])).unwrap();
+    let lead_config = parse_message_lead("baa10y|A;doesnotexist|B").unwrap();
+    let err = resolve_lead(&shown, &lead_config).unwrap_err();
+    assert!(
+        err.message.contains("doesnotexist"),
+        "error must name the unresolved key: {}",
+        err.message
+    );
+}
+
+#[test]
+fn format_message_fails_when_lead_names_a_series_absent_from_message_series() {
+    let series = vec![
+        input(
+            "baa10y",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("1986-01-02", 1.0), ("2026-07-24", 1.59)]),
+        ),
+        input(
+            "hy_oas",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("2023-07-28", 2.0), ("2026-07-24", 2.79)]),
+        ),
+    ];
+    // hy_oas is a real series but is NOT in cds_message_series -- the lead
+    // must resolve against `shown` (post-selection), not the raw series list.
+    let lead_config = parse_message_lead("baa10y|A;hy_oas|B").unwrap();
+    let err = format_message(&series, "2026-07-31", &keys(&["baa10y"]), &lead_config)
+        .expect_err("lead naming a series outside cds_message_series must fail");
+    assert!(err.message.contains("hy_oas"), "{}", err.message);
 }
 
 // ── message-series config: selection ────────────────────────────────────
@@ -595,10 +834,24 @@ fn format_message_selects_only_the_configured_series() {
             Frequency::Daily,
             obs(&[("2023-07-28", 2.0), ("2026-07-24", 2.79)]),
         ),
+        input(
+            "ig_oas",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("2023-07-28", 0.5), ("2026-07-24", 0.80)]),
+        ),
     ];
-    let msg = format_message(&series, "2026-07-31", &keys(&["baa10y"])).unwrap();
-    assert!(msg.contains("[baa10y]"), "{msg}");
-    assert!(!msg.contains("[hy_oas]"), "unlisted series must not render: {msg}");
+    let lead_config = parse_message_lead("baa10y|扣掉利率(利差);hy_oas|沒扣(總殖利率)").unwrap();
+    let msg = format_message(
+        &series,
+        "2026-07-31",
+        &keys(&["baa10y", "hy_oas"]),
+        &lead_config,
+    )
+    .unwrap();
+    assert!(msg.contains("扣掉利率(利差)"), "{msg}");
+    assert!(msg.contains("沒扣(總殖利率)"), "{msg}");
+    assert!(!msg.contains("ig_oas"), "unlisted series must not render: {msg}");
 }
 
 // ── order ────────────────────────────────────────────────────────────────
@@ -608,7 +861,7 @@ fn order_spreads_before_yields_longest_coverage_first() {
     // Config order deliberately puts short-coverage first and yields first;
     // analyze() must reorder: spreads block, then longest coverage first.
     // (This tests analyze() directly -- unaffected by message-series
-    // selection, which is a later step.)
+    // selection or the lead pair, which are later steps.)
     let series = vec![
         input(
             "hy_oas",
@@ -707,7 +960,7 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
         "10y must be omitted for short coverage, not listed; got {labels:?}"
     );
 
-    let msg = render_lines(&lines, "2026-07-31");
+    let msg = render_lines(&lines, &[], "2026-07-31");
     assert!(
         !msg.contains("insufficient-coverage"),
         "must never print insufficient-coverage in the message: {msg}"
@@ -724,7 +977,7 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
         msg.lines().any(|l| l.contains("自2023") && l.contains("筆比現在低")),
         "full-history count must still appear: {msg}"
     );
-    assert!(msg.contains("[hy_oas]"), "title line must still carry the key: {msg}");
+    assert!(msg.contains("hy_oas"), "title line must still carry the label: {msg}");
 }
 
 #[test]
@@ -761,7 +1014,7 @@ fn long_coverage_series_shows_all_three_windows() {
 
 #[test]
 fn window_label_is_the_actual_start_year() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(!msg.contains("全庫"), "全庫 hides that each row is a different ruler");
     assert!(msg.contains("自1919") || msg.contains("自1986"), "got:\n{msg}");
 }
@@ -769,8 +1022,9 @@ fn window_label_is_the_actual_start_year() {
 #[test]
 fn three_series_with_different_coverage_get_three_different_labels() {
     // The golden's three coverage years (1919/1986/2023) span both
-    // frequencies; v3 has no split, so all are always rendered.
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    // frequencies; every series in this fixture is always rendered (in the
+    // 佐證 block, since lead is empty here).
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     let years: std::collections::HashSet<&str> = msg
         .lines()
         .filter(|l| l.contains("筆比現在低"))
@@ -796,7 +1050,7 @@ fn start_year_label_is_derived_from_the_data_not_supplied() {
         obs(&[("1986-01-02", 1.0), ("2026-07-31", 2.0)]),
     )];
     let lines = analyze(&series).expect("kind is set");
-    let msg = render_lines(&lines, "2026-07-31");
+    let msg = render_lines(&lines, &[], "2026-07-31");
     assert!(
         msg.contains("自1986"),
         "year must come from rows[0].date through year_str; got:\n{msg}"
@@ -827,7 +1081,7 @@ fn precision_value_two_decimals_share_truncated_to_one_decimal() {
         frequency: Frequency::Daily,
         config_order: 0,
     };
-    let msg = render_lines(&[line], "2026-07-31");
+    let msg = render_lines(&[line], &[], "2026-07-31");
     assert!(msg.contains("0.80%"), "value must be two decimal places: {msg}");
     assert!(msg.contains("250 筆裡 150 筆比現在低(60.0%)"), "{msg}");
     assert!(msg.contains("750 筆裡 166 筆比現在低(22.1%)"), "{msg}");
@@ -838,17 +1092,33 @@ fn precision_value_two_decimals_share_truncated_to_one_decimal() {
 
 #[test]
 fn provenance_is_coverage_year_not_fred_id() {
-    let series = vec![input(
-        "baa10y",
-        SeriesKind::Spread,
-        Frequency::Daily,
-        obs(&[("1986-01-02", 1.0), ("2026-07-24", 1.59)]),
-    )];
+    let series = vec![
+        input(
+            "baa10y",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("1986-01-02", 1.0), ("2026-07-24", 1.59)]),
+        ),
+        input(
+            "hy_oas",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("2023-07-28", 2.0), ("2026-07-24", 2.79)]),
+        ),
+    ];
+    let lead_config = parse_message_lead("baa10y|扣掉利率;hy_oas|沒扣").unwrap();
     // series_id is FRED_baa10y via helper — must not appear.
-    let msg = format_message(&series, "2026-07-31", &keys(&["baa10y"])).unwrap();
+    let msg = format_message(
+        &series,
+        "2026-07-31",
+        &keys(&["baa10y", "hy_oas"]),
+        &lead_config,
+    )
+    .unwrap();
     assert!(
         msg.contains("自1986"),
-        "coverage start year required (the full-history window label): {msg}"
+        "coverage start year required (the full-history window label, now \
+         inside baa10y's compressed lead windows line): {msg}"
     );
     assert!(
         !msg.contains("FRED_"),
@@ -864,7 +1134,7 @@ fn provenance_is_coverage_year_not_fred_id() {
 
 #[test]
 fn freshness_line_shows_age_without_judgment() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(
         msg.contains("資料:日 至 2026-07-24(7 天前)"),
         "daily latest and age-in-days required: {msg}"
@@ -900,7 +1170,7 @@ fn monthly_freshness_uses_minimum_latest_not_maximum() {
         input("aaa", SeriesKind::Yield, Frequency::Monthly, aaa),
         input("baa", SeriesKind::Yield, Frequency::Monthly, baa),
     ];
-    let msg = format_message(&series, "2026-07-31", &keys(&["aaa", "baa"])).unwrap();
+    let msg = format_message(&series, "2026-07-31", &keys(&["aaa", "baa"]), &[]).unwrap();
     assert!(
         msg.contains("月 至 2026-06"),
         "monthly freshness must be the MIN latest (derived lags at 2026-06-01): {msg}"
@@ -935,14 +1205,24 @@ fn missing_series_renders_na_and_is_named_in_freshness() {
             obs(&[("1919-01-01", 5.0), ("2026-06-01", 5.5)]),
         ),
     ];
-    let msg = format_message(&series, "2026-07-31", &keys(&["baa10y", "hy_oas", "aaa"])).unwrap();
+    // aaa alone in the lead (single-entry lead is legal when calling
+    // format_message directly -- only the parsed config string enforces
+    // "exactly two") pulls the sole yield out of 佐證, leaving 佐證 as
+    // baa10y + hy_oas, both spreads, so require_single_kind passes.
+    let lead_config = vec![LeadEntry { key: "aaa".into(), label: "AAA-LEAD".into() }];
+    let msg = format_message(
+        &series,
+        "2026-07-31",
+        &keys(&["baa10y", "hy_oas", "aaa"]),
+        &lead_config,
+    )
+    .unwrap();
     assert!(
         msg.contains("hy_oas") && msg.contains("n/a"),
         "missing series must render as n/a, not vanish: {msg}"
     );
-    // Value now lives on the title line, so n/a sits right there.
     assert!(
-        msg.contains("hy_oas  n/a   [hy_oas]"),
+        msg.contains("hy_oas  n/a"),
         "n/a must appear directly on the title line: {msg}"
     );
     assert!(
@@ -960,7 +1240,7 @@ fn missing_kind_fails_loudly_not_defaulted_to_yield() {
         rows: obs(&[("2023-07-28", 2.0), ("2026-07-24", 2.5)]),
         frequency: Frequency::Daily,
     }];
-    let err = format_message(&series, "2026-07-31", &keys(&["hy_oas"]))
+    let err = format_message(&series, "2026-07-31", &keys(&["hy_oas"]), &[])
         .expect_err("missing kind must err");
     assert!(
         err.message.contains("hy_oas") && err.message.contains("kind"),
@@ -969,36 +1249,101 @@ fn missing_kind_fails_loudly_not_defaulted_to_yield() {
     );
 }
 
-// ── structural block split ───────────────────────────────────────────────
+// ── structural block split (v4 item 4) ──────────────────────────────────
 
 #[test]
-fn spread_and_yield_blocks_are_separate_with_meaning_labels() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
-    let spread_hdr = msg
-        .find("利差 —— 相對某個基準多出的殖利率")
-        .expect("spread header");
-    let yield_hdr = msg
-        .find("總殖利率 —— 含利率在內的全部借款成本,與上一區不可互比")
-        .expect("yield header");
-    assert!(spread_hdr < yield_hdr, "spread block must precede yield block");
-    // Keys land under the right header. Title lines now carry the value
-    // between the label and `[key]`, so anchor on the bracketed key rather
-    // than the old `Label [key]` adjacency.
-    let baa10y = msg.find("[baa10y]").unwrap();
-    let aaa = msg.find("[aaa]").expect("aaa title line");
-    assert!(baa10y > spread_hdr && baa10y < yield_hdr, "baa10y under spreads");
-    assert!(aaa > yield_hdr, "aaa under yields");
+fn spread_and_yield_adjacency_is_confined_to_the_lead_block() {
+    // v4 item 4: a spread and a yield may only appear adjacent inside the
+    // lead block, and the lead block must carry the explanation line. The
+    // lead block is the ONE place a spread/yield pair is allowed to sit
+    // next to each other, and it is safe there only because
+    // `兩條的差就是十年期美債` explains why they differ.
+    let lines = golden_lines();
+    let lead = golden_lead(&lines);
+    let msg = render_lines(&lines, &lead, "2026-07-31");
+    let spread_title = msg
+        .lines()
+        .find(|l| l.starts_with(LEAD_SPREAD_LABEL))
+        .expect("lead spread title");
+    let explanation = msg.find("兩條的差就是十年期美債").expect("explanation line");
+    let spread_pos = msg.find(spread_title).unwrap();
+    assert!(
+        spread_pos < explanation,
+        "lead block must precede its own explanation: {msg}"
+    );
+    assert!(msg.contains("所以下面那條高,可能是利率,不是公司快倒閉"), "{msg}");
+}
+
+#[test]
+fn mixed_kind_outside_the_lead_pair_fails_the_run() {
+    // Same idea, but proving the NEGATIVE guarantee: with an empty lead,
+    // every configured series lands in 佐證, mixing a spread (baa10y) and a
+    // yield (aaa). 佐證 has no per-kind header left (that is what the
+    // lead-block redesign removed), so this must fail loudly rather than
+    // silently render a spread and a yield adjacent with no explanation --
+    // exactly the defect the old split existed to prevent.
+    let series = vec![
+        input(
+            "baa10y",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("1986-01-02", 1.0), ("2026-07-24", 1.59)]),
+        ),
+        input(
+            "aaa",
+            SeriesKind::Yield,
+            Frequency::Monthly,
+            obs(&[("1919-01-01", 5.0), ("2026-06-01", 5.5)]),
+        ),
+    ];
+    let err = format_message(&series, "2026-07-31", &keys(&["baa10y", "aaa"]), &[])
+        .expect_err("mixed-kind 佐證 must fail the run");
+    assert!(
+        err.message.contains("spread") && err.message.contains("yield"),
+        "error should name both kinds: {}",
+        err.message
+    );
+}
+
+#[test]
+fn lead_pair_of_matching_kinds_is_not_rejected() {
+    // The lead pair itself is NOT required to be one spread and one yield by
+    // Rust -- that correctness is the operator's config responsibility, the
+    // same way a wrong `cds_series.Label` is (see design doc's "regressions
+    // this suite would still pass"). Two spreads in the lead must still
+    // render, not error.
+    let series = vec![
+        input(
+            "baa10y",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("1986-01-02", 1.0), ("2026-07-24", 1.59)]),
+        ),
+        input(
+            "hy_oas",
+            SeriesKind::Spread,
+            Frequency::Daily,
+            obs(&[("2023-07-28", 2.0), ("2026-07-24", 2.79)]),
+        ),
+    ];
+    let lead_config = parse_message_lead("baa10y|A;hy_oas|B").unwrap();
+    let msg = format_message(
+        &series,
+        "2026-07-31",
+        &keys(&["baa10y", "hy_oas"]),
+        &lead_config,
+    )
+    .expect("two spreads in the lead pair is not an error");
+    assert!(msg.contains('A') && msg.contains('B'), "{msg}");
 }
 
 // ── SIGNAL-ONLY closer ───────────────────────────────────────────────────
 
 #[test]
 fn closes_with_signal_only_and_has_no_status_line() {
-    let msg = render_lines(&golden_lines(), "2026-07-31");
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(
-        msg.contains(
-            "SIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。它們回答不同的問題,不可跨列比。"
-        ),
+        msg.contains("SIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。"),
         "{msg}"
     );
     assert!(
@@ -1053,14 +1398,17 @@ fn every_rendered_line_fits_its_width_bound() {
     // size that breaks even a monospace reader; it is not a guarantee
     // against wrapping on a phone.
 
-    // Short ASCII-label fixture (structural coverage: every block, both
-    // frequencies, derived row).
-    check(&render_parts(&golden_lines(), "2026-07-31"));
-    // The real, longer Chinese labels -- this is the fixture that actually
-    // exercises the width the bound was raised for (v3 §3 puts the value on
-    // the title line). Without this, a regression in label length would only
-    // be caught in production.
-    check(&render_parts(&v3_golden_lines(), "2026-08-04"));
+    // Short ASCII-label fixture (structural coverage: 佐證 block, both
+    // frequencies, derived row) with no lead -- everything lands in 佐證.
+    check(&render_parts(&golden_lines(), &[], "2026-07-31"));
+    // The real, longer Chinese labels with the real lead pair -- this is
+    // the fixture that actually exercises the widths measured for the
+    // lead-block redesign (the compressed windows line is the widest line
+    // the new shape produces, at 41 columns; see `src/render.rs`'s
+    // `WIDTH_BOUND` doc comment).
+    let lines = v3_golden_lines();
+    let lead = golden_lead(&lines);
+    check(&render_parts(&lines, &lead, "2026-08-04"));
 }
 
 /// A series-line fixture shaped exactly like the real `hy_oas` row (same
@@ -1084,12 +1432,12 @@ fn line_with_label(label: &str) -> SeriesLine {
     }
 }
 
-/// Swap the `hy_oas` slot in the real v3 fixture for `label`, keeping every
-/// other series (and therefore the headers, block headers, freshness line
-/// and footer) exactly as the live message renders them -- so the assertion
+/// Swap the `hy_oas` slot in the real fixture for `label`, keeping every
+/// other series (and therefore the headers, lead block, freshness line and
+/// footer) exactly as the live message renders them -- so the assertion
 /// below exercises the FULL message shape, not an isolated single-series
-/// snippet.
-fn v3_lines_with_hy_oas_label(label: &str) -> Vec<SeriesLine> {
+/// snippet. `hy_oas` sits in the 佐證 block (index 2, not part of the lead).
+fn lines_with_hy_oas_label(label: &str) -> Vec<SeriesLine> {
     let mut lines = v3_golden_lines();
     lines[2] = line_with_label(label);
     lines
@@ -1097,15 +1445,15 @@ fn v3_lines_with_hy_oas_label(label: &str) -> Vec<SeriesLine> {
 
 /// Asserts the renderer's actual guarantee for an overlong label: every
 /// `Data` line EXCEPT the label's own line fits [`width_bound`]. Headers,
-/// block headers, the freshness line and the footer are `LineKind::Prose`
-/// (see its doc comment -- "allowed to wrap on a phone") and are present in
-/// `parts` (the fixture is the full v3 message, not an isolated snippet) but
-/// deliberately out of scope for this bound, same as
-/// `every_rendered_line_fits_its_width_bound` already treats them -- the
-/// `LineKind::Data` filter below is what skips them, same mechanism as
-/// `check`.
+/// the pairing prose, the explanation lines, the `──── 佐證 ────` separator,
+/// the freshness line and the footer are `LineKind::Prose` (see its doc
+/// comment -- "allowed to wrap on a phone") and are present in `parts` (the
+/// fixture is the full message, not an isolated snippet) but deliberately
+/// out of scope for this bound, same as `every_rendered_line_fits_its_width_bound`
+/// already treats them -- the `LineKind::Data` filter below is what skips
+/// them, same mechanism as `check`.
 ///
-/// This is the one case `series_block` cannot fix: a label that alone
+/// This is the one case `title_lines` cannot fix: a label that alone
 /// exceeds the bound still overflows on its own line, because the renderer
 /// must never truncate a configured label to force a layout -- discarding
 /// real `cds_series` data would be worse than one wrapped line. The label's
@@ -1135,25 +1483,22 @@ fn assert_only_the_label_line_may_overflow(parts: &[cds_con::render::Segment], l
 #[test]
 fn overlong_ascii_label_splits_the_title_line() {
     let label = "x".repeat(200);
-    let parts = render_parts(&v3_lines_with_hy_oas_label(&label), "2026-08-04");
+    let lines = lines_with_hy_oas_label(&label);
+    let lead = golden_lead(&lines);
+    let parts = render_parts(&lines, &lead, "2026-08-04");
     assert_only_the_label_line_may_overflow(&parts, &label);
 
-    // The split actually happened: the value/key line is a SEPARATE segment
+    // The split actually happened: the value line is a SEPARATE segment
     // from the label, not the label with the value appended to it.
-    let value_key_line = parts
+    let value_line = parts
         .iter()
         .filter(|s| s.kind == LineKind::Data)
-        .find(|s| s.text.contains("[hy_oas]"))
-        .expect("expected a value/key line carrying [hy_oas]");
+        .find(|s| s.text.starts_with("  2.84%"))
+        .expect("expected a value line indented like a window row");
     assert!(
-        !value_key_line.text.contains(&label),
+        !value_line.text.contains(&label),
         "value must no longer share the label's line: {}",
-        value_key_line.text
-    );
-    assert!(
-        value_key_line.text.starts_with("  2.84%"),
-        "value/key line must be indented like a window row: {}",
-        value_key_line.text
+        value_line.text
     );
 }
 
@@ -1163,41 +1508,39 @@ fn overlong_cjk_label_splits_the_title_line() {
     // the case WIDTH_BOUND's doc comment specifically calls out, since the
     // real `cds_series` labels are themselves CJK.
     let label = "測".repeat(200);
-    let parts = render_parts(&v3_lines_with_hy_oas_label(&label), "2026-08-04");
+    let lines = lines_with_hy_oas_label(&label);
+    let lead = golden_lead(&lines);
+    let parts = render_parts(&lines, &lead, "2026-08-04");
     assert_only_the_label_line_may_overflow(&parts, &label);
 
-    let value_key_line = parts
+    let value_line = parts
         .iter()
         .filter(|s| s.kind == LineKind::Data)
-        .find(|s| s.text.contains("[hy_oas]"))
-        .expect("expected a value/key line carrying [hy_oas]");
+        .find(|s| s.text.starts_with("  2.84%"))
+        .expect("expected a value line indented like a window row");
     assert!(
-        !value_key_line.text.contains(&label),
+        !value_line.text.contains(&label),
         "value must no longer share the label's line: {}",
-        value_key_line.text
-    );
-    assert!(
-        value_key_line.text.starts_with("  2.84%"),
-        "value/key line must be indented like a window row: {}",
-        value_key_line.text
+        value_line.text
     );
 }
 
 #[test]
 fn todays_real_labels_never_split_and_golden_is_unchanged() {
-    // The widest real title today is 47 columns -- one under the 48 bound --
+    // The widest real line today is 41 columns -- well under the 48 bound --
     // so nothing should split. golden_message already pins byte-identical
     // output; this test additionally pins the STRUCTURAL signature of "no
     // split occurred" (no line equal to a bare label) so a future change
     // that started splitting real config without changing the golden text
-    // (impossible today, but not load-bearing on that being impossible
-    // forever) would still be caught.
-    let rendered = render_lines(&v3_golden_lines(), "2026-08-04");
+    // would still be caught.
+    let lines = v3_golden_lines();
+    let lead = golden_lead(&lines);
+    let rendered = render_lines(&lines, &lead, "2026-08-04");
     assert_eq!(
         rendered, GOLDEN,
         "today's real labels must not change the golden"
     );
-    for line in v3_golden_lines() {
+    for line in &lines {
         assert!(
             !rendered.lines().any(|l| l == line.label),
             "label '{}' must not render alone on its own line -- nothing \

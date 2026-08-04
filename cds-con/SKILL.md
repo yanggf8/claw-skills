@@ -43,7 +43,7 @@ The message lays out levels, percentiles and coverage. The reader judges.
 
 ## What it reads, and the trap in it
 
-Two families that are **not commensurable**, rendered in separate blocks:
+Two families that are **not commensurable**:
 
 - **Spreads** (`baa−aaa`, `baa10y`, `hy_oas`, `ig_oas`) — compensation for
   credit risk, with the risk-free rate already removed.
@@ -53,8 +53,12 @@ Two families that are **not commensurable**, rendered in separate blocks:
 On 2026-07-31 the yields sat near one-year highs while the spreads sat near
 multi-decade lows. That is a fact about interest rates, not about credit
 stress, and comparing a yield percentile against a spread percentile
-manufactures a signal that is not there. The blocks and their labels exist to
-prevent exactly that.
+manufactures a signal that is not there. This is why the two families never
+mix anywhere in the message **except** the opening lead pair, which is
+allowed to place one spread and one yield side by side ONLY because they are
+the same underlying bonds and the message states, in the line right after
+them, why they differ. See **Message layout** below for exactly where that
+line is drawn.
 
 **Coverage is mixed inside each family**, so it is printed on every series line
 rather than a block header: `aaa`/`baa` reach 1919, `baa10y` 1986, and the five
@@ -68,46 +72,85 @@ layout** below.
 
 ## Message layout: what is data and what is code
 
-Two readability passes happened the same day, 2026-08-04. v2 replaced the
-one-row-per-series table with a vertical block per series, cut percentiles
-down to bare counts, and split the message into a daily set and a monthly
-set. It shipped, and the owner — the message's only reader — could not read
-it. v3 replaced it hours later: the daily/monthly split is gone entirely,
-the message shows five series instead of nine, and the count each window
-prints carries its share again. Full rationale, the review trail, and what
-each pass cost are in
-`docs/specs/2026-08-04-cds-con-readability-v2-design.md` (its final `# v3`
-section is the part that matters for today's code — v2's own body is
-superseded); this section documents what the code actually does now.
+Three readability passes have happened, the last two on the same day,
+2026-08-04. v2 replaced the one-row-per-series table with a vertical block
+per series, cut percentiles down to bare counts, and split the message into
+a daily set and a monthly set. It shipped, and the owner — the message's
+only reader — could not read it. v3 replaced it hours later: the
+daily/monthly split gone entirely, five series instead of nine, counts with
+their share restored. **The lead-block redesign, same day, went further
+still**: the owner could read v3, but named the one sentence that actually
+clicked — "利差在數十年低點、殖利率在一年高點" — a *contrast between two
+numbers*, not any single series' block. The message now opens with exactly
+that pair before falling back to the older per-series shape for everything
+else. Full rationale, the review trail, and what each pass cost are in
+`docs/specs/2026-08-04-cds-con-readability-v2-design.md` (its `# v3` and
+`# v4` sections are what matters for today's code); this section documents
+what the code actually does now.
 
-**The message shows five series: `baa−aaa`, `baa10y`, `hy_oas`, `ig_oas`
-(spreads) and `baa` (the one yield kept).** Which five, and in what order, is
-a config value, `cds_message_series` — a comma-separated list of series keys
-(mandatory; a missing key, a failed read, or an unparseable value each fail
-the run loudly and by name, same as a missing `cds_series` or a missing
-`kind`; see **Config** below). `cds_series` itself still carries all eight
-series, and `price cds show`/the fetch job are unaffected — only the message
-is narrowed.
+**The message opens with a guided pair, then a `──── 佐證 ────` block for
+everything else.** `cds_message_lead` names two of `cds_message_series`'
+keys, in order — today `baa10y` (spread, "扣掉利率(利差)") and `baa` (yield,
+"沒扣(總殖利率)"), the *same Baa bonds* with and without the risk-free rate.
+Everything `cds_message_series` names that is not in the lead renders below,
+in config order, under the 佐證 heading.
 
-**`baa` is kept on purpose, not left over.** It is the *same bonds* as
-`baa10y` — one with the risk-free rate left in, one with it subtracted —
-placed in separate blocks so the pair demonstrates the spread/yield
-difference arithmetically rather than asserting it: the block header reads
-「所以這條數字高,可能是央行升息,不是公司快倒閉」. A reviewer who read a high
-yield alone as company-level stress, without seeing the matching spread sit
-mid-range the same day, is exactly the misreading this pairing exists to
-prevent.
+```
+扣掉利率(利差)  1.63%
+  近1年 24.4%  近10年 12.6%  自1986 13.7%
 
-**Series names come from the `Label` field of `cds_series`, not from Rust.**
-Each series renders as a block: a title line `Label  value   [key]`, then one
-line per trailing window. Translating or renaming a series is a config
-change and never touches code. The one exception is the derived quality
-spread, which is computed in `render.rs` and so is named there
-(`BAA_AAA_LABEL`) — there is no config row to carry it. The key still rides
-along in `[brackets]` on the title line: the reader and the operator are the
-same person, and `[baa10y]` is what he types into `price cds show` and edits
-in `cds_series`, so dropping it would force a lookup. The FRED series id
-stays out — longer, and it cannot be passed to anything.
+沒扣(總殖利率)  6.19%
+  近1年 92.3%  近10年 95.8%  自1919 50.5%
+
+兩條的差就是十年期美債
+所以下面那條高,可能是利率,不是公司快倒閉
+
+──── 佐證 ────
+
+Baa 比 Aaa 多出的殖利率  0.43%
+  近1年 13 筆裡 0 筆比現在低
+  ...
+```
+
+**Putting a spread and a yield adjacent is normally forbidden, and is safe
+here for exactly one reason.** The two families are not commensurable (a
+percentile-style comparison across them manufactures a signal that is not
+there — that is the whole reason v1/v2/v3 rendered them in separate blocks).
+The lead pair is the ONE place this repo allows a spread and a yield to sit
+next to each other, and only because (a) it is the *same underlying bonds*
+and (b) the explanation line `兩條的差就是十年期美債` states why they differ,
+right there. `require_single_kind` in `render.rs` enforces the other half of
+that guarantee programmatically: the 佐證 block (whatever is left over) has
+no per-kind header anymore, so `format_message` **fails the run** if it ever
+ends up holding both a spread and a yield — an accidental config mix would
+otherwise silently reopen the exact unexplained adjacency the old split
+existed to prevent.
+
+**The lead block trades the count for a bare share, compressed onto one
+line.** `{override_label}  {value}%`, then `  {window} {share}%  {window}
+{share}%  ...` — every window the series supports, on a single line, no
+`筆裡`/`筆比現在低` wording and no `[key]` (the lead reader is comparing two
+numbers, not looking anything up). This is a deliberate trade against the
+佐證 block below: the lead needs the whole pair to fit in four short lines,
+so it gives up the count's "magnitude without mental division" that the 佐證
+block still has.
+
+**Lead labels are prose about the PAIRING, from `cds_message_lead`, never
+from `cds_series`' own `Label`.** `扣掉利率(利差)` and `沒扣(總殖利率)` describe
+how the two lines relate to each other, which is the wrong job for a
+series' general-purpose label (`cds_series`' `Baa 比 10年期美債多出的殖利率`
+is accurate but far too long, and says nothing about the *other* line in the
+pair). See **Config** below for the `cds_message_lead` format.
+
+**The 佐證 block keeps the older shape: `Label  value`, then one line per
+window with the full count.** No `[key]` here either — the operator-lookup
+argument that once justified `[key]` on every title line no longer holds now
+that the lead (this message's headline content) never carried one, so it was
+dropped from 佐證 too for one consistent title shape. Series names still come
+from the `Label` field of `cds_series`, not from Rust; translating or
+renaming a series is a config change and never touches code. The one
+exception is the derived quality spread, computed in `render.rs` and so
+named there (`BAA_AAA_LABEL`) — there is no config row to carry it.
 
 **There is no column alignment, and there will not be again.** The old
 column machinery (`display_width`/`pad_to`/`RowWidths` from the table layout)
@@ -115,30 +158,30 @@ was deleted, not disabled: `run.rs` sets `parse_mode: None`, so Telegram
 renders the body in a **proportional** font, where space padding never
 produced a column for anyone.
 
-**Every window prints a count with its share:
-`{n} 筆裡 {below} 筆比現在低({share}%)`.** `近1年 250 筆裡 61 筆比現在低(24.4%)`.
+**Every 佐證 window prints a count, with its share when something sits below
+it: `{n} 筆裡 {below} 筆比現在低({share}%)`.** `近1年 250 筆裡 61 筆比現在低(24.4%)`.
 The count states the whole before the part so magnitude reads without mental
 division; `below` is exactly `credit-store`'s strictly-below comparison
 (`values.iter().filter(|v| **v < x).count()`), so the wording is always
 「低於」, never 「不高於」 (`wording_is_strictly_below_never_at_most`). The
 share is truncated (never rounded) from that same `(below, n)` pair, never
 computed separately, so it can never disagree with the count on the same
-line (`share_percent_is_truncated_never_rounded_up`). A window sitting at
-its minimum prints `0 筆裡 0 筆比現在低(0.0%)` — never a blank, an omitted
-window, or a dash — which is what kills the old `p0` ambiguity, where a
-truncated `p0` could mean either "the lowest value" or "0.9% of the window is
-lower".
+line (`share_percent_is_truncated_never_rounded_up`). **A window sitting at
+its minimum (`below == 0`) drops the parenthetical entirely and prints just
+`0 筆裡 0 筆比現在低`** — the lead-block redesign's one asymmetry: a bare
+`0.0%` cannot tell a reader "exactly zero" from "truncated down from
+something small", but the count sitting right there can. The lead block, by
+contrast, always prints the share (including `0.0%`) since it has no count
+to fall back on.
 
-**A rate and a share must never appear on the same line — that is the rule
-that survives, not "a percentile must never carry a `%` sign".** The earlier
-wording is superseded: percentiles are gone, and both values and shares now
-carry `%`. What the rule guards against is unchanged and is why it moved
-rather than vanished: a value's `%` (a rate, e.g. `1.63%`) and a window's `%`
-(a share of observations, e.g. `24.4%`) are two different meanings of one
-symbol, and v3 keeps them apart by putting the value on the series' title
-line and every share on its own window line below — never both on one line
-(`rate_and_share_never_share_a_line`, the direct successor to v2's
-`percent_marks_values_but_never_percentiles`).
+**A rate and a share must never appear on the same line.** A value's `%`
+(a rate, e.g. `1.63%`) and a window's `%` (a share of observations, e.g.
+`24.4%`) are two different meanings of one symbol. In the 佐證 block this
+still means at most one `%` per line — the value sits on the title line,
+every share on its own window line below. The lead block's compressed
+windows line legitimately carries several `%` on one line, but they are
+always all shares; the lead's own rate never joins them, because it lives on
+a separate title line one row up.
 
 **`全庫` is gone; the full-history window is labeled by its actual start
 year.** `baa−aaa` covers 1919, `baa10y` 1986, the ICE/BAML series 2023 — three
@@ -148,41 +191,34 @@ never supplied or guessed (`window_label_is_the_actual_start_year`,
 `three_series_with_different_coverage_get_three_different_labels`,
 `start_year_label_is_derived_from_the_data_not_supplied`).
 
-**The daily/monthly split is gone entirely.** v2 built it because the table
-ran to 58 lines; v3 is 28. There is no `cds_monthly_expand_days`, no days-1–7
-expansion rule, no collapsed monthly status line, and no "a wrong proxy stays
-auditable" limitation — all of it, and the config key that drove it, were
-deleted along with the mechanism, not merely hidden. It would also have
-actively broken v3: `baa` is monthly, so under the old split the
-spread-vs-yield contrast the message exists to show would have been absent
-roughly 29 days a month. All configured series in `cds_message_series` render
-every day, unconditionally.
+**The daily/monthly split is gone entirely (removed in v3, unchanged since).**
+There is no `cds_monthly_expand_days`, no days-1–7 expansion rule, no
+collapsed monthly status line. All configured series in `cds_message_series`
+render every day, unconditionally.
 
 **Line width is guaranteed by the renderer, not by config staying short.** A
-series' title line (`Label  value   [key]`) is measured under a CJK-is-2
-display-width model against a bound (`WIDTH_BOUND`, 48 columns); a line that
-would exceed it **splits** — the label alone on its own line, then
-`  value   [key]` indented like a window row — instead of silently growing
-past it (`overlong_ascii_label_splits_the_title_line`,
+title line (`Label  value`, in either block) is measured under a CJK-is-2
+display-width model against a bound (`WIDTH_BOUND`, 48 columns, unchanged by
+the lead-block redesign — the widest line the new shape produces, the lead's
+compressed windows line, measures 41); a line that would exceed it
+**splits** — the label alone on its own line, then `  value` indented like a
+window row — instead of silently growing past it
+(`overlong_ascii_label_splits_the_title_line`,
 `overlong_cjk_label_splits_the_title_line`). Short labels render
 byte-identical to the unsplit form. The one case this cannot fix: a label
 that alone already exceeds the bound still overflows on its own line — the
 renderer never truncates a configured label to force a fit, since discarding
-real `cds_series` data would be worse than one wrapped line. The transport
-is still a **proportional** font, so this model is a coarse proxy against a
+real config data would be worse than one wrapped line. The transport is
+still a **proportional** font, so this model is a coarse proxy against a
 line bloating back to desktop-monospace-breaking size, not a guarantee
 against wrapping on a phone.
 
-**The footer is fixed prose, not a computed contrast.** v2's footer computed
-a sentence naming the earliest- and latest-start series actually rendered
-that day; it depended on the daily/monthly split to know which rulers were
-on screen, and was deleted along with it. v3's footer states only what a
-window is for: 「SIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。它們回答不同的
-問題,不可跨列比。」
+**The footer is fixed prose, not a computed contrast.** 「SIGNAL-ONLY:窗口越
+短對當下越敏感,越長越穩定。」
 
 **The `SIGNAL-ONLY` marker stays on the footer.** It is a project-wide boundary
-marker, not prose; only the explanation after it changed. Removing it during
-a readability pass would be caught by the contract tests.
+marker, not prose. Removing it during a readability pass would be caught by
+the contract tests.
 
 ## Data Store
 
@@ -220,9 +256,13 @@ than the clock; the `資料:` line is what makes a missed fetch visible.
   fails, there are zero usable observations (empty store or every configured
   series missing), a series lacks its `kind` so the family split cannot be
   rendered, `cds_message_series` is absent, unreadable, or unparseable (empty,
-  or a blank key from a stray/doubled comma), or a `cds_message_series` key
-  names a series that does not exist among the loaded series. This follows the
-  repo's standing rule that a hard-failure path must not deliver.
+  or a blank key from a stray/doubled comma), a `cds_message_series` key
+  names a series that does not exist among the loaded series,
+  `cds_message_lead` is absent, unreadable, or unparseable (not exactly two
+  `key|Label` records), a `cds_message_lead` key names a series not present
+  in `cds_message_series`, or the 佐證 block ends up holding both a spread
+  and a yield (see **Message layout** above). This follows the repo's
+  standing rule that a hard-failure path must not deliver.
 
 "Seven days old" is `ok`. "Nothing to report at all" is `failed`.
 
@@ -255,6 +295,27 @@ the run, by name, rather than being silently dropped. There is never a Rust
 literal standing in for this list in the production path; `cds_series`
 itself is unaffected and keeps carrying all eight source series regardless
 of what the message shows.
+
+Which two of those keys open the message as the guided pair, and what each
+is called there, is a third DB config value:
+
+```
+cds_message_lead = baa10y|扣掉利率(利差);baa|沒扣(總殖利率)
+```
+
+`key|Label` records joined by `;`, **exactly two** — it is a pair by
+construction, not an open-ended list. Each `Label` is prose about the
+*pairing* (see **Message layout** above), never `cds_series`' own per-series
+label. Same no-default standard as `cds_message_series`: absent, unreadable,
+unparseable (wrong field count, an empty field, a duplicate key, or not
+exactly two records), or a key that does not name a series present in
+`cds_message_series`, all **fail the run** rather than being guessed. There
+is no requirement that the two entries be one spread and one yield — that
+correctness is the operator's responsibility, the same way a wrong
+`cds_series.Label` is; what Rust *does* enforce is that whatever is left
+over in the 佐證 block (everything `cds_message_series` names outside the
+lead pair) never mixes spreads and yields, since that block has no per-kind
+header to keep them apart.
 
 ## Not a CDS quote
 

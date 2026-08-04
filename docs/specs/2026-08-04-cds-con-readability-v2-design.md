@@ -527,3 +527,134 @@ part gives magnitude without arithmetic. `0 筆比現在低` reads directly as
 The store holds eight series; the message shows five. That selection is a new
 config key — the message must not hardcode a series list, and `cds_series` must
 keep all eight so `price cds show` and the fetch job are unaffected.
+
+---
+
+# v4 — lead block: the reader's own sentence, then the rest (2026-08-04, same day)
+
+The owner asked for a further restructure after reading v3 on his phone:
+lead with the one thing he understands, then supporting detail. Same
+constraint, reaffirmed: no verdict — no status ladder, no threshold, no
+adjective characterising a level, no single chosen window. `SIGNAL-ONLY`
+stays.
+
+## What changed
+
+**A new config key, `cds_message_lead`,** names two of `cds_message_series`'
+keys, in order, each paired with a display label that is prose about the
+*pairing* — not `cds_series`' own per-series `Label`:
+
+```
+cds_message_lead = baa10y|扣掉利率(利差);baa|沒扣(總殖利率)
+```
+
+`key|Label` records joined by `;`, exactly two (a pair by construction, not
+a list). Absent, unreadable, unparseable (wrong field count, an empty field,
+a duplicate key, not exactly two records), or a key absent from
+`cds_message_series` — each fails the run loudly and by name, the same
+no-default standard every other config key in this crate already holds.
+Parsed by `parse_message_lead`, resolved against the already-selected
+message series by `resolve_lead` (mirroring `parse_message_series` /
+`select_message_series`).
+
+**The message now opens with that pair, compressed onto four lines total,**
+before falling back to the v3 per-series block shape (retitled `────
+佐證 ────`) for everything `cds_message_series` names outside the lead:
+
+```
+扣掉利率(利差)  1.63%
+  近1年 24.4%  近10年 12.6%  自1986 13.7%
+
+沒扣(總殖利率)  6.19%
+  近1年 92.3%  近10年 95.8%  自1919 50.5%
+
+兩條的差就是十年期美債
+所以下面那條高,可能是利率,不是公司快倒閉
+
+──── 佐證 ────
+
+Baa 比 Aaa 多出的殖利率  0.43%
+  近1年 13 筆裡 0 筆比現在低
+  ...
+```
+
+The lead's windows line trades the count for a bare share (`{window}
+{share}%`, all windows on one line) — the 佐證 block below keeps the count
+(`{n} 筆裡 {below} 筆比現在低`). Both drop `[key]`: the lead reader is
+comparing two numbers, not looking anything up, and once the message's
+headline content stopped carrying a key, keeping it on the supporting
+block's title line was inconsistent for no remaining reason.
+
+**Zero-below asymmetry.** The 佐證 block drops the parenthetical share when
+`below == 0`, printing bare `0 筆裡 0 筆比現在低` — a bare `0.0%` cannot tell
+a reader "exactly zero" from "truncated down from something small", but the
+count sitting right there can. The lead block has no count to fall back on,
+so it always prints the share there, including `0.0%`.
+
+## The rule this deliberately breaks, and what replaced it
+
+Every prior pass (v1 table, v2, v3) rendered spreads and yields in
+*separate* blocks specifically so a reader would never compare a percentile
+across the two — they are not commensurable, and comparing a spread's rank
+against a yield's rank manufactures a signal that is not there. The lead
+block places one spread and one yield adjacent **on purpose**.
+
+This is safe only because two things both hold, in the same place:
+
+1. **Same underlying bonds.** `baa10y` and `baa` are the identical Baa
+   corporate bonds, one with the risk-free rate subtracted and one without —
+   not two different credit instruments being compared.
+2. **The explanation line is right there.** `兩條的差就是十年期美債` states,
+   in the message itself, why the two numbers differ. It is conditional
+   prose ("可能是"), not a read of today's shape, so it cannot become false
+   on a reverse day — the spread could sit high and the yield low, and the
+   sentence would still correctly describe the mechanism.
+
+**The guarantee that survives is narrower, not gone: a spread and a yield
+may only appear adjacent inside the lead block, and the lead block must
+carry the explanation.** Outside the lead, in 佐證, there is no per-kind
+header left (v3's spread/yield block headers were removed along with the
+old table) — so an accidental config mix (e.g. a yield left in
+`cds_message_series` outside the lead pair, alongside a spread) would
+silently reopen the exact unexplained adjacency the original split existed
+to prevent. `require_single_kind` in `render.rs` closes that: `format_message`
+**fails the run** if the 佐證 block ever ends up holding both kinds. This is
+enforced structurally, not left to config discipline — the same
+"constraints live in the app layer" standard the rest of this repo holds.
+
+The lead pair's own two kinds are **not** enforced by Rust (nothing stops a
+config naming two spreads as the lead) — that correctness is the operator's
+responsibility, same as a wrong `cds_series.Label` already was. Enforcing it
+would mean hardcoding a semantic assumption about which two keys "should"
+pair, which is exactly the kind of judgment this crate pushes to config.
+
+## Reverse-day test
+
+Every new line was checked against a day the numbers move the other way:
+
+- `兩條的差就是十年期美債` / `所以下面那條高,可能是利率,不是公司快倒閉` —
+  conditional mechanism prose, never asserts which line is higher today.
+  True regardless of which way the two numbers move.
+- `%＝該窗口內,比今天更低的觀測比例` and `──── 佐證 ────` — pure labels,
+  carry no direction.
+- The zero-below asymmetry is a display rule keyed on `below == 0`, not on
+  whether that reads as good or bad.
+
+No new adjective, threshold, or status word was introduced anywhere.
+
+## Test plan (implemented)
+
+`tests/render.rs` gained `LeadEntry`/`parse_message_lead`/`resolve_lead`
+parsing and resolution tests, a rewritten `golden_message` (one shape, the
+lead-block target), `spread_and_yield_adjacency_is_confined_to_the_lead_block`
+and `mixed_kind_outside_the_lead_pair_fails_the_run` (replacing
+`spread_and_yield_blocks_are_separate_with_meaning_labels`, pinning the new
+guarantee both positively and negatively), and
+`zero_below_renders_as_zero_count_with_no_parenthetical_share` (replacing
+the old always-parenthetical assertion). `tests/contract.rs` gained
+`missing_message_lead_config_is_failed_and_does_not_deliver`,
+`cds_message_lead_with_wrong_entry_count_is_failed_and_does_not_deliver`,
+and `cds_message_lead_naming_a_series_absent_from_message_series_is_failed_and_does_not_deliver`;
+every existing fixture that sets `cds_message_series` now also sets
+`cds_message_lead` (now mandatory, same standard). Full report:
+`.superpowers/sdd/2026-08-04-cds-con-readability-v2/lead-block-report.md`.

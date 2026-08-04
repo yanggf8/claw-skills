@@ -15,7 +15,7 @@ use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use credit_store::{parse_series_list, read_credit_history, Observation};
 use libsql::Connection;
 
-use crate::render::{format_message, parse_message_series, Frequency, SeriesInput};
+use crate::render::{format_message, parse_message_lead, parse_message_series, Frequency, LeadEntry, SeriesInput};
 
 /// Injected environment: job id (`NULLCLAW_JOB_ID`) and HOME for paths.
 #[derive(Debug, Clone)]
@@ -228,6 +228,30 @@ async fn message_series_keys(conn: &Connection) -> Result<Vec<String>, String> {
     })
 }
 
+/// `cds_message_lead`: the opening pair (the lead-block redesign, item 1/3
+/// of `docs/specs/2026-08-04-cds-con-readability-v2-design.md`). Same
+/// no-default standard as `cds_message_series`: an absent key, a failed
+/// read, and an unparseable value are three distinct situations, each named
+/// and each failing the run loudly. Whether each lead key actually resolves
+/// inside `cds_message_series` is checked later, by `resolve_lead` once the
+/// message series are selected.
+async fn message_lead_keys(conn: &Connection) -> Result<Vec<LeadEntry>, String> {
+    let raw = read_config(conn, "cds_message_lead")
+        .await
+        .map_err(|e| {
+            format!(
+                "could not read config key 'cds_message_lead' from price-registry: {e}; set it with: price config set cds_message_lead <key|Label;key|Label>"
+            )
+        })?
+        .ok_or_else(|| {
+            "missing config key 'cds_message_lead' in price-registry; set it with: price config set cds_message_lead <key|Label;key|Label>"
+                .to_string()
+        })?;
+    parse_message_lead(&raw).map_err(|e| {
+        format!("{e}; set it with: price config set cds_message_lead <key|Label;key|Label>")
+    })
+}
+
 async fn read_config(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     let mut rows = conn
         .query(
@@ -354,9 +378,18 @@ pub async fn run(
         }
     };
 
-    // Missing kind, or a cds_message_series key naming an unknown series,
-    // fails here (RenderError) — failed, no deliver.
-    let message = match format_message(&series, as_of, &message_keys) {
+    let lead = match message_lead_keys(conn).await {
+        Ok(l) => l,
+        Err(e) => {
+            return finish_failed(&e, env, out, err);
+        }
+    };
+
+    // Missing kind, a cds_message_series key naming an unknown series, a
+    // cds_message_lead key absent from cds_message_series, or a spread/yield
+    // mix left outside the lead pair all fail here (RenderError) — failed,
+    // no deliver.
+    let message = match format_message(&series, as_of, &message_keys, &lead) {
         Ok(m) => m,
         Err(e) => {
             return finish_failed(&e.message, env, out, err);
