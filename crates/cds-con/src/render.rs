@@ -9,6 +9,19 @@ use credit_store::{
     WindowCounts,
 };
 
+/// Truncated (never rounded) tenths-of-a-percent share of `below` within `n`,
+/// e.g. `(2, 3)` -> `"66.6"`, never `"66.7"`. Integer arithmetic on the exact
+/// values that are also printed as the count, so the share can never disagree
+/// with `{below} 筆比現在低` on the same line -- there is no separate
+/// percentage computed from a different source.
+fn truncated_pct_str(below: usize, n: usize) -> String {
+    if n == 0 {
+        return "0.0".into();
+    }
+    let tenths = (below as u64 * 1000) / n as u64;
+    format!("{}.{}", tenths / 10, tenths % 10)
+}
+
 /// Publication frequency shown on each series line and on the freshness line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frequency {
@@ -120,7 +133,12 @@ fn blank() -> Segment {
 /// transport (`parse_mode: None`) renders a proportional font, so this bound
 /// is a coarse proxy against a line bloating back to a size that breaks even
 /// a monospace reader -- it is not a guarantee against wrapping on a phone.
-const WIDTH_BOUND: usize = 40;
+///
+/// Raised from 40 to 48 for v3: the value moved onto the title line (v3 §3),
+/// and the widest title measured against the live 2026-07-30 data --
+/// `Baa 比 10年期美債多出的殖利率  1.63%   [baa10y]` -- is 47 display
+/// columns under the CJK-is-2 model below.
+const WIDTH_BOUND: usize = 48;
 
 /// Test seam for [`WIDTH_BOUND`]. Kept private otherwise -- nothing in
 /// production rendering needs it once column alignment is gone.
@@ -266,181 +284,83 @@ fn series_line_from_rows(
     }
 }
 
-/// Day-of-month from an injected `YYYY-MM-DD`. No clock: `main.rs` supplies a
-/// CST calendar date, so keying the bound on `as_of` is CST by construction.
-fn day_of_month(as_of: &str) -> u32 {
-    as_of.get(8..10).and_then(|d| d.parse().ok()).unwrap_or(1)
-}
-
-/// Monthly series change once a month; on the other ~29 days they do not earn
-/// a third of the message. The split is by publication frequency, never by
-/// value, so the rule is identical whichever way the market moves.
-fn expand_monthly(as_of: &str, expand_days: u32) -> bool {
-    day_of_month(as_of) <= expand_days
-}
-
 /// Render precomputed lines into the daily message body as structurally
 /// tagged segments -- the seam [`render_lines`] flattens and tests can
 /// consult directly (see `render_parts`/`Segment` doc).
 ///
-/// `as_of` is an injected YYYY-MM-DD used only for age-in-days and for the
-/// daily/monthly expand decision. No clock. `expand_days` is the configured
-/// day-of-month bound (`cds_monthly_expand_days`), read by the caller from
-/// the registry `config` table -- never hardcoded here.
-pub fn render_parts(lines: &[SeriesLine], as_of: &str, expand_days: u32) -> Vec<Segment> {
+/// `lines` is already the exact, ordered set the message shows -- selection
+/// against `cds_message_series` happens in [`select_message_series`], before
+/// this function ever runs. There is no daily/monthly split here: v2 built
+/// one to fit a 58-line message; v3 is 28 lines and the mechanism would have
+/// hidden the yield-vs-spread contrast the message exists to show on the
+/// ~29 days a month it stayed collapsed.
+///
+/// `as_of` is an injected YYYY-MM-DD used only for age-in-days on the
+/// freshness line. No clock.
+pub fn render_parts(lines: &[SeriesLine], as_of: &str) -> Vec<Segment> {
     let mut out: Vec<Segment> = Vec::new();
-    out.push(prose("💾 信用利差"));
+    match header_date(lines) {
+        Some(d) => out.push(prose(format!("💾 信用利差 · {d}"))),
+        None => out.push(prose("💾 信用利差")),
+    }
     out.push(blank());
 
-    let expand = expand_monthly(as_of, expand_days);
-    // Filtered AFTER analyze() only -- `lines` already carries the derived
-    // baa−aaa row built from the `baa`/`aaa` inputs; filtering any earlier
-    // would stop it being derived at all.
-    let shown: Vec<&SeriesLine> = lines
-        .iter()
-        .filter(|l| expand || l.frequency == Frequency::Daily)
-        .collect();
-
-    let spreads: Vec<&SeriesLine> = shown
-        .iter()
-        .copied()
-        .filter(|l| l.kind == SeriesKind::Spread)
-        .collect();
-    let yields: Vec<&SeriesLine> = shown
-        .iter()
-        .copied()
-        .filter(|l| l.kind == SeriesKind::Yield)
-        .collect();
+    let spreads: Vec<&SeriesLine> = lines.iter().filter(|l| l.kind == SeriesKind::Spread).collect();
+    let yields: Vec<&SeriesLine> = lines.iter().filter(|l| l.kind == SeriesKind::Yield).collect();
 
     out.push(prose("利差 —— 相對某個基準多出的殖利率"));
+    out.push(prose("已扣掉利率,動的是市場對「借錢給公司」的要價"));
     out.push(blank());
     push_blocks(&mut out, &spreads);
 
     out.push(blank());
     out.push(prose(
-        "總殖利率 —— 含無風險利率在內的全部借款成本(與上一區不可互比)",
+        "總殖利率 —— 含利率在內的全部借款成本,與上一區不可互比",
+    ));
+    out.push(prose(
+        "留這一條當對照:同一批 Baa 債,上面那條扣掉了利率,這條沒扣",
     ));
     out.push(blank());
     push_blocks(&mut out, &yields);
 
     out.push(blank());
-    // Freshness is drawn from what is actually shown today -- a collapsed
-    // monthly series must not advertise a date that is not on screen.
-    let shown_owned: Vec<SeriesLine> = shown.iter().map(|&l| l.clone()).collect();
-    out.push(prose(format_freshness_line(&shown_owned, as_of)));
-    // The FULL `lines` (not `shown`) so a missing monthly series is still
-    // named on the ~29 days a month the block is collapsed -- filtering the
-    // monthly rows out before this check would hide it.
-    if let Some(s) = monthly_status_line(lines, expand_days).filter(|_| !expand) {
-        out.push(prose(s));
-    }
-    // The SIGNAL-ONLY marker stays: it is a project-wide boundary marker, not
-    // prose. Only the explanation after it became concrete.
-    //
-    // The trailing em dash only belongs on the line when a contrast sentence
-    // actually follows it -- if every rendered series shares one coverage
-    // year (e.g. a daily-only day with baa10y missing, so every remaining
-    // daily series starts 2023), `footer_contrast` returns `None` and a
-    // dash with nothing after it would read as a cut-off sentence. This
-    // branch is structural (how many distinct coverage years are on screen),
-    // never value-based, so which way the numbers moved on a given day
-    // cannot flip it.
-    match footer_contrast(&shown) {
-        Some(c) => {
-            out.push(prose(
-                "SIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列比較——",
-            ));
-            out.push(prose(c));
-        }
-        None => {
-            out.push(prose(
-                "SIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列比較。",
-            ));
-        }
-    }
+    out.push(prose(format_freshness_line(lines, as_of)));
+    // Fixed prose, never a computed contrast between today's specific
+    // rulers -- v2's dynamic footer sentence is gone along with the
+    // daily/monthly split it depended on to know which rulers were on
+    // screen. No verdict, no adjective about level: only what a window is
+    // for.
+    out.push(prose(
+        "SIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。它們回答不同的問題,不可跨列比。",
+    ));
 
     out
 }
 
 /// Flatten [`render_parts`] into the plain-text message body actually sent.
-pub fn render_lines(lines: &[SeriesLine], as_of: &str, expand_days: u32) -> String {
-    render_parts(lines, as_of, expand_days)
+pub fn render_lines(lines: &[SeriesLine], as_of: &str) -> String {
+    render_parts(lines, as_of)
         .into_iter()
         .map(|s| s.text)
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// Collapsed monthly summary. Carries the month reached AND any missing
-/// monthly series -- without the latter, filtering the rows out would hide a
-/// missing series for the ~29 days the block is collapsed.
-fn monthly_status_line(lines: &[SeriesLine], expand_days: u32) -> Option<String> {
-    let monthly: Vec<&SeriesLine> = lines
-        .iter()
-        .filter(|l| l.frequency == Frequency::Monthly)
-        .collect();
-    if monthly.is_empty() {
-        return None;
-    }
-    let reached = monthly
-        .iter()
-        .filter_map(|l| l.latest.as_ref())
-        .min()
-        .map(|d| d[..7.min(d.len())].to_string())
-        .unwrap_or_else(|| "—".into());
-    let mut s = format!(
-        "月頻 {} 列 資料至 {},未展開(每月 1–{} 日展開)",
-        monthly.len(),
-        reached,
-        expand_days
-    );
-    let missing: Vec<&str> = monthly
-        .iter()
-        .filter(|l| l.value.is_none())
-        .map(|l| l.key.as_str())
-        .collect();
-    if !missing.is_empty() {
-        s.push_str(&format!("・缺 {}", missing.join(",")));
-    }
-    Some(s)
-}
-
-/// Two rulers that are actually on screen today. Naming a collapsed series'
-/// start year would point the reader at something not in the message.
-fn footer_contrast(shown: &[&SeriesLine]) -> Option<String> {
-    let mut with_cov: Vec<&&SeriesLine> = shown
-        .iter()
-        .filter(|l| l.coverage_start.is_some() && !l.windows.is_empty())
-        .collect();
-    with_cov.sort_by_key(|l| l.coverage_start.clone());
-    let (first, last) = (with_cov.first()?, with_cov.last()?);
-    if coverage_year(first) == coverage_year(last) {
-        return None;
-    }
-    // Match the full-history window by its label (`自{year}`), never by
-    // position. `series_line_from_rows` always pushes it last today, but that
-    // is an implementation detail of one function -- a future window reorder
-    // (or a hand-built SeriesLine) must not silently pull a count from the
-    // wrong window.
-    let full_history_n = |l: &SeriesLine| -> Option<usize> {
-        let year = coverage_year(l)?;
-        let want = format!("自{year}");
-        l.windows.iter().find(|w| w.label == want).map(|w| w.n)
-    };
-    Some(format!(
-        "自{} 的 {} 筆和自{} 的 {} 筆不是同一把尺。",
-        coverage_year(last)?,
-        full_history_n(last)?,
-        coverage_year(first)?,
-        full_history_n(first)?,
-    ))
+/// Date shown on the header line: the most recent daily observation among
+/// the rendered series, falling back to the most recent monthly one if no
+/// daily series is present. This is a fact about the data ("what date do
+/// these numbers reflect"), not the run date -- `as_of` (today) can be days
+/// ahead of it, which is exactly what the freshness line's age-in-days
+/// already states.
+fn header_date(lines: &[SeriesLine]) -> Option<String> {
+    min_latest(lines, Frequency::Daily).or_else(|| min_latest(lines, Frequency::Monthly))
 }
 
 /// Push each series' block, with a blank line separating consecutive
 /// blocks -- none before the first, so it sits directly under the header.
 /// Every line a block contributes is tagged `Data`: a series' title line
-/// (`Label [key]`) wraps just as badly as its window lines if it bloats back
-/// toward the old table's column width.
+/// (`Label  value   [key]`) wraps just as badly as its window lines if it
+/// bloats back toward the old table's column width.
 fn push_blocks(out: &mut Vec<Segment>, series: &[&SeriesLine]) {
     for (i, line) in series.iter().enumerate() {
         if i > 0 {
@@ -450,44 +370,119 @@ fn push_blocks(out: &mut Vec<Segment>, series: &[&SeriesLine]) {
     }
 }
 
-/// One series as a block of lines: title, then value + coverage, then one
-/// line per trailing window. No padding across series -- `parse_mode: None`
-/// means Telegram renders this in a proportional font, so column alignment
-/// across rows was never reaching the reader. See the 2026-08-04 design note.
+/// One series as a block of lines: title (label, value, and key together),
+/// then one line per trailing window. No padding across series --
+/// `parse_mode: None` means Telegram renders this in a proportional font, so
+/// column alignment across rows was never reaching the reader. See the
+/// 2026-08-04 design note.
 ///
-/// Title is `Label [key]`. The reader and the operator are the same person:
-/// the key is what he types into `price cds show <key>` and what he edits in
-/// `cds_series`, so dropping it from the daily message would force a lookup.
-/// The FRED series id stays out -- it is longer and cannot be passed to
-/// anything.
+/// Title is `Label  value   [key]` (v3 §3: the value moved here from its own
+/// line, since the owner could not read the count-only v2 message without
+/// seeing the size of the number). The reader and the operator are the same
+/// person: the key is what he types into `price cds show <key>` and what he
+/// edits in `cds_series`, so dropping it from the daily message would force a
+/// lookup. The FRED series id stays out -- it is longer and cannot be passed
+/// to anything.
 fn series_block(line: &SeriesLine) -> Vec<String> {
-    let mut out = vec![format!("{} [{}]", line.label, line.key)];
-    out.push(format!("  {}  {}", value_str(line), coverage_str(line)));
+    let mut out = vec![format!("{}  {}   [{}]", line.label, value_str(line), line.key)];
     out.extend(window_lines(line));
     out
 }
 
-/// A trailing-window count that the series can actually support. A percentile
-/// is not printed; the count is the definition, so the reader never has to
-/// know what `p` meant.
+/// One line per trailing window the series can support, total named before
+/// the part (v3 §4: `{n} 筆裡 {below} 筆比現在低`, not `{below}/{n}`), with
+/// the share alongside in parentheses (v3 §3, reversing v2 §2 -- the owner
+/// could not read a bare count). The share is truncated from the very
+/// `below`/`n` printed on the same line via [`truncated_pct_str`], never
+/// computed separately, so the two can never disagree.
 fn window_lines(line: &SeriesLine) -> Vec<String> {
     line.windows
         .iter()
-        .map(|w| format!("  {}  {}/{} 筆低於本次", w.label, w.below, w.n))
+        .map(|w| {
+            format!(
+                "  {} {} 筆裡 {} 筆比現在低({}%)",
+                w.label,
+                w.n,
+                w.below,
+                truncated_pct_str(w.below, w.n)
+            )
+        })
         .collect()
 }
 
-/// Analyze then render. Entry point for the skill once Task 3 wires the store.
+/// Analyze, select the configured message series, then render.
 ///
-/// `expand_days` gates the monthly block (see [`expand_monthly`]) and must
-/// come from the caller's config read, never a literal here.
+/// `message_keys` is `cds_message_series` (v3 §5), parsed by
+/// [`parse_message_series`] and resolved by [`select_message_series`] --
+/// filtered AFTER `analyze()`, never before, so the derived `baa−aaa` row (only
+/// built once `baa`/`aaa` have both been analyzed) can still be named in it.
 pub fn format_message(
     series: &[SeriesInput],
     as_of: &str,
-    expand_days: u32,
+    message_keys: &[String],
 ) -> Result<String, RenderError> {
     let lines = analyze(series)?;
-    Ok(render_lines(&lines, as_of, expand_days))
+    let shown = select_message_series(&lines, message_keys)?;
+    Ok(render_lines(&shown, as_of))
+}
+
+/// Parse `cds_message_series`: a comma-separated list of series keys in
+/// display order (v3 §5). Every token must be non-empty -- a blank value, a
+/// leading/trailing/doubled comma, is unparseable and fails the run loudly,
+/// the same standard `cds_series` and a missing `kind` already hold. This
+/// function does not check the keys against any known series; that check
+/// happens in [`select_message_series`], which is the only place that knows
+/// what series exist.
+pub fn parse_message_series(raw: &str) -> Result<Vec<String>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "cds_message_series is empty; expected a comma-separated list of series keys".into(),
+        );
+    }
+    let mut out = Vec::new();
+    for (i, tok) in trimmed.split(',').enumerate() {
+        let key = tok.trim();
+        if key.is_empty() {
+            return Err(format!(
+                "cds_message_series has an empty key at position {} in '{trimmed}'",
+                i + 1
+            ));
+        }
+        out.push(key.to_string());
+    }
+    Ok(out)
+}
+
+/// Select and order the series the message actually shows, from
+/// `cds_message_series`'s parsed key list. Every key must name a series
+/// present in `lines` -- an unknown key fails loudly, by name, rather than
+/// being silently dropped (v3 §5). Order follows `keys`, not `analyze`'s
+/// coverage-first sort: the config *is* the display order.
+///
+/// Must run AFTER [`analyze`]: the derived `baa−aaa` row only exists in its
+/// output, built from the `baa`/`aaa` inputs, so selecting against the raw
+/// `SeriesInput`s first would mean it is never derived at all.
+pub fn select_message_series(
+    lines: &[SeriesLine],
+    keys: &[String],
+) -> Result<Vec<SeriesLine>, RenderError> {
+    let mut out = Vec::with_capacity(keys.len());
+    for key in keys {
+        match lines.iter().find(|l| &l.key == key) {
+            Some(line) => out.push(line.clone()),
+            None => {
+                let available: Vec<&str> = lines.iter().map(|l| l.key.as_str()).collect();
+                return Err(RenderError {
+                    message: format!(
+                        "cds_message_series names unknown series '{key}'; known series are: {}",
+                        available.join(", ")
+                    ),
+                });
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Values carry `%`. Every configured FRED series is denominated in percent, and
@@ -503,34 +498,10 @@ fn value_str(line: &SeriesLine) -> String {
 
 /// The 4-char year prefix of a `YYYY-MM-DD` date. The day and month carry no
 /// meaning for the reader; the year is what makes a 1-year window on a
-/// 3-year history read differently from one on 107 years. Shared by
-/// [`coverage_year`] and the full-history window label in
-/// [`series_line_from_rows`] so the slice bound lives in exactly one place.
+/// 3-year history read differently from one on 107 years. Used to build the
+/// full-history window's `自{year}` label in [`series_line_from_rows`].
 fn year_str(date: &str) -> &str {
     &date[..4.min(date.len())]
-}
-
-/// Coverage start year, the only part of a start date that carries meaning:
-/// it is what makes a 1-year window over a 3-year history read differently
-/// from one over 107 years.
-fn coverage_year(line: &SeriesLine) -> Option<&str> {
-    line.coverage_start.as_deref().map(year_str)
-}
-
-/// `日頻・自1986` rather than `1986-01-02→ daily`: frequency leads because it
-/// is the axis that changes between blocks (daily vs monthly), while within
-/// a block the day and month of a coverage start carry no meaning for the
-/// reader -- the year is what makes a 1-year percentile on a 3-year history
-/// read differently from one on 107 years.
-fn coverage_str(line: &SeriesLine) -> String {
-    let freq = match line.frequency {
-        Frequency::Daily => "日頻",
-        Frequency::Monthly => "月頻",
-    };
-    match coverage_year(line) {
-        Some(y) => format!("{freq}・自{y}"),
-        None => format!("{freq}・自—"),
-    }
 }
 
 fn format_freshness_line(lines: &[SeriesLine], as_of: &str) -> String {
@@ -557,7 +528,7 @@ fn format_freshness_line(lines: &[SeriesLine], as_of: &str) -> String {
         parts.push(format!("缺 {}", missing.join(",")));
     }
 
-    format!("資料:{}", parts.join(" · "))
+    format!("資料:{}", parts.join("・"))
 }
 
 /// Minimum latest date across series of the given frequency.

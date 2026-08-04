@@ -437,3 +437,93 @@ verdict and accepted Codex's distinction. Its findings, each corroborated:
 - ✅ **Timezone and Label-in-DB are untestable gaps.** Confirmed: `main.rs`
   computes `cst_today()` at offset +8, so a UTC-keyed day bound would misfire;
   labels are config and invisible to Rust tests. Both now have entries above.
+
+---
+
+# v3 — the reader could not read it (2026-08-04, same day)
+
+v2 shipped, was delivered to the phone, and **the owner could not understand it.**
+That is the only verdict that matters: a message with one reader, which that
+reader cannot read, has failed regardless of how well it satisfies its
+constraints. v2 was optimised for defensibility over legibility.
+
+## What the owner said, and what it proved
+
+> 「今天利差在數十年低點、殖利率在一年高點。這句話我懂。」
+
+Two things follow, and they pull against v2's design:
+
+1. **The sentence he understands is a contrast between the two families.**
+   v2's reduction plan had just deleted the yields block — which would have
+   removed the very comparison that made it click.
+2. **Counts alone do not convey magnitude.** `61/250` requires mental division.
+   Dropping the parenthetical share (v2 §2, decided (a)) removed the collision
+   between two meanings of `%` — and removed the reader's only way to see size.
+
+**The rejection of 「偏窄」 was never about the word "low".** Re-reading the
+original reason: *"「偏窄」 IS a verdict … smuggles in a ladder **whose window is
+never stated**."* The defect was the **unstated window**. The owner's own
+sentence names both windows (數十年 / 一年), which is why it informs without
+smuggling.
+
+A third opinion (K3) proposed two rewrites, both built on verdicts
+(「極度樂觀」「狀態:極低」). It had not been told the no-verdict constraint, so it
+answered a different question. **Its own example then committed the error the
+constraint exists to prevent**: it read `CCC 殖利率 14.29%` as 「最爛的公司壓力大」,
+but that is a *yield*, carrying the risk-free rate. Measured the same day,
+`hy_oas` — the spread, with rates removed — sat at 117/265 over one year, i.e.
+mid-range. The high number was rates, not credit stress. That is checkable
+against our own store, and it is why the two-block split exists.
+
+**Decision: the no-verdict rule stays.** The owner reaffirmed it after being
+shown both the cost (he cannot read it) and what it buys (today spreads sit at
+multi-decade lows while yields sit at one-year highs; any single-window ladder
+must pick, and the two families read oppositely).
+
+## v3 decisions
+
+### 1. Five series, every day
+
+`baa−aaa`, `baa10y`, `hy_oas`, `ig_oas` (spreads) + **`baa` (the one yield)**.
+
+`baa` is kept because it is the *same bonds* as `baa10y` — one with the
+risk-free rate subtracted, one without. Placed side by side the pair **is** the
+owner's sentence, demonstrated arithmetically rather than asserted: today the
+spread sits at 12–13% of its history while the yield sits at 92–95% of its
+recent history, and the gap between them is the interest rate. The remaining
+four yields stay in the store and stay available through `price cds show`.
+
+### 2. The daily/monthly split is removed entirely
+
+v2 built it because the message ran to 58 lines. v3 is 28. The mechanism no
+longer earns its cost, and it actively breaks v3: `baa` is monthly, so under the
+split the contrast the owner needs would be absent ~29 days a month.
+
+Deleted with it: `expand_days` on `format_message`/`render_lines`,
+`monthly_expand_days`, the `cds_monthly_expand_days` config key, the collapsed
+monthly status line, the missing-monthly-series safeguard, `day_of_month`,
+`expand_monthly`, and the whole "days-1–7 is a proxy that can be wrong" limit.
+**A mechanism built for a long message is pure liability in a short one.**
+
+### 3. The share returns, beside the count
+
+`近1年 250 筆裡 61 筆比現在低(24.4%)`.
+
+This reverses v2 §2's decision (a), on evidence that did not exist when it was
+made: the owner cannot read the counts. The original objection was that
+`(24.4%)` sat one line under `1.63%`, colliding a share with a rate. **v3 moves
+the value onto the title line**, so the two never sit adjacent and the sentence
+shape around each is different. Truncation still applies; the count remains the
+primary fact and the share is derived from it, never separately computed.
+
+### 4. Total first, then the count
+
+`250 筆裡 61 筆比現在低`, not `61/250 筆低於本次`. Naming the whole before the
+part gives magnitude without arithmetic. `0 筆比現在低` reads directly as
+"nothing lower" and keeps the `p0` fix.
+
+### 5. Which series the message shows is data, not code
+
+The store holds eight series; the message shows five. That selection is a new
+config key — the message must not hardcode a series list, and `cds_series` must
+keep all eight so `price cds show` and the fetch job are unaffected.
