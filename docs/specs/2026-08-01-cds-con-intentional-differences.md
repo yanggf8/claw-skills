@@ -151,29 +151,75 @@ even while the block is collapsed (`・缺 <key>`) — not that a reader is
 guaranteed to see that month's numbers. So the correct framing is **a wrong
 proxy stays auditable**, never "nothing is ever silently dropped."
 
+## Readability pass v3 (2026-08-04, same day) — v2 shipped and its only reader could not read it
+
+v2 above was implemented, delivered to the phone, and the owner could not
+understand it. That is the only verdict that matters for a message with one
+reader: a message the reader cannot read has failed, regardless of how well
+it satisfies its own constraints — v2 was optimised for defensibility over
+legibility. v3 replaced it hours later. Full design, the owner's own words,
+the review trail, and the target mock are in the `# v3` section of
+`docs/specs/2026-08-04-cds-con-readability-v2-design.md`; this entry records
+the three things a future reader would otherwise re-litigate.
+
+**The daily/monthly split was built, reviewed, merged, and deleted within a
+day — and that is not waste.** It was sized correctly for the message it was
+built for: v2 ran to 58 lines, and the split was what kept 41 of them off the
+screen on an ordinary day. Cutting the message to five series (v3 §1) made
+it 28 lines, well under the length the split existed to manage, and the split
+then became a straight liability: `baa` — one of the five kept series — is
+monthly, so under the old split the spread-vs-yield contrast the whole
+message exists to demonstrate would have been missing about 29 days a month.
+Deleted with it: `expand_days` on `format_message`/`render_lines`,
+`monthly_expand_days`, the `cds_monthly_expand_days` config key, the
+collapsed monthly status line, the missing-monthly-series safeguard,
+`day_of_month`, `expand_monthly`, and the "days-1–7 is a proxy that can be
+wrong" limitation two sections above. Record this so nobody rebuilds it from
+scratch next time the message grows: **a mechanism for managing length is a
+liability once the message is short enough not to need one** — check the
+line count before reaching for a collapse strategy, not after.
+
+**The `%` ban was reversed on evidence, not on taste.** v2 §2 of the design
+doc dropped the share percentage from each window (`61/250 筆低於本次`, no
+`(24.4%)`), reasoning that the count alone carried the definition and a
+parenthetical share would collide two meanings of `%` on adjacent lines. That
+reasoning was internally consistent and shipped anyway broken: the owner
+could not read `61/250` without doing the division himself, so the message
+failed on the one axis that matters — comprehension by its one reader. v3
+restored the share, and fixed the collision by moving the *value* off its own
+line and onto the series' title line instead (v3 §3), so a value's `%` and a
+window's `%` never sit on adjacent lines to begin with. The lesson: dropping
+a symbol to avoid an ambiguity is only a fix if the reader can still get the
+information some other way; here the "other way" (mental division) does not
+exist for the reader this message has.
+
 ## Known limits
 
 - **Frequency is inferred, not declared.** `SeriesInput` needs a frequency and
   the config carries none, so it is derived from observation gaps: median ≥ 20
   days is monthly. This sits uneasily beside the `kind` decision, which added a
-  config field precisely because *inferring* the family was unsafe. **The blast
-  radius of a misclassification is larger than this note originally said.**
-  Written when frequency was only a display word on the `資料:` line, it said a
-  misclassification "would silently place a series in the wrong group" there —
-  true then, but readability v2's daily/monthly split
-  (`2026-08-04-cds-con-readability-v2-design.md` §4) made frequency the switch
-  that decides **whether the series is rendered at all** on the ~29 days a month
-  the monthly block sits collapsed. A series wrongly inferred Daily still shows
-  every day, just mislabeled. A series wrongly inferred Monthly disappears from
-  the message outright outside the day-1–7 window and survives only as a
-  headcount in the collapsed status line (or, if it is `baa`/`aaa`, silently
-  drops the derived `baa−aaa` block with it) — the exact silent-miss the v2
-  status-line safeguard exists to prevent, reopened one layer down at the
-  classifier. Measured before accepting: the six daily series have gaps of
-  1–5 days and the two monthly ones 28–31, so the threshold sits in a 23-day
-  void with 5.6× margin. Accepted rather than forcing a fifth config field. It
-  needs revisiting if a source ever supplies calendar-daily rows — the same
-  class of assumption as `MIN_SPAN_DAYS` against `WINDOW_SIZE` in oilcon.
+  config field precisely because *inferring* the family was unsafe.
+  **Corrected 2026-08-04 (v3): the blast radius this note previously described
+  no longer applies.** Between the two passes that day, frequency's role
+  changed twice. Written when frequency was only a display word on the `資料:`
+  line, this note said a misclassification "would silently place a series in
+  the wrong group" there. Readability v2's daily/monthly split then made
+  frequency the switch deciding **whether the series rendered at all** for
+  ~29 days a month — a much larger blast radius, recorded in this note's
+  earlier revision. v3 deleted that split hours later (see below), and with it
+  the only path by which a frequency misclassification could hide a series.
+  Frequency's entire remaining job is grouping a series' latest date into the
+  `日 至` or `月 至` half of the freshness line
+  (`format_freshness_line`/`min_latest`, `render.rs:575-577`) and choosing the
+  header date's fallback (`header_date`, `render.rs:406`) — a misclassified
+  series still always renders its full block, value and windows included; a
+  wrong inference only misfiles its date into the wrong freshness bucket, or
+  makes the header date fall back one step further than it should. Measured
+  before accepting: the six daily series have gaps of 1–5 days and the two
+  monthly ones 28–31, so the threshold sits in a 23-day void with 5.6×
+  margin. Accepted rather than forcing a fifth config field. It needs
+  revisiting if a source ever supplies calendar-daily rows — the same class of
+  assumption as `MIN_SPAN_DAYS` against `WINDOW_SIZE` in oilcon.
 - **The `config` table is not in `credit-store`.** It lives in `price-cli`'s
   private store module, so `run.rs` embeds a one-line
   `SELECT value FROM config WHERE key = ?`. One trivial query is tolerable —
@@ -189,11 +235,16 @@ proxy stays auditable**, never "nothing is ever silently dropped."
 - **The two cron jobs are ordered by the clock alone.** Fetch at 06:00, deliver
   at 06:30. Nothing enforces that the fetch succeeded first; the `資料:` line is
   what makes a missed fetch visible.
-- **The plan's golden message and the live output differ in one tie.** `aaa`
-  and `baa` both start 1919-01-01, so the ordering rule falls through to config
-  order — and the live config lists `baa` first while the golden was written
-  `aaa` first. Both are correct under the rule; the golden simply predates the
-  live config's order.
+- **The plan's golden message and the live output differ in one tie —
+  moot under v3.** `aaa` and `baa` both start 1919-01-01, so `analyze()`'s
+  ordering rule falls through to config order — and the live config lists
+  `baa` first while an earlier golden was written `aaa` first. Both were
+  correct under the rule; the golden simply predated the live config's order.
+  This applied to v2, whose message rendered `analyze()`'s coverage-first sort
+  directly. It no longer can under v3: message order instead follows
+  `cds_message_series` literally (`select_message_series`, "the config *is*
+  the display order"), and the configured five omit `aaa` entirely, so the tie
+  cannot surface in the delivered message.
 
 ## Not a CDS quote
 

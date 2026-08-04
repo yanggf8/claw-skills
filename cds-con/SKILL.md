@@ -62,57 +62,83 @@ ICE/BAML series only ~3 years — a licensing cap on the keyless FRED endpoint,
 not a bug. `baa−aaa` is derived at read time from `baa` and `aaa`; it is the
 longest-history credit-stress measure available.
 
+The store holds all nine (`credit-store`'s eight configured series plus the
+derived `baa−aaa`); the daily message narrows that to five — see **Message
+layout** below.
+
 ## Message layout: what is data and what is code
 
-Readability pass v2 (2026-08-04) replaced the one-row-per-series table with a
-vertical block per series, replaced percentiles with counts, and split the
-message into a daily set (shown every day) and a monthly set (shown only on
-the first few days of the month). Full rationale, what it cost, and the review
-trail are in
-`docs/specs/2026-08-04-cds-con-readability-v2-design.md`; this section
-documents what the code actually does.
+Two readability passes happened the same day, 2026-08-04. v2 replaced the
+one-row-per-series table with a vertical block per series, cut percentiles
+down to bare counts, and split the message into a daily set and a monthly
+set. It shipped, and the owner — the message's only reader — could not read
+it. v3 replaced it hours later: the daily/monthly split is gone entirely,
+the message shows five series instead of nine, and the count each window
+prints carries its share again. Full rationale, the review trail, and what
+each pass cost are in
+`docs/specs/2026-08-04-cds-con-readability-v2-design.md` (its final `# v3`
+section is the part that matters for today's code — v2's own body is
+superseded); this section documents what the code actually does now.
+
+**The message shows five series: `baa−aaa`, `baa10y`, `hy_oas`, `ig_oas`
+(spreads) and `baa` (the one yield kept).** Which five, and in what order, is
+a config value, `cds_message_series` — a comma-separated list of series keys
+(mandatory; a missing key, a failed read, or an unparseable value each fail
+the run loudly and by name, same as a missing `cds_series` or a missing
+`kind`; see **Config** below). `cds_series` itself still carries all eight
+series, and `price cds show`/the fetch job are unaffected — only the message
+is narrowed.
+
+**`baa` is kept on purpose, not left over.** It is the *same bonds* as
+`baa10y` — one with the risk-free rate left in, one with it subtracted —
+placed in separate blocks so the pair demonstrates the spread/yield
+difference arithmetically rather than asserting it: the block header reads
+「所以這條數字高,可能是央行升息,不是公司快倒閉」. A reviewer who read a high
+yield alone as company-level stress, without seeing the matching spread sit
+mid-range the same day, is exactly the misreading this pairing exists to
+prevent.
 
 **Series names come from the `Label` field of `cds_series`, not from Rust.**
-Each series renders as a block: a title line `Label [key]`, then a
-`value  頻率・自YYYY` line, then one line per trailing window. Translating or
-renaming a series is a config change and never touches code. The one
-exception is the derived quality spread, which is computed in `render.rs` and
-so is named there (`BAA_AAA_LABEL`) — there is no config row to carry it. The
-key still rides along in `[brackets]` on the title line: the reader and the
-operator are the same person, and `[baa10y]` is what he types into
-`price cds show` and edits in `cds_series`, so dropping it would force a
-lookup. The FRED series id stays out — longer, and it cannot be passed to
-anything.
+Each series renders as a block: a title line `Label  value   [key]`, then one
+line per trailing window. Translating or renaming a series is a config
+change and never touches code. The one exception is the derived quality
+spread, which is computed in `render.rs` and so is named there
+(`BAA_AAA_LABEL`) — there is no config row to carry it. The key still rides
+along in `[brackets]` on the title line: the reader and the operator are the
+same person, and `[baa10y]` is what he types into `price cds show` and edits
+in `cds_series`, so dropping it would force a lookup. The FRED series id
+stays out — longer, and it cannot be passed to anything.
 
-**There is no column alignment, and there will not be again.** The column
-machinery (`display_width`/`pad_to`/`RowWidths`) was deleted, not disabled:
-`run.rs` sets `parse_mode: None`, so Telegram renders the body in a
-**proportional** font, where space padding never produced a column for
-anyone. `every_rendered_line_fits_its_width_bound` is what replaced the old
-`cjk_labels_keep_columns_aligned` alignment pin — it is a coarse proxy against
-a line bloating back to a size that breaks even a monospace reader, not a
-guarantee against wrapping on a phone.
+**There is no column alignment, and there will not be again.** The old
+column machinery (`display_width`/`pad_to`/`RowWidths` from the table layout)
+was deleted, not disabled: `run.rs` sets `parse_mode: None`, so Telegram
+renders the body in a **proportional** font, where space padding never
+produced a column for anyone.
 
-**Percentiles are gone; every window prints a count instead:
-`label  below/n 筆低於本次`.** `近1年 p24` became `近1年 61/250 筆低於本次`. This
-is arithmetic, not an interpretation: `below` is exactly
-`credit-store`'s strictly-below comparison (`values.iter().filter(|v| **v <
-x).count()`), so the wording is always 「低於」, never 「不高於」
-(`wording_is_strictly_below_never_at_most`), and what prints is that raw
-`(below, n)` pair carried straight through, never a count reconstructed from
-a rounded or scaled percentage
-(`printed_count_is_the_raw_comparison_never_derived`). A window sitting at
-its minimum prints `0/N` — never a blank, an omitted window, or a dash — which
-is what kills the old `p0` ambiguity (a truncated `p0` could mean "the
-lowest value" or "0.9% of the window is lower"; a count cannot)
-(`zero_below_renders_as_zero_over_n`). **No share percentage rides beside a
-count** — `61/250 筆低於本次(24.4%)` was drafted and rejected: a `%` one line
-under a value's own `%` collides two meanings of one symbol, and the count
-already carries the definition (`no_share_percentage_is_printed_beside_a_count`).
-Values still carry `%` (OAS is commonly quoted in basis points, so a bare
-`2.84` is ambiguous); the invariant that survives from the old percentile-era
-rule is narrower now but still tested: **a percentile figure must never carry
-a `%` sign** (`percent_marks_values_but_never_percentiles`).
+**Every window prints a count with its share:
+`{n} 筆裡 {below} 筆比現在低({share}%)`.** `近1年 250 筆裡 61 筆比現在低(24.4%)`.
+The count states the whole before the part so magnitude reads without mental
+division; `below` is exactly `credit-store`'s strictly-below comparison
+(`values.iter().filter(|v| **v < x).count()`), so the wording is always
+「低於」, never 「不高於」 (`wording_is_strictly_below_never_at_most`). The
+share is truncated (never rounded) from that same `(below, n)` pair, never
+computed separately, so it can never disagree with the count on the same
+line (`share_percent_is_truncated_never_rounded_up`). A window sitting at
+its minimum prints `0 筆裡 0 筆比現在低(0.0%)` — never a blank, an omitted
+window, or a dash — which is what kills the old `p0` ambiguity, where a
+truncated `p0` could mean either "the lowest value" or "0.9% of the window is
+lower".
+
+**A rate and a share must never appear on the same line — that is the rule
+that survives, not "a percentile must never carry a `%` sign".** The earlier
+wording is superseded: percentiles are gone, and both values and shares now
+carry `%`. What the rule guards against is unchanged and is why it moved
+rather than vanished: a value's `%` (a rate, e.g. `1.63%`) and a window's `%`
+(a share of observations, e.g. `24.4%`) are two different meanings of one
+symbol, and v3 keeps them apart by putting the value on the series' title
+line and every share on its own window line below — never both on one line
+(`rate_and_share_never_share_a_line`, the direct successor to v2's
+`percent_marks_values_but_never_percentiles`).
 
 **`全庫` is gone; the full-history window is labeled by its actual start
 year.** `baa−aaa` covers 1919, `baa10y` 1986, the ICE/BAML series 2023 — three
@@ -122,57 +148,41 @@ never supplied or guessed (`window_label_is_the_actual_start_year`,
 `three_series_with_different_coverage_get_three_different_labels`,
 `start_year_label_is_derived_from_the_data_not_supplied`).
 
-**Six daily series render every day; three monthly series
-(`baa−aaa`/`baa`/`aaa`) render only on the first few days of the month.** The
-split is by publication frequency, not by value, so the rule is identical
-whichever way the market moves. The day bound is a config value,
-`cds_monthly_expand_days` (mandatory — an absent key, a failed read, or an
-unparseable value each fail the run loudly and by name, same as a missing
-`cds_series` or a missing `kind`; see **Config** below), read fresh on every
-run and evaluated against the injected `as_of` calendar date, never a wall clock
-(`monthly_block_expands_only_within_the_configured_day_bound`,
-`day_bound_is_evaluated_from_as_of_never_a_clock`). `as_of` is always the CST
-date `main.rs` computes (`cst_today()`, fixed offset +8), so the bound is CST
-by construction. On a collapsed day the footer carries a status line instead
-of the block:
+**The daily/monthly split is gone entirely.** v2 built it because the table
+ran to 58 lines; v3 is 28. There is no `cds_monthly_expand_days`, no days-1–7
+expansion rule, no collapsed monthly status line, and no "a wrong proxy stays
+auditable" limitation — all of it, and the config key that drove it, were
+deleted along with the mechanism, not merely hidden. It would also have
+actively broken v3: `baa` is monthly, so under the old split the
+spread-vs-yield contrast the message exists to show would have been absent
+roughly 29 days a month. All configured series in `cds_message_series` render
+every day, unconditionally.
 
-```
-月頻 3 列 資料至 2026-06,未展開(每月 1–7 日展開)
-```
+**Line width is guaranteed by the renderer, not by config staying short.** A
+series' title line (`Label  value   [key]`) is measured under a CJK-is-2
+display-width model against a bound (`WIDTH_BOUND`, 48 columns); a line that
+would exceed it **splits** — the label alone on its own line, then
+`  value   [key]` indented like a window row — instead of silently growing
+past it (`overlong_ascii_label_splits_the_title_line`,
+`overlong_cjk_label_splits_the_title_line`). Short labels render
+byte-identical to the unsplit form. The one case this cannot fix: a label
+that alone already exceeds the bound still overflows on its own line — the
+renderer never truncates a configured label to force a fit, since discarding
+real `cds_series` data would be worse than one wrapped line. The transport
+is still a **proportional** font, so this model is a coarse proxy against a
+line bloating back to desktop-monospace-breaking size, not a guarantee
+against wrapping on a phone.
 
-and, if a monthly series has no value even while collapsed, an added
-`・缺 aaa` — the ~29 days a month the block is hidden must not also hide that
-a series is missing (`monthly_status_line_present_whenever_the_block_is_collapsed`,
-`monthly_status_line_names_missing_monthly_series`). On an expanded day the
-status line disappears and the monthly latest month is appended to the
-`資料:` line instead (`・月 至 2026-06`) — the two are mutually exclusive
-(`monthly_status_line_absent_when_expanded`). The derived `baa−aaa` row is
-built from the full `baa`/`aaa` inputs *before* this filter is applied, so a
-collapsed day still shows the correct quality spread on the days it is
-shown — filtering earlier would silently stop it being derived at all.
-
-**The footer contrast is computed from what actually rendered today, not
-written as a fixed sentence.** `SIGNAL-ONLY:每個窗口各自回答自己的問題,不可跨列
-比較——` is followed by one computed sentence naming the earliest-start and
-latest-start series among the lines actually shown, e.g.
-
-```
-自2023 的 750 筆和自1986 的 10000 筆不是同一把尺。
-```
-
-Drawing the contrast from the rendered set (not the full configured set)
-matters because a monthly series is collapsed on most days: an earlier draft
-named `自1919` in the footer while `baa−aaa` sat hidden in the collapsed
-block, pointing the reader at a ruler that was not on screen
-(`footer_contrast_uses_only_series_rendered_today`). There is no separate
-worked example anymore — the old `window_example` function, which picked one
-line's two disagreeing windows to demonstrate window-dependence, was deleted
-outright. With a count on every window of every line, the demonstration is
-already on every line; a second one added nothing it didn't already show.
+**The footer is fixed prose, not a computed contrast.** v2's footer computed
+a sentence naming the earliest- and latest-start series actually rendered
+that day; it depended on the daily/monthly split to know which rulers were
+on screen, and was deleted along with it. v3's footer states only what a
+window is for: 「SIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。它們回答不同的
+問題,不可跨列比。」
 
 **The `SIGNAL-ONLY` marker stays on the footer.** It is a project-wide boundary
-marker, not prose; only the explanation after it became concrete. Removing it
-during the readability pass was caught by the contract tests.
+marker, not prose; only the explanation after it changed. Removing it during
+a readability pass would be caught by the contract tests.
 
 ## Data Store
 
@@ -209,9 +219,10 @@ than the clock; the `資料:` line is what makes a missed fetch visible.
 - **`failed`, and nothing delivered** — the store is unreachable, the read
   fails, there are zero usable observations (empty store or every configured
   series missing), a series lacks its `kind` so the family split cannot be
-  rendered, or `cds_monthly_expand_days` is absent, unreadable, or unparseable
-  so the daily/monthly split has no bound to evaluate. This follows the repo's
-  standing rule that a hard-failure path must not deliver.
+  rendered, `cds_message_series` is absent, unreadable, or unparseable (empty,
+  or a blank key from a stray/doubled comma), or a `cds_message_series` key
+  names a series that does not exist among the loaded series. This follows the
+  repo's standing rule that a hard-failure path must not deliver.
 
 "Seven days old" is `ok`. "Nothing to report at all" is `failed`.
 
@@ -228,17 +239,22 @@ series without one **fails the run** rather than being guessed — assuming
 "yield" for an unlabelled spread is the false signal the split exists to
 prevent.
 
-The monthly-block day bound is also a DB config value, not code:
+Which series the daily message shows, and in what order, is a separate DB
+config value, also not code:
 
 ```
-cds_monthly_expand_days = 7
+cds_message_series = baa−aaa,baa10y,hy_oas,ig_oas,baa
 ```
 
-Days 1 through this value (inclusive) show the monthly block; later days
-collapse it to the status line described above. **This key is mandatory.**
-Absent, unreadable, or unparseable each **fail the run** rather than being
-guessed — same as a missing `cds_series` or a missing `kind` above — so there
-is never a Rust literal standing in for it in the production path.
+A comma-separated list of series keys (the derived `baa−aaa` key is a valid
+member). **This key is mandatory.** Absent, unreadable, or unparseable —
+empty, or a blank token from a leading/trailing/doubled comma — each **fail
+the run** rather than being guessed, same as a missing `cds_series` or a
+missing `kind` above. A key that does not name any loaded series also fails
+the run, by name, rather than being silently dropped. There is never a Rust
+literal standing in for this list in the production path; `cds_series`
+itself is unaffected and keeps carrying all eight source series regardless
+of what the message shows.
 
 ## Not a CDS quote
 
