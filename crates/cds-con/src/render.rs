@@ -28,7 +28,7 @@ use credit_store::{
 /// Truncated (never rounded) tenths-of-a-percent share of `below` within `n`,
 /// e.g. `(2, 3)` -> `"66.6"`, never `"66.7"`. Integer arithmetic on the exact
 /// values that are also printed as the count, so the share can never disagree
-/// with `{below} 筆比現在低` on the same line -- there is no separate
+/// with `{below} 筆比這一筆低` on the same line -- there is no separate
 /// percentage computed from a different source.
 fn truncated_pct_str(below: usize, n: usize) -> String {
     if n == 0 {
@@ -376,7 +376,7 @@ pub fn render_parts(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &
         // No blank line here: the legend sits directly under the header
         // because it explains the `%` on the very next lines, not a new
         // section.
-        prose("%＝該窗口內,比今天更低的觀測比例"),
+        prose("%＝該窗口內,比這一筆更低的觀測比例"),
         blank(),
         prose("同一批 Baa 公司債,一條扣掉利率、一條沒扣"),
         blank(),
@@ -492,24 +492,24 @@ fn series_block(line: &SeriesLine) -> Vec<String> {
 }
 
 /// One line per trailing window the series can support, total named before
-/// the part (`{n} 筆裡 {below} 筆比現在低`, not `{below}/{n}`). When
+/// the part (`{n} 筆裡 {below} 筆比這一筆低`, not `{below}/{n}`). When
 /// something sits below (`below > 0`), the truncated share rides alongside
 /// in parentheses, computed from the very `below`/`n` printed on the same
 /// line via [`truncated_pct_str`], so the two can never disagree. When
 /// nothing sits below (`below == 0`), the parenthetical is dropped rather
 /// than printing `(0.0%)`: a bare `0.0%` cannot tell a reader whether the
 /// window's floor is EXACTLY zero or merely truncated down from something
-/// small, but the count sitting right there (`0 筆比現在低`) can -- this is
+/// small, but the count sitting right there (`0 筆比這一筆低`) can -- this is
 /// the lead-block redesign's asymmetry, deliberate, not an oversight.
 fn window_lines(line: &SeriesLine) -> Vec<String> {
     line.windows
         .iter()
         .map(|w| {
             if w.below == 0 {
-                format!("  {} {} 筆裡 {} 筆比現在低", w.label, w.n, w.below)
+                format!("  {} {} 筆裡 {} 筆比這一筆低", w.label, w.n, w.below)
             } else {
                 format!(
-                    "  {} {} 筆裡 {} 筆比現在低({}%)",
+                    "  {} {} 筆裡 {} 筆比這一筆低({}%)",
                     w.label,
                     w.n,
                     w.below,

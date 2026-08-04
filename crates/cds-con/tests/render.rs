@@ -321,7 +321,7 @@ fn golden_lead(lines: &[SeriesLine]) -> Vec<(&SeriesLine, &str)> {
     lead_pair(lines, "baa10y", LEAD_SPREAD_LABEL, "baa", LEAD_YIELD_LABEL)
 }
 
-const GOLDEN: &str = "💾 信用利差\n%＝該窗口內,比今天更低的觀測比例\n\n同一批 Baa 公司債,一條扣掉利率、一條沒扣\n\n扣掉利率(利差)  1.63%  07-31\n  近1年 24.4%  近10年 12.6%  自1986 13.7%\n\n沒扣(總殖利率)  6.19%  07-01\n  近1年 92.3%  近10年 95.8%  自1919 50.5%\n\n上面那條的算法,就是下面那條減掉十年期美債\n但兩排的百分比不能相減 —— 排名不是水位\n\n──── 佐證 ────\n\nBaa 比 Aaa 多出的殖利率  0.43%  07-01\n  近1年 13 筆裡 0 筆比現在低\n  近10年 121 筆裡 0 筆比現在低\n  自1919 1291 筆裡 22 筆比現在低(1.7%)\n\n高收益債相對基準多出的殖利率  2.84%  07-30\n  近1年 265 筆裡 117 筆比現在低(44.1%)\n  自2023 789 筆裡 194 筆比現在低(24.5%)\n\n投資級債相對基準多出的殖利率  0.80%  07-30\n  近1年 265 筆裡 155 筆比現在低(58.4%)\n  自2023 788 筆裡 173 筆比現在低(21.9%)\n\n資料:日 至 2026-07-30(5 天前)・月 至 2026-07\nSIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。";
+const GOLDEN: &str = "💾 信用利差\n%＝該窗口內,比這一筆更低的觀測比例\n\n同一批 Baa 公司債,一條扣掉利率、一條沒扣\n\n扣掉利率(利差)  1.63%  07-31\n  近1年 24.4%  近10年 12.6%  自1986 13.7%\n\n沒扣(總殖利率)  6.19%  07-01\n  近1年 92.3%  近10年 95.8%  自1919 50.5%\n\n上面那條的算法,就是下面那條減掉十年期美債\n但兩排的百分比不能相減 —— 排名不是水位\n\n──── 佐證 ────\n\nBaa 比 Aaa 多出的殖利率  0.43%  07-01\n  近1年 13 筆裡 0 筆比這一筆低\n  近10年 121 筆裡 0 筆比這一筆低\n  自1919 1291 筆裡 22 筆比這一筆低(1.7%)\n\n高收益債相對基準多出的殖利率  2.84%  07-30\n  近1年 265 筆裡 117 筆比這一筆低(44.1%)\n  自2023 789 筆裡 194 筆比這一筆低(24.5%)\n\n投資級債相對基準多出的殖利率  0.80%  07-30\n  近1年 265 筆裡 155 筆比這一筆低(58.4%)\n  自2023 788 筆裡 173 筆比這一筆低(21.9%)\n\n資料:日 至 2026-07-30(5 天前)・月 至 2026-07\nSIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。";
 
 // ── exact shape ──────────────────────────────────────────────────────────
 
@@ -377,13 +377,13 @@ fn golden_message_also_reachable_through_format_message() {
 #[test]
 fn wording_is_strictly_below_never_at_most() {
     let msg = render_lines(&golden_lines(), &[], "2026-07-31");
-    assert!(msg.contains("筆比現在低"), "must state 低於 in some form");
+    assert!(msg.contains("筆比這一筆低"), "must state 低於 in some form");
     assert!(!msg.contains("不高於"), "不高於 is <=, the implementation is <");
 }
 
 #[test]
 fn zero_below_renders_as_zero_count_with_no_parenthetical_share() {
-    // A series sitting at its window minimum must print `N 筆裡 0 筆比現在低`,
+    // A series sitting at its window minimum must print `N 筆裡 0 筆比這一筆低`,
     // never a blank, an omitted window, or a dash -- the p0-ambiguity fix
     // carried from v2/v3. The lead-block redesign additionally DROPS the
     // `(0.0%)` parenthetical for this case: a bare `0.0%` cannot tell a
@@ -403,7 +403,7 @@ fn zero_below_renders_as_zero_count_with_no_parenthetical_share() {
         config_order: 0,
     };
     let msg = render_lines(&[line], &[], "2026-07-31");
-    assert!(msg.contains("13 筆裡 0 筆比現在低"), "got:\n{msg}");
+    assert!(msg.contains("13 筆裡 0 筆比這一筆低"), "got:\n{msg}");
     assert!(
         !msg.contains("(0.0%)"),
         "zero-below must never print a parenthetical share: {msg}"
@@ -428,7 +428,7 @@ fn share_percent_is_truncated_never_rounded_up() {
     };
     let msg = render_lines(&[line], &[], "2026-07-31");
     assert!(
-        msg.contains("3 筆裡 2 筆比現在低(66.6%)"),
+        msg.contains("3 筆裡 2 筆比這一筆低(66.6%)"),
         "must truncate, not round: got:\n{msg}"
     );
     assert!(!msg.contains("66.7%"), "must never round up: {msg}");
@@ -455,16 +455,16 @@ fn printed_count_is_the_raw_comparison_never_derived() {
     };
     let msg = render_lines(&[line], &[], "2026-07-31");
     assert!(
-        msg.contains("1000 筆裡 996 筆比現在低(99.6%)"),
+        msg.contains("1000 筆裡 996 筆比這一筆低(99.6%)"),
         "must print the raw count and its truncated share: got:\n{msg}"
     );
     assert!(
-        !msg.contains("1000 筆裡 1000 筆比現在低"),
+        !msg.contains("1000 筆裡 1000 筆比這一筆低"),
         "must never claim the top of the window (the old p100 bug, in count form): {msg}"
     );
     assert!(
         msg.lines()
-            .filter(|l| l.contains("筆比現在低"))
+            .filter(|l| l.contains("筆比這一筆低"))
             .all(|l| l.matches('%').count() <= 1),
         "a 佐證 window line carries at most one %, the share: {msg}"
     );
@@ -491,7 +491,7 @@ fn rate_and_share_never_share_a_line_in_the_supporting_block() {
         if pct_count == 1 && !line.starts_with(' ') {
             saw_rate_line = true;
         }
-        if pct_count == 1 && line.contains("筆比現在低") {
+        if pct_count == 1 && line.contains("筆比這一筆低") {
             saw_share_line = true;
         }
     }
@@ -521,7 +521,7 @@ fn lead_title_and_windows_are_always_separate_lines() {
             "lead title line must carry exactly the rate: {title_line}"
         );
         assert!(
-            !title_line.contains("筆比現在低") && !title_line.contains("近1年"),
+            !title_line.contains("筆比這一筆低") && !title_line.contains("近1年"),
             "lead title line must not also carry window content: {title_line}"
         );
     }
@@ -544,7 +544,7 @@ fn lead_block_carries_fixed_explanatory_prose() {
     // these strings never interpolate a live number, so they cannot become
     // false on a day the market moves.
     let msg = render_lines(&golden_lines(), &[], "2026-07-31");
-    assert!(msg.contains("%＝該窗口內,比今天更低的觀測比例"));
+    assert!(msg.contains("%＝該窗口內,比這一筆更低的觀測比例"));
     assert!(msg.contains("同一批 Baa 公司債,一條扣掉利率、一條沒扣"));
     assert!(msg.contains("上面那條的算法,就是下面那條減掉十年期美債"));
     assert!(msg.contains("但兩排的百分比不能相減 —— 排名不是水位"));
@@ -1043,11 +1043,11 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
         "unreachable 10y window must not appear: {msg}"
     );
     assert!(
-        msg.lines().any(|l| l.contains("近1年") && l.contains("筆比現在低")),
+        msg.lines().any(|l| l.contains("近1年") && l.contains("筆比這一筆低")),
         "近1年 count must still appear: {msg}"
     );
     assert!(
-        msg.lines().any(|l| l.contains("自2023") && l.contains("筆比現在低")),
+        msg.lines().any(|l| l.contains("自2023") && l.contains("筆比這一筆低")),
         "full-history count must still appear: {msg}"
     );
     assert!(msg.contains("hy_oas"), "title line must still carry the label: {msg}");
@@ -1100,7 +1100,7 @@ fn three_series_with_different_coverage_get_three_different_labels() {
     let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     let years: std::collections::HashSet<&str> = msg
         .lines()
-        .filter(|l| l.contains("筆比現在低"))
+        .filter(|l| l.contains("筆比這一筆低"))
         .filter_map(|l| l.split_whitespace().find(|t| t.starts_with('自')))
         .collect();
     assert!(
@@ -1156,8 +1156,8 @@ fn precision_value_two_decimals_share_truncated_to_one_decimal() {
     };
     let msg = render_lines(&[line], &[], "2026-07-31");
     assert!(msg.contains("0.80%"), "value must be two decimal places: {msg}");
-    assert!(msg.contains("250 筆裡 150 筆比現在低(60.0%)"), "{msg}");
-    assert!(msg.contains("750 筆裡 166 筆比現在低(22.1%)"), "{msg}");
+    assert!(msg.contains("250 筆裡 150 筆比這一筆低(60.0%)"), "{msg}");
+    assert!(msg.contains("750 筆裡 166 筆比這一筆低(22.1%)"), "{msg}");
     assert!(!msg.contains("0.800"), "{msg}");
 }
 
