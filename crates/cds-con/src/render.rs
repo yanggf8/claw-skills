@@ -360,6 +360,16 @@ pub fn render_parts(lines: &[SeriesLine], as_of: &str) -> Vec<Segment> {
     out.push(prose(
         "留這一條當對照:同一批 Baa 債,上面那條扣掉了利率,這條沒扣",
     ));
+    // States the mechanism, never today's shape. It is a conditional reading
+    // instruction ("高可能是"), so it cannot become false on a day the numbers
+    // move the other way — which is what keeps it out of verdict territory.
+    //
+    // It exists because a reviewer who had not been told the no-verdict rule
+    // read `CCC 殖利率 14.29%` as 「最爛的公司壓力大」 on a day when `hy_oas` —
+    // the same credit risk with the rate removed — sat mid-range at 117/265
+    // over one year. The high number was the risk-free rate, not stress. This
+    // line is the guard against exactly that misreading.
+    out.push(prose("所以這條數字高,可能是央行升息,不是公司快倒閉"));
     out.push(blank());
     push_blocks(&mut out, &yields);
 
