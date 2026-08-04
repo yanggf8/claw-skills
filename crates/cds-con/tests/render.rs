@@ -461,7 +461,8 @@ fn unreachable_window_is_omitted_not_printed_as_insufficient() {
 
 #[test]
 fn long_coverage_series_shows_all_three_windows() {
-    // Coverage from 1919 supports 1y, 10y and 全庫 — including derived baa−aaa.
+    // Coverage from 1919 supports all three windows (1y, 10y, full-history)
+    // — including derived baa−aaa.
     let aaa = obs(&[
         ("1919-01-01", 5.0),
         ("2016-01-01", 4.0),
@@ -490,6 +491,13 @@ fn long_coverage_series_shows_all_three_windows() {
     );
 }
 
+/// `golden_lines()` hand-authors each `WindowPct.label` as a literal string
+/// ("自1919" / "自1986" / "自2023") — it never calls `series_line_from_rows`,
+/// so this test never reaches `year_str`/`coverage_year`. It pins only that
+/// `render_lines` passes an already-computed label through unchanged and does
+/// not fall back to (or reintroduce) the old fixed placeholder word. For a
+/// test that derives the label from raw dates through the real path, see
+/// `start_year_label_is_derived_from_the_data_not_supplied` below.
 #[test]
 fn window_label_is_the_actual_start_year() {
     let msg = render_lines(&golden_lines(), "2026-07-31");
@@ -497,6 +505,10 @@ fn window_label_is_the_actual_start_year() {
     assert!(msg.contains("自1919") || msg.contains("自1986"), "got:\n{msg}");
 }
 
+/// Same caveat as above: `golden_lines()` supplies three already-distinct
+/// labels directly on `WindowPct`, so this pins that `render_lines` prints
+/// distinct supplied labels as distinct — it does not exercise the slicing
+/// that computes a label from a coverage-start date.
 #[test]
 fn three_series_with_different_coverage_get_three_different_labels() {
     let msg = render_lines(&golden_lines(), "2026-07-31");
@@ -509,6 +521,34 @@ fn three_series_with_different_coverage_get_three_different_labels() {
         years.len() >= 3,
         "the golden spans 1919/1986/2023; each must print its own ruler, got {years:?}"
     );
+}
+
+/// Unlike the two tests above, this one supplies raw `Observation` rows and
+/// goes through `analyze()` / `series_line_from_rows()` — the real path that
+/// calls `year_str`/`coverage_year`. A hand-authored label can never catch a
+/// regression in that slicing (wrong bound, off-by-one, slicing the month
+/// instead of the year); this test can, because the label here is computed,
+/// not supplied.
+#[test]
+fn start_year_label_is_derived_from_the_data_not_supplied() {
+    let series = vec![input(
+        "baa10y",
+        SeriesKind::Spread,
+        Frequency::Daily,
+        obs(&[("1986-01-02", 1.0), ("2026-07-31", 2.0)]),
+    )];
+    let lines = analyze(&series).expect("kind is set");
+    let msg = render_lines(&lines, "2026-07-31");
+    assert!(
+        msg.contains("自1986"),
+        "year must come from rows[0].date through year_str/coverage_year; got:\n{msg}"
+    );
+    assert!(
+        !msg.contains("自1986-") && !msg.contains("自19860"),
+        "the slice must be exactly the 4-char year, not the full date or an \
+         off-by-one into the month: {msg}"
+    );
+    assert!(!msg.contains("全庫"), "{msg}");
 }
 
 // ── precision ────────────────────────────────────────────────────────────

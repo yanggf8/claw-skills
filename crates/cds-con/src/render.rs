@@ -225,8 +225,9 @@ fn series_line_from_rows(
     }
 
     // Full stored history (always available when rows are non-empty), labeled
-    // by its coverage start year so the reader never has to know what "全庫"
-    // meant without looking at the coverage column.
+    // by its coverage start year rather than a fixed placeholder word, so a
+    // 107-year window and a 3-year window read as two visibly different
+    // rulers instead of the same word.
     let vals: Vec<f64> = rows.iter().map(|r| r.value).collect();
     let (below, n) = below_and_total(&vals, last.value);
     windows.push(WindowPct {
