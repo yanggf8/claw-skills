@@ -9,7 +9,7 @@ use cds_con::render::{
     analyze, format_message, render_lines, Frequency, SeriesInput, SeriesLine, WindowPct,
     BAA_AAA_KEY,
 };
-use credit_store::{Observation, SeriesKind, SeriesSpec};
+use credit_store::{below_and_total, Observation, SeriesKind, SeriesSpec};
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -745,11 +745,53 @@ fn closes_with_signal_only_and_has_no_status_line() {
     );
 }
 
-// `percentile_never_displays_p100_by_rounding_up` is deleted, not adapted:
-// `WindowPct` no longer has a fractional `pctile` to round, so `below: usize`
-// structurally cannot claim a rank above the window's own size — the p100
-// ambiguity this test pinned is now prevented by the type, not by a rule a
-// test needs to keep checking.
+// `percentile_never_displays_p100_by_rounding_up` was deleted, then restored
+// below in rewritten form. Its old mechanism (a fractional percentile
+// rounding 99.6 up to `p100`) is gone — `below: usize` bounded by `n`
+// structurally cannot claim a rank above the window's own size. But the
+// GLOBAL CONSTRAINT it pinned ("the display may never claim a higher rank
+// than the data supports") still needs a guard: nothing stops a future
+// change from re-deriving the printed number from a percentage (rounding it
+// in the process) instead of carrying `below_and_total`'s raw output through
+// unchanged. `printed_count_is_the_raw_comparison_never_derived` pins that.
+
+#[test]
+fn printed_count_is_the_raw_comparison_never_derived() {
+    // The old failure mode was 99.6 rounding up to p100, claiming nothing sat
+    // above the value when 0.4% of the window did. Counts remove the
+    // rounding step entirely by construction (`below` can never exceed `n`),
+    // so the guarantee becomes: what is printed IS `below_and_total`'s raw
+    // output, not a number reconstructed from a rounded/scaled percentage.
+    let vals: Vec<f64> = (0..1000).map(|i| i as f64).collect();
+    let (below, n) = below_and_total(&vals, 996.0);
+    assert_eq!((below, n), (996, 1000), "sanity: 996 of 0..999 sit strictly below 996.0");
+
+    // Feed that exact (below, n) straight into the WindowPct that render_lines
+    // formats — no recomputation, no percentage round-trip.
+    let line = SeriesLine {
+        key: "q".into(),
+        label: "Q".into(),
+        kind: SeriesKind::Spread,
+        value: Some(9.96),
+        windows: vec![WindowPct { label: "近1年".into(), below, n }],
+        coverage_start: Some("2020-01-01".into()),
+        latest: Some("2026-07-01".into()),
+        frequency: Frequency::Daily,
+        config_order: 0,
+    };
+    let msg = render_lines(&[line], "2026-07-31");
+    assert!(msg.contains("996/1000 筆低於本次"), "must print the raw count: got:\n{msg}");
+    assert!(
+        !msg.contains("1000/1000"),
+        "must never claim the top of the window (the old p100 bug, in count form): {msg}"
+    );
+    assert!(
+        msg.lines()
+            .filter(|l| l.contains("筆低於本次"))
+            .all(|l| !l.contains('%')),
+        "no share/percentage may appear beside a count: {msg}"
+    );
+}
 
 #[test]
 fn cjk_labels_keep_columns_aligned() {
