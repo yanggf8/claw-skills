@@ -15,7 +15,7 @@ use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use credit_store::{parse_series_list, read_credit_history, Observation};
 use libsql::Connection;
 
-use crate::render::{format_message, Frequency, SeriesInput};
+use crate::render::{format_message, parse_message_series, Frequency, SeriesInput};
 
 /// Injected environment: job id (`NULLCLAW_JOB_ID`) and HOME for paths.
 #[derive(Debug, Clone)]
@@ -201,6 +201,33 @@ async fn load_series(conn: &Connection) -> Result<Vec<SeriesInput>, String> {
     Ok(out)
 }
 
+/// Which series the daily message shows, and in what order. Config, not code
+/// -- same pattern as a missing `cds_series` or a missing `kind` (decision
+/// 6): an absent key, a failed read, and an unparseable value are three
+/// distinct situations, and each fails the run loudly and by name. No
+/// default value, and no hardcoded series list, anywhere in Rust. Whether
+/// each named key actually exists among the configured series is checked
+/// later, by `select_message_series` once the series are loaded and derived
+/// rows (like `baa−aaa`) exist to be named.
+async fn message_series_keys(conn: &Connection) -> Result<Vec<String>, String> {
+    let raw = read_config(conn, "cds_message_series")
+        .await
+        .map_err(|e| {
+            format!(
+                "could not read config key 'cds_message_series' from price-registry: {e}; set it with: price config set cds_message_series <comma-separated keys>"
+            )
+        })?
+        .ok_or_else(|| {
+            "missing config key 'cds_message_series' in price-registry; set it with: price config set cds_message_series <comma-separated keys>"
+                .to_string()
+        })?;
+    parse_message_series(&raw).map_err(|e| {
+        format!(
+            "{e}; set it with: price config set cds_message_series <comma-separated keys>"
+        )
+    })
+}
+
 async fn read_config(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     let mut rows = conn
         .query(
@@ -320,8 +347,16 @@ pub async fn run(
         );
     }
 
-    // Missing kind fails here (RenderError) — failed, no deliver.
-    let message = match format_message(&series, as_of) {
+    let message_keys = match message_series_keys(conn).await {
+        Ok(k) => k,
+        Err(e) => {
+            return finish_failed(&e, env, out, err);
+        }
+    };
+
+    // Missing kind, or a cds_message_series key naming an unknown series,
+    // fails here (RenderError) — failed, no deliver.
+    let message = match format_message(&series, as_of, &message_keys) {
         Ok(m) => m,
         Err(e) => {
             return finish_failed(&e.message, env, out, err);

@@ -103,14 +103,73 @@ golden regenerated with `ccc_yield` at `p100` (true value 99.6). That claims the
 top of the window while 0.4% sits above it. Truncation understates by under one
 percentile and is always true.
 
+## Readability pass v2 (2026-08-04)
+
+The first pass above fixed the *words*. It was judged improved but still not
+enough, and a second, independent defect surfaced that the first pass never
+looked at: the message was laid out as a table on a transport that cannot
+render one. Full design, decisions, review trail, and the target-output
+mocks are in `docs/specs/2026-08-04-cds-con-readability-v2-design.md` — this
+entry records the three things a future reader would otherwise re-litigate.
+
+**Alignment was abandoned, not fixed.** `run.rs` sets `parse_mode: None`, so
+Telegram renders the body as plain text in a **proportional** font. Space
+padding does not produce columns in a proportional font, so the entire column
+machinery (`display_width`/`pad_to`/`RowWidths`, and the table-row layout they
+served) was never reaching any reader on this transport — there was no
+alignment to fix, only to delete. cds-con was the only sibling skill
+(chipcon/inflation-con/oilcon compared) that built a table at all, and the
+one on the transport that cannot show one.
+
+**No share percentage sits beside a count.** Percentiles became counts
+(`N/M 筆低於本次`) in this pass. A draft wrote `61/250 筆低於本次(24.4%)`; the
+owner rejected the parenthetical on 2026-08-04. The reason is not
+cosmetic: `(24.4%)` would sit one line under a value's own `1.63%`, and the
+two are different meanings of the same symbol — a **rate** (the value) beside
+a **share of observations** (the parenthetical) — collapsing exactly the
+distinction SKILL.md's percent rule exists to keep apart. The count already
+carries the definition (`61 of 250 observations are lower than this one` is
+readable from `61/250` alone), so the parenthetical would have added a second
+representation of the same fact with its own correctness obligation (staying
+in sync with `below`/`n`) for no reader benefit.
+
+**The days-1–7 monthly-expand rule is a proxy, and it is wrong in one specific,
+named way.** There is no way to detect *when* FRED actually published a
+monthly value — a monthly observation is always dated the 1st of the previous
+month and always lands 30–35 days old, so the gap between the observation date
+and `as_of` carries no transition signal, and cds-con writes nothing so it has
+no memory of what it showed last time. The calendar-day bound
+(`cds_monthly_expand_days`, default 7) is a deliberate proxy for that
+undetectable event, and the honest claim about it is narrower than "nothing is
+ever dropped": **if FRED publishes after day 7, that month's values stay
+collapsed for the rest of the month, and the only thing that moves is the
+date stamp** on the monthly status line
+(`月頻 3 列 資料至 YYYY-MM,未展開(…)`). The safeguard's actual guarantee is
+that the monthly series remain visible **as a group** and that how far behind
+the data is can always be read — including naming a series that is missing
+even while the block is collapsed (`・缺 <key>`) — not that a reader is
+guaranteed to see that month's numbers. So the correct framing is **a wrong
+proxy stays auditable**, never "nothing is ever silently dropped."
+
 ## Known limits
 
 - **Frequency is inferred, not declared.** `SeriesInput` needs a frequency and
   the config carries none, so it is derived from observation gaps: median ≥ 20
   days is monthly. This sits uneasily beside the `kind` decision, which added a
-  config field precisely because *inferring* the family was unsafe, and a
-  misclassification here would silently place a series in the wrong group on
-  the `資料:` line. Measured before accepting: the six daily series have gaps of
+  config field precisely because *inferring* the family was unsafe. **The blast
+  radius of a misclassification is larger than this note originally said.**
+  Written when frequency was only a display word on the `資料:` line, it said a
+  misclassification "would silently place a series in the wrong group" there —
+  true then, but readability v2's daily/monthly split
+  (`2026-08-04-cds-con-readability-v2-design.md` §4) made frequency the switch
+  that decides **whether the series is rendered at all** on the ~29 days a month
+  the monthly block sits collapsed. A series wrongly inferred Daily still shows
+  every day, just mislabeled. A series wrongly inferred Monthly disappears from
+  the message outright outside the day-1–7 window and survives only as a
+  headcount in the collapsed status line (or, if it is `baa`/`aaa`, silently
+  drops the derived `baa−aaa` block with it) — the exact silent-miss the v2
+  status-line safeguard exists to prevent, reopened one layer down at the
+  classifier. Measured before accepting: the six daily series have gaps of
   1–5 days and the two monthly ones 28–31, so the threshold sits in a 23-day
   void with 5.6× margin. Accepted rather than forcing a fifth config field. It
   needs revisiting if a source ever supplies calendar-daily rows — the same
