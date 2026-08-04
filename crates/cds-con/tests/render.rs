@@ -223,6 +223,16 @@ fn golden_lines() -> Vec<SeriesLine> {
 /// not run through `analyze()` -- this is the layout oracle for
 /// [`golden_message`], the byte-for-byte test. `baa10y` and `baa` are the
 /// lead pair; `baa−aaa`, `hy_oas` and `ig_oas` are the 佐證 block.
+///
+/// `baa10y`'s `latest` is deliberately one day ahead of `hy_oas`/`ig_oas`
+/// (2026-07-31 vs 2026-07-30) even though all three are daily series: this
+/// is the fixture for the 2026-08-04 lead-fix defect review, which found
+/// that a shared header date silently implied one snapshot when even two
+/// daily series from different providers can post their latest observation
+/// a day apart. `format_freshness_line`'s footer still reads 2026-07-30
+/// (the MINIMUM daily latest, per `min_latest`'s doc comment) because
+/// `hy_oas`/`ig_oas` stay at that date -- only `baa10y`'s own title line
+/// shows `07-31`.
 fn v3_golden_lines() -> Vec<SeriesLine> {
     vec![
         SeriesLine {
@@ -251,7 +261,7 @@ fn v3_golden_lines() -> Vec<SeriesLine> {
                 WindowPct { label: "自1986".into(), below: 1397, n: 10145 },
             ],
             coverage_start: Some("1986-01-02".into()),
-            latest: Some("2026-07-30".into()),
+            latest: Some("2026-07-31".into()),
             frequency: Frequency::Daily,
             config_order: 1,
         },
@@ -311,7 +321,7 @@ fn golden_lead(lines: &[SeriesLine]) -> Vec<(&SeriesLine, &str)> {
     lead_pair(lines, "baa10y", LEAD_SPREAD_LABEL, "baa", LEAD_YIELD_LABEL)
 }
 
-const GOLDEN: &str = "💾 信用利差 · 2026-07-30\n%＝該窗口內,比今天更低的觀測比例\n\n同一批 Baa 公司債,一條扣掉利率、一條沒扣\n\n扣掉利率(利差)  1.63%\n  近1年 24.4%  近10年 12.6%  自1986 13.7%\n\n沒扣(總殖利率)  6.19%\n  近1年 92.3%  近10年 95.8%  自1919 50.5%\n\n兩條的差就是十年期美債\n所以下面那條高,可能是利率,不是公司快倒閉\n\n──── 佐證 ────\n\nBaa 比 Aaa 多出的殖利率  0.43%\n  近1年 13 筆裡 0 筆比現在低\n  近10年 121 筆裡 0 筆比現在低\n  自1919 1291 筆裡 22 筆比現在低(1.7%)\n\n高收益債相對基準多出的殖利率  2.84%\n  近1年 265 筆裡 117 筆比現在低(44.1%)\n  自2023 789 筆裡 194 筆比現在低(24.5%)\n\n投資級債相對基準多出的殖利率  0.80%\n  近1年 265 筆裡 155 筆比現在低(58.4%)\n  自2023 788 筆裡 173 筆比現在低(21.9%)\n\n資料:日 至 2026-07-30(5 天前)・月 至 2026-07\nSIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。";
+const GOLDEN: &str = "💾 信用利差\n%＝該窗口內,比今天更低的觀測比例\n\n同一批 Baa 公司債,一條扣掉利率、一條沒扣\n\n扣掉利率(利差)  1.63%  07-31\n  近1年 24.4%  近10年 12.6%  自1986 13.7%\n\n沒扣(總殖利率)  6.19%  07-01\n  近1年 92.3%  近10年 95.8%  自1919 50.5%\n\n上面那條的算法,就是下面那條減掉十年期美債\n但兩排的百分比不能相減 —— 排名不是水位\n\n──── 佐證 ────\n\nBaa 比 Aaa 多出的殖利率  0.43%  07-01\n  近1年 13 筆裡 0 筆比現在低\n  近10年 121 筆裡 0 筆比現在低\n  自1919 1291 筆裡 22 筆比現在低(1.7%)\n\n高收益債相對基準多出的殖利率  2.84%  07-30\n  近1年 265 筆裡 117 筆比現在低(44.1%)\n  自2023 789 筆裡 194 筆比現在低(24.5%)\n\n投資級債相對基準多出的殖利率  0.80%  07-30\n  近1年 265 筆裡 155 筆比現在低(58.4%)\n  自2023 788 筆裡 173 筆比現在低(21.9%)\n\n資料:日 至 2026-07-30(5 天前)・月 至 2026-07\nSIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。";
 
 // ── exact shape ──────────────────────────────────────────────────────────
 
@@ -357,9 +367,9 @@ fn golden_message_also_reachable_through_format_message() {
     let message_keys = parse_message_series("baa10y,baa").unwrap();
     let lead_config = parse_message_lead("baa10y|扣掉利率(利差);baa|沒扣(總殖利率)").unwrap();
     let msg = format_message(&series, "2026-08-04", &message_keys, &lead_config).unwrap();
-    assert!(msg.contains("扣掉利率(利差)  1.63%"), "{msg}");
-    assert!(msg.contains("沒扣(總殖利率)  6.19%"), "{msg}");
-    assert!(msg.contains("兩條的差就是十年期美債"), "{msg}");
+    assert!(msg.contains("扣掉利率(利差)  1.63%  07-30"), "{msg}");
+    assert!(msg.contains("沒扣(總殖利率)  6.19%  07-01"), "{msg}");
+    assert!(msg.contains("上面那條的算法,就是下面那條減掉十年期美債"), "{msg}");
 }
 
 // ── counts, share, truncation (佐證 block) ─────────────────────────────
@@ -536,8 +546,65 @@ fn lead_block_carries_fixed_explanatory_prose() {
     let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(msg.contains("%＝該窗口內,比今天更低的觀測比例"));
     assert!(msg.contains("同一批 Baa 公司債,一條扣掉利率、一條沒扣"));
-    assert!(msg.contains("兩條的差就是十年期美債"));
-    assert!(msg.contains("所以下面那條高,可能是利率,不是公司快倒閉"));
+    assert!(msg.contains("上面那條的算法,就是下面那條減掉十年期美債"));
+    assert!(msg.contains("但兩排的百分比不能相減 —— 排名不是水位"));
+}
+
+/// Pins the 2026-08-04 verdict fix, generically -- against the SHAPE of the
+/// defect, not today's exact replacement wording, so a future rephrasing of
+/// the explanation cannot reintroduce the same mistake under different
+/// words.
+///
+/// The ORIGINAL line was `所以下面那條高,可能是利率,不是公司快倒閉`. `可能`
+/// qualifies the CAUSE ("it might be the rate"), but `下面那條高` still
+/// asserts the LEVEL outright ("the lower line IS high") -- on a day the
+/// yield falls, that sentence is simply false. A qualifier on the cause does
+/// not neutralise an assertion about the level; that is the mistake this
+/// test guards against ever coming back, worded differently or not.
+#[test]
+fn lead_prose_never_asserts_a_level_a_qualified_cause_does_not_neutralise_it() {
+    let lines = v3_golden_lines();
+    let lead = golden_lead(&lines);
+    let parts = render_parts(&lines, &lead, "2026-08-04");
+
+    let sep = parts
+        .iter()
+        .position(|s| s.text == "──── 佐證 ────")
+        .expect("佐證 separator must be present");
+    // Walk backward from the separator: skip the one blank line directly
+    // above it, then collect the contiguous run of non-blank prose lines
+    // above that -- the lead's explanatory sentences, whatever they say and
+    // however many lines they span today.
+    let mut explanation: Vec<&str> = Vec::new();
+    let mut i = sep;
+    while i > 0 {
+        i -= 1;
+        let text = parts[i].text.as_str();
+        if text.is_empty() {
+            if explanation.is_empty() {
+                continue; // the blank line directly above the separator
+            }
+            break; // the blank line above the explanation run: stop here
+        }
+        explanation.push(text);
+    }
+    assert!(
+        !explanation.is_empty(),
+        "expected at least one explanation line directly above 佐證: {parts:?}"
+    );
+    let joined = explanation.join("\n");
+
+    let full_msg = render_lines(&lines, &lead, "2026-08-04");
+    assert!(
+        !full_msg.contains("那條高"),
+        "message must never say which line is high today: {full_msg}"
+    );
+    assert!(
+        !joined.contains('高') && !joined.contains('低'),
+        "lead prose must not use a bare 高/低 predicate about a series -- a \
+         qualifier on the cause does not neutralise an assertion about the \
+         level: {joined}"
+    );
 }
 
 #[test]
@@ -546,37 +613,43 @@ fn spreads_never_claim_to_be_the_price_of_credit_risk() {
     assert!(!msg.contains("信用風險本身的價格"));
 }
 
-// ── header date ──────────────────────────────────────────────────────────
+// ── header date (removed 2026-08-04) / per-series own date ────────────────
 
 #[test]
-fn header_carries_the_most_recent_daily_date() {
-    // golden_lines()'s daily series all latest at 2026-07-24; the header is a
-    // fact about the data ("what date do these numbers reflect"), not the
-    // run date.
+fn header_no_longer_carries_a_shared_date() {
+    // 2026-08-04 defect fix: the header used to borrow one series' latest
+    // date for the whole message, which silently implied a single snapshot
+    // -- false whenever the shown series carry different dates (a daily
+    // series next to a monthly one, or even two daily series from different
+    // providers that update a day apart; see `v3_golden_lines`'s comment).
+    // The header is now bare; every series states its own date instead (see
+    // `each_series_states_its_own_latest_date_not_a_shared_header_date`).
     let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(
-        msg.starts_with("💾 信用利差 · 2026-07-24"),
-        "header must carry the daily latest date: {msg}"
+        msg.starts_with("💾 信用利差\n"),
+        "header must no longer carry a date: {msg}"
+    );
+    assert!(
+        !msg.contains("信用利差 ·"),
+        "no line may still borrow the old ` · date` header suffix: {msg}"
     );
 }
 
 #[test]
-fn header_falls_back_to_monthly_when_no_daily_series_is_shown() {
-    let line = SeriesLine {
-        key: "aaa".into(),
-        label: "aaa".into(),
-        kind: SeriesKind::Yield,
-        value: Some(5.5),
-        windows: vec![WindowPct { label: "自1919".into(), below: 1, n: 2 }],
-        coverage_start: Some("1919-01-01".into()),
-        latest: Some("2026-06-01".into()),
-        frequency: Frequency::Monthly,
-        config_order: 0,
-    };
-    let msg = render_lines(&[line], &[], "2026-07-31");
+fn each_series_states_its_own_latest_date_not_a_shared_header_date() {
+    // golden_lines() mixes a daily series (baa10y, latest 2026-07-24) and a
+    // monthly one (baa, latest 2026-06-01) in the same message. Each title
+    // line must carry ITS OWN date -- proving the date moved from a single
+    // shared header onto every series line, not just that the header lost
+    // it.
+    let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(
-        msg.starts_with("💾 信用利差 · 2026-06-01"),
-        "must fall back to the monthly latest when no daily series is present: {msg}"
+        msg.contains("baa10y  1.59%  07-24"),
+        "the daily series' title line must carry its own date: {msg}"
+    );
+    assert!(
+        msg.contains("baa  6.00%  06-01"),
+        "the monthly series' title line must carry its own (different) date: {msg}"
     );
 }
 
@@ -1254,10 +1327,10 @@ fn missing_kind_fails_loudly_not_defaulted_to_yield() {
 #[test]
 fn spread_and_yield_adjacency_is_confined_to_the_lead_block() {
     // v4 item 4: a spread and a yield may only appear adjacent inside the
-    // lead block, and the lead block must carry the explanation line. The
+    // lead block, and the lead block must carry the explanation lines. The
     // lead block is the ONE place a spread/yield pair is allowed to sit
     // next to each other, and it is safe there only because
-    // `兩條的差就是十年期美債` explains why they differ.
+    // `上面那條的算法,就是下面那條減掉十年期美債` explains how they relate.
     let lines = golden_lines();
     let lead = golden_lead(&lines);
     let msg = render_lines(&lines, &lead, "2026-07-31");
@@ -1265,13 +1338,15 @@ fn spread_and_yield_adjacency_is_confined_to_the_lead_block() {
         .lines()
         .find(|l| l.starts_with(LEAD_SPREAD_LABEL))
         .expect("lead spread title");
-    let explanation = msg.find("兩條的差就是十年期美債").expect("explanation line");
+    let explanation = msg
+        .find("上面那條的算法,就是下面那條減掉十年期美債")
+        .expect("explanation line");
     let spread_pos = msg.find(spread_title).unwrap();
     assert!(
         spread_pos < explanation,
         "lead block must precede its own explanation: {msg}"
     );
-    assert!(msg.contains("所以下面那條高,可能是利率,不是公司快倒閉"), "{msg}");
+    assert!(msg.contains("但兩排的百分比不能相減 —— 排名不是水位"), "{msg}");
 }
 
 #[test]
@@ -1403,9 +1478,10 @@ fn every_rendered_line_fits_its_width_bound() {
     check(&render_parts(&golden_lines(), &[], "2026-07-31"));
     // The real, longer Chinese labels with the real lead pair -- this is
     // the fixture that actually exercises the widths measured for the
-    // lead-block redesign (the compressed windows line is the widest line
-    // the new shape produces, at 41 columns; see `src/render.rs`'s
-    // `WIDTH_BOUND` doc comment).
+    // lead-block redesign and the same-day lead-fix pass (a 佐證-block
+    // title line, now carrying its own date, is the widest `Data` line the
+    // shape produces, at 42 columns; see `src/render.rs`'s `WIDTH_BOUND`
+    // doc comment).
     let lines = v3_golden_lines();
     let lead = golden_lead(&lines);
     check(&render_parts(&lines, &lead, "2026-08-04"));
@@ -1527,7 +1603,7 @@ fn overlong_cjk_label_splits_the_title_line() {
 
 #[test]
 fn todays_real_labels_never_split_and_golden_is_unchanged() {
-    // The widest real line today is 41 columns -- well under the 48 bound --
+    // The widest real line today is 42 columns -- well under the 48 bound --
     // so nothing should split. golden_message already pins byte-identical
     // output; this test additionally pins the STRUCTURAL signature of "no
     // split occurred" (no line equal to a bare label) so a future change

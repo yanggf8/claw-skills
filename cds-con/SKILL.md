@@ -72,7 +72,7 @@ layout** below.
 
 ## Message layout: what is data and what is code
 
-Three readability passes have happened, the last two on the same day,
+Four readability passes have happened, the last three on the same day,
 2026-08-04. v2 replaced the one-row-per-series table with a vertical block
 per series, cut percentiles down to bare counts, and split the message into
 a daily set and a monthly set. It shipped, and the owner — the message's
@@ -83,10 +83,17 @@ still**: the owner could read v3, but named the one sentence that actually
 clicked — "利差在數十年低點、殖利率在一年高點" — a *contrast between two
 numbers*, not any single series' block. The message now opens with exactly
 that pair before falling back to the older per-series shape for everything
-else. Full rationale, the review trail, and what each pass cost are in
-`docs/specs/2026-08-04-cds-con-readability-v2-design.md` (its `# v3` and
-`# v4` sections are what matters for today's code); this section documents
-what the code actually does now.
+else. **A same-day lead-fix pass then caught two real defects a review
+found in that lead block**: the closing explanation had drifted into a
+verdict (`所以下面那條高…` asserted today's level outright, failing on a day
+the yield falls) and an unsupported same-day arithmetic claim, and the title
+line's single shared date silently implied one snapshot the series shown do
+not actually share. Both are fixed — see the two paragraphs below for what
+changed and why. Full rationale, the review trail, and what each pass cost
+are in `docs/specs/2026-08-04-cds-con-readability-v2-design.md` (its `# v3`
+and `# v4` sections) and `.superpowers/sdd/2026-08-04-cds-con-readability-v2/`
+(the lead-fix report); this section documents what the code actually does
+now.
 
 **The message opens with a guided pair, then a `──── 佐證 ────` block for
 everything else.** `cds_message_lead` names two of `cds_message_series`'
@@ -96,21 +103,25 @@ Everything `cds_message_series` names that is not in the lead renders below,
 in config order, under the 佐證 heading.
 
 ```
-扣掉利率(利差)  1.63%
+扣掉利率(利差)  1.63%  07-31
   近1年 24.4%  近10年 12.6%  自1986 13.7%
 
-沒扣(總殖利率)  6.19%
+沒扣(總殖利率)  6.19%  07-01
   近1年 92.3%  近10年 95.8%  自1919 50.5%
 
-兩條的差就是十年期美債
-所以下面那條高,可能是利率,不是公司快倒閉
+上面那條的算法,就是下面那條減掉十年期美債
+但兩排的百分比不能相減 —— 排名不是水位
 
 ──── 佐證 ────
 
-Baa 比 Aaa 多出的殖利率  0.43%
+Baa 比 Aaa 多出的殖利率  0.43%  07-01
   近1年 13 筆裡 0 筆比現在低
   ...
 ```
+
+Every title line carries the series' own `MM-DD` latest date (the header no
+longer carries one shared date — see **The header has no date; every series
+states its own** below).
 
 **Putting a spread and a yield adjacent is normally forbidden, and is safe
 here for exactly one reason.** The two families are not commensurable (a
@@ -118,22 +129,38 @@ percentile-style comparison across them manufactures a signal that is not
 there — that is the whole reason v1/v2/v3 rendered them in separate blocks).
 The lead pair is the ONE place this repo allows a spread and a yield to sit
 next to each other, and only because (a) it is the *same underlying bonds*
-and (b) the explanation line `兩條的差就是十年期美債` states why they differ,
-right there. `require_single_kind` in `render.rs` enforces the other half of
-that guarantee programmatically: the 佐證 block (whatever is left over) has
-no per-kind header anymore, so `format_message` **fails the run** if it ever
+and (b) the explanation lines right after them say how they relate and warn
+against the one comparison that still manufactures a signal:
+`上面那條的算法,就是下面那條減掉十年期美債` (how the top line is computed —
+never a claim about which line is higher today) and `但兩排的百分比不能相減
+—— 排名不是水位` (a percentile is a rank within a window, not a level; unlike
+the two dollar-levels above it, it cannot be subtracted between the rows).
+`require_single_kind` in `render.rs` enforces the other half of that
+guarantee programmatically: the 佐證 block (whatever is left over) has no
+per-kind header anymore, so `format_message` **fails the run** if it ever
 ends up holding both a spread and a yield — an accidental config mix would
 otherwise silently reopen the exact unexplained adjacency the old split
 existed to prevent.
 
+**The header has no date; every series states its own.** An earlier version
+put one shared date on the `💾 信用利差` header line, borrowed from the
+series shown. A 2026-08-04 review caught that as false: `cds_message_lead`
+pairs a daily series with a monthly one by design, and even two daily series
+from different providers can post their latest observation a day apart — a
+single header date silently implied one snapshot that was not true. The
+header is now bare, and every title line (lead and 佐證 alike) carries its
+own `MM-DD` suffix instead, taken from that series' own `latest` date. A
+series with no data still renders `n/a`, with no date (there is no
+observation to date).
+
 **The lead block trades the count for a bare share, compressed onto one
-line.** `{override_label}  {value}%`, then `  {window} {share}%  {window}
-{share}%  ...` — every window the series supports, on a single line, no
-`筆裡`/`筆比現在低` wording and no `[key]` (the lead reader is comparing two
-numbers, not looking anything up). This is a deliberate trade against the
-佐證 block below: the lead needs the whole pair to fit in four short lines,
-so it gives up the count's "magnitude without mental division" that the 佐證
-block still has.
+line.** `{override_label}  {value}%  {MM-DD}`, then `  {window} {share}%
+{window} {share}%  ...` — every window the series supports, on a single
+line, no `筆裡`/`筆比現在低` wording and no `[key]` (the lead reader is
+comparing two numbers, not looking anything up). This is a deliberate trade
+against the 佐證 block below: the lead needs the whole pair to fit in four
+short lines, so it gives up the count's "magnitude without mental division"
+that the 佐證 block still has.
 
 **Lead labels are prose about the PAIRING, from `cds_message_lead`, never
 from `cds_series`' own `Label`.** `扣掉利率(利差)` and `沒扣(總殖利率)` describe
@@ -142,8 +169,8 @@ series' general-purpose label (`cds_series`' `Baa 比 10年期美債多出的殖
 is accurate but far too long, and says nothing about the *other* line in the
 pair). See **Config** below for the `cds_message_lead` format.
 
-**The 佐證 block keeps the older shape: `Label  value`, then one line per
-window with the full count.** No `[key]` here either — the operator-lookup
+**The 佐證 block keeps the older shape: `Label  value  MM-DD`, then one line
+per window with the full count.** No `[key]` here either — the operator-lookup
 argument that once justified `[key]` on every title line no longer holds now
 that the lead (this message's headline content) never carried one, so it was
 dropped from 佐證 too for one consistent title shape. Series names still come

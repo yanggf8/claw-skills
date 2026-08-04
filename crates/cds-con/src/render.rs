@@ -11,8 +11,12 @@
 //! yield adjacent is normally forbidden (they are not commensurable and a
 //! reader who does not know that will manufacture a signal that is not
 //! there); it is safe here ONLY because the pair is the same underlying
-//! bonds and an explanation line states why they differ
-//! (`兩條的差就是十年期美債`). Everything else `cds_message_series` names
+//! bonds and an explanation line states how they relate
+//! (`上面那條的算法,就是下面那條減掉十年期美債`) plus a guard against
+//! decomposing the printed percentiles (`但兩排的百分比不能相減 ——
+//! 排名不是水位`; see the 2026-08-04 lead-fix report for why the earlier
+//! wording failed a reverse-day test and asserted an arithmetic identity the
+//! layout does not support). Everything else `cds_message_series` names
 //! renders below, under `──── 佐證 ────`, in the older per-series-block
 //! shape. See `docs/specs/2026-08-04-cds-con-readability-v2-design.md`.
 
@@ -157,11 +161,16 @@ fn blank() -> Segment {
 /// `overlong_ascii_label_splits_the_title_line` /
 /// `overlong_cjk_label_splits_the_title_line` in `tests/render.rs`.
 ///
-/// Unchanged at 48 for the 2026-08-04 lead-block redesign: measured against
-/// the live 2026-07-30 data, the widest line the new shape produces is the
-/// lead's compressed windows line at 41 display columns (e.g.
-/// `  近1年 24.4%  近10年 12.6%  自1986 13.7%`) -- well under the bound, so
-/// it was not raised. See `lead-block-report.md` for the full measurement.
+/// Unchanged at 48 for the 2026-08-04 lead-block redesign, and unchanged
+/// again for the same-day lead-fix pass that put each series' own `MM-DD`
+/// date on its title line: measured against the live 2026-07-30 data, the
+/// widest `Data` line the new shape produces is a 佐證-block title line at
+/// 42 display columns (e.g. `高收益債相對基準多出的殖利率  2.84%  07-30`) --
+/// two columns wider than the lead-block redesign's own widest line (the
+/// compressed windows line at 41), because the appended date pushed the
+/// title line past it, but still well under the bound, so it was not
+/// raised. See `.superpowers/sdd/2026-08-04-cds-con-readability-v2/`'s
+/// reports for the full measurements.
 const WIDTH_BOUND: usize = 48;
 
 /// Test seam for [`WIDTH_BOUND`]. Kept private otherwise -- nothing else in
@@ -355,31 +364,51 @@ fn series_line_from_rows(
 /// `as_of` is an injected YYYY-MM-DD used only for age-in-days on the
 /// freshness line. No clock.
 pub fn render_parts(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &str) -> Vec<Segment> {
-    let mut out: Vec<Segment> = Vec::new();
-    match header_date(shown) {
-        Some(d) => out.push(prose(format!("💾 信用利差 · {d}"))),
-        None => out.push(prose("💾 信用利差")),
-    }
-    // No blank line here: the legend sits directly under the header because
-    // it explains the `%` on the very next lines, not a new section.
-    out.push(prose("%＝該窗口內,比今天更低的觀測比例"));
-    out.push(blank());
-    out.push(prose("同一批 Baa 公司債,一條扣掉利率、一條沒扣"));
-    out.push(blank());
+    let mut out: Vec<Segment> = vec![
+        // No shared date on the header: the series shown do not share one
+        // observation date (a daily series and a monthly series never do,
+        // and even two daily series can differ by a day when one provider
+        // updates before another). Each series states its own `latest` date
+        // on its own title line instead (see [`value_with_date`]) -- see
+        // the 2026-08-04 lead-fix report for the defect this replaced (a
+        // single borrowed date implied one snapshot that was not true).
+        prose("💾 信用利差"),
+        // No blank line here: the legend sits directly under the header
+        // because it explains the `%` on the very next lines, not a new
+        // section.
+        prose("%＝該窗口內,比今天更低的觀測比例"),
+        blank(),
+        prose("同一批 Baa 公司債,一條扣掉利率、一條沒扣"),
+        blank(),
+    ];
 
     push_lead_blocks(&mut out, lead);
 
     out.push(blank());
     // Fixed, generic mechanism prose -- never today's specific numbers, so
-    // it cannot become false on a day the market moves the other way. It
-    // exists because a reviewer who had not been told the no-verdict rule
-    // read a high yield alone as company-level stress, without seeing the
-    // matching spread sit mid-range the same day: the high number was the
-    // risk-free rate, not stress. These two lines are the guard against
-    // exactly that misreading, and are why a spread and a yield are allowed
-    // to sit adjacent here at all (see the module doc comment).
-    out.push(prose("兩條的差就是十年期美債"));
-    out.push(prose("所以下面那條高,可能是利率,不是公司快倒閉"));
+    // neither line can become false on a day the market moves the other way
+    // (the reverse-day test). It exists because a reviewer who had not been
+    // told the no-verdict rule read a high yield alone as company-level
+    // stress, without seeing the matching spread sit mid-range the same day:
+    // the high number was the risk-free rate, not stress. These two lines
+    // are the guard against exactly that misreading, and are why a spread
+    // and a yield are allowed to sit adjacent here at all (see the module
+    // doc comment).
+    //
+    // A 2026-08-04 review caught the ORIGINAL two-line version of this guard
+    // failing on both counts it was supposed to hold to: `所以下面那條高,
+    // 可能是利率,不是公司快倒閉` qualified the CAUSE ("可能") but asserted
+    // the LEVEL outright ("下面那條高") -- false on a day the yield falls,
+    // which is a verdict, not mechanism prose. And `兩條的差就是十年期美債`
+    // is true of the series' definitions but not of the two printed numbers,
+    // which carry different dates (`baa10y` daily, `baa` monthly); read as a
+    // same-day identity it invites subtracting the two PERCENTILES too --
+    // and a percentile is a rank within a window, not a level, so it cannot
+    // be decomposed the way a level can. The replacement below speaks only
+    // about how the series is computed (not today's numbers) and states the
+    // non-decomposition rule explicitly.
+    out.push(prose("上面那條的算法,就是下面那條減掉十年期美債"));
+    out.push(prose("但兩排的百分比不能相減 —— 排名不是水位"));
     out.push(blank());
     out.push(prose("──── 佐證 ────"));
 
@@ -417,16 +446,6 @@ pub fn render_lines(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &
         .join("\n")
 }
 
-/// Date shown on the header line: the most recent daily observation among
-/// the rendered series, falling back to the most recent monthly one if no
-/// daily series is present. This is a fact about the data ("what date do
-/// these numbers reflect"), not the run date -- `as_of` (today) can be days
-/// ahead of it, which is exactly what the freshness line's age-in-days
-/// already states.
-fn header_date(lines: &[SeriesLine]) -> Option<String> {
-    min_latest(lines, Frequency::Daily).or_else(|| min_latest(lines, Frequency::Monthly))
-}
-
 /// Push each supporting-block series, with a blank line separating
 /// consecutive blocks -- none before the first (the caller already put a
 /// blank line under the `──── 佐證 ────` header). Every line a block
@@ -460,14 +479,14 @@ fn title_lines(label: &str, value_text: &str) -> Vec<String> {
     }
 }
 
-/// One 佐證-block series as a block of lines: title (label and value), then
-/// one line per trailing window carrying the full count. No padding across
-/// series -- `parse_mode: None` means Telegram renders this in a
-/// proportional font, so column alignment across rows was never reaching
-/// the reader. See the 2026-08-04 design notes (both the original readability
-/// pass and the lead-block redesign).
+/// One 佐證-block series as a block of lines: title (label, value and the
+/// series' own date), then one line per trailing window carrying the full
+/// count. No padding across series -- `parse_mode: None` means Telegram
+/// renders this in a proportional font, so column alignment across rows was
+/// never reaching the reader. See the 2026-08-04 design notes (both the
+/// original readability pass and the lead-block redesign).
 fn series_block(line: &SeriesLine) -> Vec<String> {
-    let mut out = title_lines(&line.label, &value_str(line));
+    let mut out = title_lines(&line.label, &value_with_date(line));
     out.extend(window_lines(line));
     out
 }
@@ -502,18 +521,18 @@ fn window_lines(line: &SeriesLine) -> Vec<String> {
 }
 
 /// One `cds_message_lead` entry as a compressed block: title
-/// `{override_label}  {value}` (no `[key]` -- the lead reader is comparing
-/// two numbers, not looking up a series to query, so the operator-lookup
-/// key that the 佐證 block used to carry has no job to do here), then, when
-/// the series has data, ONE line carrying every window as `{window}
-/// {share}%` (never the full count -- the lead block trades the count's
-/// "magnitude without mental division" for fitting the whole pair's windows
-/// on two lines total; the 佐證 block below keeps the full counts). A
-/// missing series still needs the pairing intact, so it renders `n/a` on
-/// the title line and no windows line, the same shape a missing series gets
-/// in the 佐證 block.
+/// `{override_label}  {value}  {date}` (no `[key]` -- the lead reader is
+/// comparing two numbers, not looking up a series to query, so the
+/// operator-lookup key that the 佐證 block used to carry has no job to do
+/// here), then, when the series has data, ONE line carrying every window as
+/// `{window} {share}%` (never the full count -- the lead block trades the
+/// count's "magnitude without mental division" for fitting the whole pair's
+/// windows on two lines total; the 佐證 block below keeps the full counts).
+/// A missing series still needs the pairing intact, so it renders `n/a` (no
+/// date -- there is no observation to date) on the title line and no
+/// windows line, the same shape a missing series gets in the 佐證 block.
 fn lead_block(line: &SeriesLine, label: &str) -> Vec<String> {
-    let mut out = title_lines(label, &value_str(line));
+    let mut out = title_lines(label, &value_with_date(line));
     if let Some(w) = lead_windows_line(line) {
         out.push(w);
     }
@@ -764,6 +783,38 @@ fn value_str(line: &SeriesLine) -> String {
         Some(v) => format!("{v:.2}%"),
         None => "n/a".into(),
     }
+}
+
+/// `{value}  {MM-DD}` when the series has a latest observation date, or the
+/// bare value (including the `n/a` case) when it does not. Shared by the
+/// lead block and the 佐證 block so every title line states which date its
+/// own value is from, instead of the whole message borrowing one shared date
+/// for the header. That borrowed date was a defect, not a simplification:
+/// `cds_message_lead`'s own pair is one daily series and one monthly series,
+/// and even two daily series from different providers can post their latest
+/// observation a day apart -- a single header date silently implied one
+/// snapshot that was not true. `MM-DD` (not the full year) matches
+/// `format_freshness_line`'s monthly line, which already drops the year down
+/// to `YYYY-MM`: the footer states the full date once, so the title lines
+/// only need enough to distinguish "this series" from "that series",
+/// not repeat the year on every line.
+fn value_with_date(line: &SeriesLine) -> String {
+    match latest_md(line) {
+        Some(d) => format!("{}  {d}", value_str(line)),
+        None => value_str(line),
+    }
+}
+
+/// `MM-DD` slice of a series' own `latest` date (`YYYY-MM-DD`), or `None`
+/// when the series has no observation to date. Deliberately independent of
+/// [`year_str`]'s year slice -- this is the complementary suffix, not a
+/// shared helper, because the two never need to change together.
+fn latest_md(line: &SeriesLine) -> Option<String> {
+    line.latest.as_ref().map(|d| {
+        let m = &d[5..7.min(d.len())];
+        let day = &d[8..10.min(d.len())];
+        format!("{m}-{day}")
+    })
 }
 
 /// The 4-char year prefix of a `YYYY-MM-DD` date. The day and month carry no
