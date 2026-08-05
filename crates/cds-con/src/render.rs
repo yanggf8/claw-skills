@@ -12,7 +12,7 @@
 //! reader who does not know that will manufacture a signal that is not
 //! there); it is safe here ONLY because the pair is the same underlying
 //! bonds and an explanation line states how they relate
-//! (`上面那條的算法,就是下面那條減掉十年期美債`) plus a guard against
+//! (`上面那條的算法,就是下面那條減掉十年期美債(同一天的)`) plus a guard against
 //! decomposing the printed percentiles (`但兩排的百分比不能相減 ——
 //! 排名不是水位`; see the 2026-08-04 lead-fix report for why the earlier
 //! wording failed a reverse-day test and asserted an arithmetic identity the
@@ -407,7 +407,7 @@ pub fn render_parts(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &
     // be decomposed the way a level can. The replacement below speaks only
     // about how the series is computed (not today's numbers) and states the
     // non-decomposition rule explicitly.
-    out.push(prose("上面那條的算法,就是下面那條減掉十年期美債"));
+    out.push(prose("上面那條的算法,就是下面那條減掉十年期美債(同一天的)"));
     out.push(prose("但兩排的百分比不能相減 —— 排名不是水位"));
     out.push(blank());
     out.push(prose("──── 佐證 ────"));

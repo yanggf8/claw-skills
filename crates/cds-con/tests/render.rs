@@ -321,7 +321,7 @@ fn golden_lead(lines: &[SeriesLine]) -> Vec<(&SeriesLine, &str)> {
     lead_pair(lines, "baa10y", LEAD_SPREAD_LABEL, "baa", LEAD_YIELD_LABEL)
 }
 
-const GOLDEN: &str = "💾 信用利差\n%＝該窗口內,比這一筆更低的觀測比例\n\n同一批 Baa 公司債,一條扣掉利率、一條沒扣\n\n扣掉利率(利差)  1.63%  07-31\n  近1年 24.4%  近10年 12.6%  自1986 13.7%\n\n沒扣(總殖利率)  6.19%  07-01\n  近1年 92.3%  近10年 95.8%  自1919 50.5%\n\n上面那條的算法,就是下面那條減掉十年期美債\n但兩排的百分比不能相減 —— 排名不是水位\n\n──── 佐證 ────\n\nBaa 比 Aaa 多出的殖利率  0.43%  07-01\n  近1年 13 筆裡 0 筆比這一筆低\n  近10年 121 筆裡 0 筆比這一筆低\n  自1919 1291 筆裡 22 筆比這一筆低(1.7%)\n\n高收益債相對基準多出的殖利率  2.84%  07-30\n  近1年 265 筆裡 117 筆比這一筆低(44.1%)\n  自2023 789 筆裡 194 筆比這一筆低(24.5%)\n\n投資級債相對基準多出的殖利率  0.80%  07-30\n  近1年 265 筆裡 155 筆比這一筆低(58.4%)\n  自2023 788 筆裡 173 筆比這一筆低(21.9%)\n\n資料:日 至 2026-07-30(5 天前)・月 至 2026-07\nSIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。";
+const GOLDEN: &str = "💾 信用利差\n%＝該窗口內,比這一筆更低的觀測比例\n\n同一批 Baa 公司債,一條扣掉利率、一條沒扣\n\n扣掉利率(利差)  1.63%  07-31\n  近1年 24.4%  近10年 12.6%  自1986 13.7%\n\n沒扣(總殖利率)  6.19%  07-01\n  近1年 92.3%  近10年 95.8%  自1919 50.5%\n\n上面那條的算法,就是下面那條減掉十年期美債(同一天的)\n但兩排的百分比不能相減 —— 排名不是水位\n\n──── 佐證 ────\n\nBaa 比 Aaa 多出的殖利率  0.43%  07-01\n  近1年 13 筆裡 0 筆比這一筆低\n  近10年 121 筆裡 0 筆比這一筆低\n  自1919 1291 筆裡 22 筆比這一筆低(1.7%)\n\n高收益債相對基準多出的殖利率  2.84%  07-30\n  近1年 265 筆裡 117 筆比這一筆低(44.1%)\n  自2023 789 筆裡 194 筆比這一筆低(24.5%)\n\n投資級債相對基準多出的殖利率  0.80%  07-30\n  近1年 265 筆裡 155 筆比這一筆低(58.4%)\n  自2023 788 筆裡 173 筆比這一筆低(21.9%)\n\n資料:日 至 2026-07-30(5 天前)・月 至 2026-07\nSIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。";
 
 // ── exact shape ──────────────────────────────────────────────────────────
 
@@ -369,7 +369,7 @@ fn golden_message_also_reachable_through_format_message() {
     let msg = format_message(&series, "2026-08-04", &message_keys, &lead_config).unwrap();
     assert!(msg.contains("扣掉利率(利差)  1.63%  07-30"), "{msg}");
     assert!(msg.contains("沒扣(總殖利率)  6.19%  07-01"), "{msg}");
-    assert!(msg.contains("上面那條的算法,就是下面那條減掉十年期美債"), "{msg}");
+    assert!(msg.contains("上面那條的算法,就是下面那條減掉十年期美債(同一天的)"), "{msg}");
 }
 
 // ── counts, share, truncation (佐證 block) ─────────────────────────────
@@ -546,7 +546,7 @@ fn lead_block_carries_fixed_explanatory_prose() {
     let msg = render_lines(&golden_lines(), &[], "2026-07-31");
     assert!(msg.contains("%＝該窗口內,比這一筆更低的觀測比例"));
     assert!(msg.contains("同一批 Baa 公司債,一條扣掉利率、一條沒扣"));
-    assert!(msg.contains("上面那條的算法,就是下面那條減掉十年期美債"));
+    assert!(msg.contains("上面那條的算法,就是下面那條減掉十年期美債(同一天的)"));
     assert!(msg.contains("但兩排的百分比不能相減 —— 排名不是水位"));
 }
 
@@ -1330,7 +1330,7 @@ fn spread_and_yield_adjacency_is_confined_to_the_lead_block() {
     // lead block, and the lead block must carry the explanation lines. The
     // lead block is the ONE place a spread/yield pair is allowed to sit
     // next to each other, and it is safe there only because
-    // `上面那條的算法,就是下面那條減掉十年期美債` explains how they relate.
+    // `上面那條的算法,就是下面那條減掉十年期美債(同一天的)` explains how they relate.
     let lines = golden_lines();
     let lead = golden_lead(&lines);
     let msg = render_lines(&lines, &lead, "2026-07-31");
@@ -1339,7 +1339,7 @@ fn spread_and_yield_adjacency_is_confined_to_the_lead_block() {
         .find(|l| l.starts_with(LEAD_SPREAD_LABEL))
         .expect("lead spread title");
     let explanation = msg
-        .find("上面那條的算法,就是下面那條減掉十年期美債")
+        .find("上面那條的算法,就是下面那條減掉十年期美債(同一天的)")
         .expect("explanation line");
     let spread_pos = msg.find(spread_title).unwrap();
     assert!(
