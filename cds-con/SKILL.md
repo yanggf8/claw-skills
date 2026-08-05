@@ -115,7 +115,7 @@ in config order, under the 佐證 heading.
 ──── 佐證 ────
 
 Baa 比 Aaa 多出的殖利率  0.43%  07-01
-  近1年 13 筆裡 0 筆比現在低
+  近1年 13 筆裡 0 筆比這一筆低
   ...
 ```
 
@@ -156,7 +156,7 @@ observation to date).
 **The lead block trades the count for a bare share, compressed onto one
 line.** `{override_label}  {value}%  {MM-DD}`, then `  {window} {share}%
 {window} {share}%  ...` — every window the series supports, on a single
-line, no `筆裡`/`筆比現在低` wording and no `[key]` (the lead reader is
+line, no `筆裡`/`筆比這一筆低` wording and no `[key]` (the lead reader is
 comparing two numbers, not looking anything up). This is a deliberate trade
 against the 佐證 block below: the lead needs the whole pair to fit in four
 short lines, so it gives up the count's "magnitude without mental division"
@@ -181,12 +181,45 @@ named there (`BAA_AAA_LABEL`) — there is no config row to carry it.
 
 **There is no column alignment, and there will not be again.** The old
 column machinery (`display_width`/`pad_to`/`RowWidths` from the table layout)
-was deleted, not disabled: `run.rs` sets `parse_mode: None`, so Telegram
-renders the body in a **proportional** font, where space padding never
-produced a column for anyone.
+was deleted, not disabled: Telegram renders the body in a **proportional**
+font, where space padding never produced a column for anyone. This stayed
+true when `parse_mode` became `HTML` — HTML is not `<pre>`, so the font is
+still proportional and the machinery would still be useless.
+
+## Delivery is HTML, and that makes escaping load-bearing
+
+**`run.rs` sets `parse_mode: Some("HTML")`** (it was `None` until 2026-08-05).
+The reason is the 佐證 block: Telegram collapses
+`<blockquote expandable>…</blockquote>` behind a tap, which keeps the lead
+pair and the freshness line visible while the evidence folds away. Nothing
+else is marked up — no bold, no italics. `oilcon` already used a non-`None`
+parse_mode, so this is a per-skill choice and breaks no shared invariant.
+
+**The message has two representations and they are not interchangeable:**
+
+- **stdout stays plain text with zero markup** — that is what a human or an
+  agent reads when the tool runs without `--deliver-to`, and it is also what
+  gets dumped on a delivery failure, where the point is to salvage readable
+  content.
+- **the Telegram payload is the HTML variant**, built by `flatten_html`.
+
+**⚠ Escaping is now a delivery-breaking constraint, not a nicety.** Series
+labels come from the `cds_series` DB config, which the owner edits. Before
+this change a strange label made a line wrap; now **an unescaped `<` or `&`
+in a label makes Telegram reject the whole message and the morning's report
+never arrives.** So every piece of text that did not originate as literal
+markup in this crate is escaped (`&`, `<`, `>`) *before* any tag is wrapped
+around it — labels, keys, dates, values, and the appended job id. This
+mirrors `plan-viewer-rs`, which escapes every author-supplied field and
+asserts it with complete per-field coverage rather than a spot check.
+
+**Known limit:** escaping is enforced because every send flows through
+`render_message_parts` → `flatten_html`. A future second send path would not
+inherit it automatically — that is a convention held by tests, not by the
+type system.
 
 **Every 佐證 window prints a count, with its share when something sits below
-it: `{n} 筆裡 {below} 筆比現在低({share}%)`.** `近1年 250 筆裡 61 筆比現在低(24.4%)`.
+it: `{n} 筆裡 {below} 筆比這一筆低({share}%)`.** `近1年 250 筆裡 61 筆比這一筆低(24.4%)`.
 The count states the whole before the part so magnitude reads without mental
 division; `below` is exactly `credit-store`'s strictly-below comparison
 (`values.iter().filter(|v| **v < x).count()`), so the wording is always
@@ -195,7 +228,7 @@ share is truncated (never rounded) from that same `(below, n)` pair, never
 computed separately, so it can never disagree with the count on the same
 line (`share_percent_is_truncated_never_rounded_up`). **A window sitting at
 its minimum (`below == 0`) drops the parenthetical entirely and prints just
-`0 筆裡 0 筆比現在低`** — the lead-block redesign's one asymmetry: a bare
+`0 筆裡 0 筆比這一筆低`** — the lead-block redesign's one asymmetry: a bare
 `0.0%` cannot tell a reader "exactly zero" from "truncated down from
 something small", but the count sitting right there can. The lead block, by
 contrast, always prints the share (including `0.0%`) since it has no count
