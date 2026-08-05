@@ -19,6 +19,23 @@
 //! layout does not support). Everything else `cds_message_series` names
 //! renders below, under `──── 佐證 ────`, in the older per-series-block
 //! shape. See `docs/specs/2026-08-04-cds-con-readability-v2-design.md`.
+//!
+//! **Collapsible evidence (2026-08-05).** Content is unchanged by this pass
+//! -- still no verdict, no status ladder, no adjective about a level. What
+//! changed is delivery markup: [`render_parts`] now also tags every segment
+//! with [`Segment::evidence`], marking the 佐證 block (from the
+//! `──── 佐證 ────` separator through its last line). [`render_lines`] /
+//! [`format_message`] ignore that tag and stay plain text, unchanged byte
+//! for byte -- stdout and an agent reading the run never see markup.
+//! [`render_html`] / [`format_message_html`] consult it to wrap that block
+//! in `<blockquote expandable>`, which Telegram (HTML `parse_mode`)
+//! collapses behind a tap; nothing else is bold, italic, or otherwise
+//! marked up. Every character reaching the HTML payload is escaped by
+//! [`escape_html`] first, since the wrapped text includes owner-edited
+//! `cds_series` labels and an unescaped `<`/`&` would make Telegram reject
+//! the whole message. Owner approved the collapse behaviour against a
+//! hand-sent proof-of-concept; report in
+//! `.superpowers/sdd/2026-08-04-cds-con-readability-v2/collapsible-report.md`.
 
 use credit_store::{
     baa_aaa_spread, below_and_total, window_counts, Observation, SeriesKind, SeriesSpec,
@@ -129,14 +146,22 @@ pub enum LineKind {
 pub struct Segment {
     pub text: String,
     pub kind: LineKind,
+    /// Whether this line belongs to the collapsible 佐證 (evidence) block --
+    /// consulted ONLY by [`flatten_html`] to place the `<blockquote
+    /// expandable>` boundary. Set structurally by [`render_parts`] as it
+    /// pushes segments (an index range it captures itself), never
+    /// reconstructed afterward by matching rendered text for
+    /// `──── 佐證 ────` -- the same discipline `kind` already holds for the
+    /// width bound.
+    pub evidence: bool,
 }
 
 fn prose(text: impl Into<String>) -> Segment {
-    Segment { text: text.into(), kind: LineKind::Prose }
+    Segment { text: text.into(), kind: LineKind::Prose, evidence: false }
 }
 
 fn data(text: impl Into<String>) -> Segment {
-    Segment { text: text.into(), kind: LineKind::Data }
+    Segment { text: text.into(), kind: LineKind::Data, evidence: false }
 }
 
 fn blank() -> Segment {
@@ -410,6 +435,14 @@ pub fn render_parts(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &
     out.push(prose("上面那條的算法,就是下面那條減掉十年期美債(同一天的)"));
     out.push(prose("但兩排的百分比不能相減 —— 排名不是水位"));
     out.push(blank());
+
+    // Everything from the 佐證 separator through the last supporting-block
+    // line is the collapsible section: capture the boundary as an INDEX
+    // RANGE right where it is pushed (structural knowledge, available here
+    // and nowhere else), then tag it after the fact. This is the seam
+    // `flatten_html` reads -- it never re-derives the boundary by matching
+    // `──── 佐證 ────` in rendered text.
+    let evidence_start = out.len();
     out.push(prose("──── 佐證 ────"));
 
     let lead_keys: std::collections::HashSet<&str> =
@@ -424,6 +457,10 @@ pub fn render_parts(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &
         out.push(blank());
         push_blocks(&mut out, &supporting);
     }
+    let evidence_end = out.len();
+    for seg in &mut out[evidence_start..evidence_end] {
+        seg.evidence = true;
+    }
 
     out.push(blank());
     out.push(prose(format_freshness_line(shown, as_of)));
@@ -437,13 +474,66 @@ pub fn render_parts(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &
     out
 }
 
-/// Flatten [`render_parts`] into the plain-text message body actually sent.
+/// Flatten [`render_parts`] into the plain-text message body -- what stdout
+/// and an agent reading the run always see, regardless of transport. No
+/// markup of any kind; this project is text-first and this is the
+/// oldest/plainest representation.
 pub fn render_lines(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &str) -> String {
-    render_parts(shown, lead, as_of)
-        .into_iter()
-        .map(|s| s.text)
-        .collect::<Vec<_>>()
-        .join("\n")
+    flatten_plain(&render_parts(shown, lead, as_of))
+}
+
+/// Flatten [`render_parts`] into the Telegram HTML payload: every segment's
+/// text is HTML-escaped, then the contiguous run of `evidence`-tagged
+/// segments (the 佐證 block; see [`Segment::evidence`]) is wrapped in
+/// `<blockquote expandable>...</blockquote>` so Telegram collapses it
+/// behind a tap. This is the ONLY markup this crate adds -- no `<b>`, no
+/// `<i>`; the owner approved the collapse, not new formatting.
+pub fn render_html(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &str) -> String {
+    flatten_html(&render_parts(shown, lead, as_of))
+}
+
+fn flatten_plain(parts: &[Segment]) -> String {
+    parts.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n")
+}
+
+/// Escape every segment FIRST, then wrap -- never the other way round (an
+/// escape pass run after wrapping would mangle the very tags this function
+/// adds). The `<blockquote expandable>` / `</blockquote>` pair is placed by
+/// INDEX (the first and last segment with `evidence == true`), so there is
+/// always exactly one of each, never zero and never more, regardless of how
+/// many blocks the 佐證 section holds.
+fn flatten_html(parts: &[Segment]) -> String {
+    let mut texts: Vec<String> = parts.iter().map(|s| escape_html(&s.text)).collect();
+    let evidence: Vec<usize> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.evidence)
+        .map(|(i, _)| i)
+        .collect();
+    if let (Some(&first), Some(&last)) = (evidence.first(), evidence.last()) {
+        texts[first] = format!("<blockquote expandable>{}", texts[first]);
+        texts[last] = format!("{}</blockquote>", texts[last]);
+    }
+    texts.join("\n")
+}
+
+/// HTML-escape `&`, `<`, `>` -- the three symbols Telegram's HTML parse mode
+/// requires escaped outside of a literal tag (Bot API docs: "All &lt;, &gt;
+/// and & symbols that are not a part of a tag or an HTML entity must be
+/// replaced with the corresponding HTML entities"). `&` MUST run first:
+/// escaping `<`/`>` before `&` would re-escape the `&` this function itself
+/// just introduced inside `&lt;`/`&gt;`.
+///
+/// Series labels come from the `cds_series` DB config, which the owner
+/// edits -- an unescaped `<` or `&` in a label would make Telegram reject
+/// the whole message once `parse_mode` is HTML (see `deliver_options`'s doc
+/// comment), so this runs on every segment's full text before any tag is
+/// placed around it. Nothing that reaches [`flatten_html`] is exempt:
+/// labels, keys, dates, values and counts all arrive already concatenated
+/// into one segment's text, so escaping the segment covers every field
+/// inside it by construction -- there is no per-field call site to miss.
+pub fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 /// Push each supporting-block series, with a blank line separating
@@ -690,7 +780,11 @@ fn require_single_kind(supporting: &[&SeriesLine]) -> Result<(), RenderError> {
 }
 
 /// Analyze, select the configured message series, resolve the lead pair,
-/// validate what is left over, then render.
+/// validate what is left over, then render into [`Segment`]s. Shared by
+/// [`format_message`], [`format_message_html`] and
+/// [`format_message_variants`] so the plain and HTML representations always
+/// come from the SAME `render_parts` call -- their content can never
+/// diverge, only their markup.
 ///
 /// `message_keys` is `cds_message_series`, parsed by [`parse_message_series`]
 /// and resolved by [`select_message_series`] -- filtered AFTER `analyze()`,
@@ -698,12 +792,12 @@ fn require_single_kind(supporting: &[&SeriesLine]) -> Result<(), RenderError> {
 /// have both been analyzed) can still be named in it. `lead_config` is
 /// `cds_message_lead`, parsed by [`parse_message_lead`] and resolved by
 /// [`resolve_lead`] against the already-selected series.
-pub fn format_message(
+fn render_message_parts(
     series: &[SeriesInput],
     as_of: &str,
     message_keys: &[String],
     lead_config: &[LeadEntry],
-) -> Result<String, RenderError> {
+) -> Result<Vec<Segment>, RenderError> {
     let lines = analyze(series)?;
     let shown = select_message_series(&lines, message_keys)?;
     let lead = resolve_lead(&shown, lead_config)?;
@@ -712,7 +806,53 @@ pub fn format_message(
     let supporting: Vec<&SeriesLine> =
         shown.iter().filter(|l| !lead_keys.contains(l.key.as_str())).collect();
     require_single_kind(&supporting)?;
-    Ok(render_lines(&shown, &lead, as_of))
+    Ok(render_parts(&shown, &lead, as_of))
+}
+
+/// The plain-text message body -- see [`render_message_parts`] for the
+/// pipeline and [`flatten_plain`] for the flatten step.
+pub fn format_message(
+    series: &[SeriesInput],
+    as_of: &str,
+    message_keys: &[String],
+    lead_config: &[LeadEntry],
+) -> Result<String, RenderError> {
+    Ok(flatten_plain(&render_message_parts(series, as_of, message_keys, lead_config)?))
+}
+
+/// Same pipeline as [`format_message`], rendered as the Telegram HTML
+/// payload instead -- see [`flatten_html`].
+pub fn format_message_html(
+    series: &[SeriesInput],
+    as_of: &str,
+    message_keys: &[String],
+    lead_config: &[LeadEntry],
+) -> Result<String, RenderError> {
+    Ok(flatten_html(&render_message_parts(series, as_of, message_keys, lead_config)?))
+}
+
+/// Both delivery representations, built from ONE [`render_message_parts`]
+/// call. `run.rs`'s `run()` uses this (never `format_message` and
+/// `format_message_html` separately) so the body it delivers (`html`) and
+/// the body it prints on every path, including delivery failure (`plain`),
+/// can never disagree on content -- only on markup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageVariants {
+    pub plain: String,
+    pub html: String,
+}
+
+pub fn format_message_variants(
+    series: &[SeriesInput],
+    as_of: &str,
+    message_keys: &[String],
+    lead_config: &[LeadEntry],
+) -> Result<MessageVariants, RenderError> {
+    let parts = render_message_parts(series, as_of, message_keys, lead_config)?;
+    Ok(MessageVariants {
+        plain: flatten_plain(&parts),
+        html: flatten_html(&parts),
+    })
 }
 
 /// Parse `cds_message_series`: a comma-separated list of series keys in

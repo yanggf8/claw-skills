@@ -15,7 +15,10 @@ use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use credit_store::{parse_series_list, read_credit_history, Observation};
 use libsql::Connection;
 
-use crate::render::{format_message, parse_message_lead, parse_message_series, Frequency, LeadEntry, SeriesInput};
+use crate::render::{
+    escape_html, format_message_variants, parse_message_lead, parse_message_series, Frequency,
+    LeadEntry, MessageVariants, SeriesInput,
+};
 
 /// Injected environment: job id (`NULLCLAW_JOB_ID`) and HOME for paths.
 #[derive(Debug, Clone)]
@@ -115,21 +118,57 @@ fn emit_trace(env: &Env, out: &mut dyn Write) {
 
 /// Deliver options for cds-con.
 ///
-/// `claw-core`'s default is `Some("Markdown")`. This message has no Markdown
-/// markup and the job id is appended bare (not backticked), so we pin
-/// `parse_mode: None` deliberately — same choice as chipcon/inflation-con.
+/// `claw-core`'s default is `Some("Markdown")`. Until 2026-08-05 this crate
+/// pinned `parse_mode: None` deliberately, because the body carried no
+/// markup at all. That changed: the body now wraps its 佐證 (evidence)
+/// section in a literal `<blockquote expandable>` tag (owner-approved
+/// collapsible section, see `render.rs`'s module doc comment) — so `None`
+/// would deliver those tags to the reader as visible text instead of
+/// collapsing anything. `Some("HTML")` is the correct pin now, for the
+/// opposite reason `None` was correct before: the decision follows the
+/// body's actual markup, not a fixed per-skill default. (oilcon already
+/// pins a non-`None` `parse_mode` for its own reason — this is a per-skill
+/// choice, not a project-wide invariant.)
 pub fn deliver_options(account: &str) -> DeliverOptions {
     DeliverOptions {
         account: account.to_string(),
-        parse_mode: None,
+        parse_mode: Some("HTML".to_string()),
         ..Default::default()
+    }
+}
+
+/// Append the job id to `body`, escaping it with `escape` -- bare
+/// (`|s| s.to_string()`) for the plain representation, [`escape_html`] for
+/// the HTML one. Pure and side-effect-free so the escaping decision is
+/// directly unit-testable without a live delivery path (see this module's
+/// `tests`).
+fn append_job_id(body: &str, job_id: Option<&str>, escape: impl Fn(&str) -> String) -> String {
+    match job_id {
+        Some(id) => format!("{body}\n\n{}", escape(id)),
+        None => body.to_string(),
     }
 }
 
 /// Deliver then markers. Job id is appended bare (not backticks — oilcon differs).
 /// On hard delivery failure returns 1 without markers.
+///
+/// `message` is the [`MessageVariants`] pair [`format_message_variants`]
+/// built from the SAME [`render_parts`](crate::render::render_parts) call —
+/// `message.html` is what actually goes to Telegram (`deliver_options` now
+/// pins `parse_mode: HTML`); `message.plain` is what this function
+/// guarantees reaches stdout on every path that prints anything at all,
+/// INCLUDING delivery failure. That guarantee is deliberate: `claw-core::deliver`
+/// itself writes its `body` argument to stdout as the fallback on the
+/// no-chat-id and delivery-failure paths, and if that argument were the
+/// HTML body, a raw `<blockquote expandable>` tag would leak onto stdout
+/// right when the point is to salvage readable content for the
+/// human/agent watching the run. So the HTML body is handed to `deliver`
+/// only to reach the wire (or be discarded); whatever `deliver` itself
+/// wrote to its own output buffer is never forwarded — this function
+/// writes its own plain copy instead. (Bundled into one struct rather than
+/// two `&str` parameters to keep this function's arity sane.)
 fn emit(
-    message: &str,
+    message: &MessageVariants,
     status: &str,
     deliver_to: Option<&str>,
     account: &str,
@@ -137,20 +176,30 @@ fn emit(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    let mut output = message.to_string();
-    if let Some(ref job_id) = env.job_id {
-        output.push_str("\n\n");
-        output.push_str(job_id);
-    }
+    let plain_output = append_job_id(&message.plain, env.job_id.as_deref(), |s| s.to_string());
+    let html_output = append_job_id(&message.html, env.job_id.as_deref(), escape_html);
+
     let opts = deliver_options(account);
     // claw-core::deliver takes `impl Write` (Sized). Buffer through Vec so we
-    // can still accept `&mut dyn Write` on the run seam.
+    // can still accept `&mut dyn Write` on the run seam. `o_buf` is a
+    // throwaway: see this function's doc comment for why its content (a
+    // copy of `html_output`, on the no-chat-id/failure paths) is discarded
+    // rather than forwarded to `out`.
     let (mut o_buf, mut e_buf) = (Vec::new(), Vec::new());
-    let outcome = deliver(deliver_to, &output, &opts, &mut o_buf, &mut e_buf);
-    let _ = out.write_all(&o_buf);
+    let outcome = deliver(deliver_to, &html_output, &opts, &mut o_buf, &mut e_buf);
     let _ = err.write_all(&e_buf);
-    let _ = out.flush();
     let _ = err.flush();
+    match outcome {
+        // Sent over the wire only — claw-core wrote nothing to o_buf, so
+        // there is nothing to salvage or suppress.
+        DeliveryOutcome::Sent => {}
+        DeliveryOutcome::PrintedToStdout
+        | DeliveryOutcome::FailedFatal
+        | DeliveryOutcome::FailedSoft => {
+            let _ = writeln!(out, "{plain_output}");
+            let _ = out.flush();
+        }
+    }
     if outcome == DeliveryOutcome::FailedFatal {
         return 1;
     }
@@ -388,8 +437,9 @@ pub async fn run(
     // Missing kind, a cds_message_series key naming an unknown series, a
     // cds_message_lead key absent from cds_message_series, or a spread/yield
     // mix left outside the lead pair all fail here (RenderError) — failed,
-    // no deliver.
-    let message = match format_message(&series, as_of, &message_keys, &lead) {
+    // no deliver. Both representations come from ONE call so they can never
+    // disagree on content (see `format_message_variants`'s doc comment).
+    let message = match format_message_variants(&series, as_of, &message_keys, &lead) {
         Ok(m) => m,
         Err(e) => {
             return finish_failed(&e.message, env, out, err);
@@ -406,4 +456,41 @@ pub async fn run(
         out,
         err,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_job_id_plain_stays_bare() {
+        // Matches the pre-existing marker contract: the plain representation
+        // never gains markup, escaped or otherwise.
+        let out = append_job_id("body", Some("job-77"), |s| s.to_string());
+        assert_eq!(out, "body\n\njob-77");
+    }
+
+    #[test]
+    fn append_job_id_html_escapes_the_id() {
+        // The job id is DB-independent (it comes from NULLCLAW_JOB_ID, not
+        // `cds_series`), but it still lands in the same HTML payload as
+        // every escaped field, and the escaping discipline draws no
+        // exception for it — see render.rs's `escape_html` doc comment.
+        let out = append_job_id("body", Some("<XJOB>&\"'"), escape_html);
+        assert!(
+            !out.contains("<XJOB>"),
+            "job id must not leak raw markup into the HTML payload: {out}"
+        );
+        assert!(
+            out.contains("&lt;XJOB&gt;&amp;\"'"),
+            "job id must be escaped (only &, <, > need it — \" and ' are left \
+             alone, same as render.rs's escape_html): {out}"
+        );
+    }
+
+    #[test]
+    fn append_job_id_none_is_a_noop_for_either_representation() {
+        assert_eq!(append_job_id("body", None, |s| s.to_string()), "body");
+        assert_eq!(append_job_id("body", None, escape_html), "body");
+    }
 }

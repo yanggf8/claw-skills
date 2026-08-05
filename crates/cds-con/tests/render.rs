@@ -11,11 +11,16 @@
 //! risk-free rate -- before the older per-series `──── 佐證 ────` block.
 //! See `docs/specs/2026-08-04-cds-con-readability-v2-design.md` and
 //! `src/render.rs`'s module doc comment for the full rationale.
+//!
+//! **2026-08-05 collapsible evidence.** Content is unchanged; delivery
+//! markup is not -- see the `── HTML delivery representation ──` section
+//! near the end of this file, and `src/render.rs`'s module doc comment.
 
 use cds_con::render::{
-    analyze, format_message, parse_message_lead, parse_message_series, render_lines,
-    render_parts, resolve_lead, select_message_series, width_bound, Frequency, LeadEntry,
-    LineKind, SeriesInput, SeriesLine, WindowPct, BAA_AAA_KEY, BAA_AAA_LABEL,
+    analyze, escape_html, format_message, format_message_html, parse_message_lead,
+    parse_message_series, render_html, render_lines, render_parts, resolve_lead,
+    select_message_series, width_bound, Frequency, LeadEntry, LineKind, SeriesInput, SeriesLine,
+    WindowPct, BAA_AAA_KEY, BAA_AAA_LABEL,
 };
 use credit_store::{Observation, SeriesKind, SeriesSpec};
 
@@ -1625,4 +1630,249 @@ fn todays_real_labels_never_split_and_golden_is_unchanged() {
             rendered
         );
     }
+}
+
+// ── HTML delivery representation (2026-08-05 collapsible evidence) ────────
+//
+// Content is unchanged from the plain golden above -- these tests are about
+// MARKUP only: the evidence (佐證) block collapses behind
+// `<blockquote expandable>` on Telegram, every field is escaped first, and
+// nothing else is bold/italic/otherwise formatted. See `src/render.rs`'s
+// module doc comment for the design.
+
+/// The GOLDEN plain body (see [`GOLDEN`]) with the evidence section wrapped
+/// in `<blockquote expandable>` -- opening directly at the
+/// `──── 佐證 ────` separator, closing directly after the last 佐證-block
+/// line (`...低(21.9%)`), matching [`Segment::evidence`]'s boundary
+/// (`src/render.rs`). None of today's real labels/values/dates contain `&`,
+/// `<` or `>`, so this differs from [`GOLDEN`] ONLY by the two inserted
+/// tags -- escaping is exercised separately, with unsafe input, by
+/// `every_field_reaching_the_html_payload_is_escaped` below.
+const GOLDEN_HTML: &str = "💾 信用利差\n%＝該窗口內,比這一筆更低的觀測比例\n\n同一批 Baa 公司債,一條扣掉利率、一條沒扣\n\n扣掉利率(利差)  1.63%  07-31\n  近1年 24.4%  近10年 12.6%  自1986 13.7%\n\n沒扣(總殖利率)  6.19%  07-01\n  近1年 92.3%  近10年 95.8%  自1919 50.5%\n\n上面那條的算法,就是下面那條減掉十年期美債(同一天的)\n但兩排的百分比不能相減 —— 排名不是水位\n\n<blockquote expandable>──── 佐證 ────\n\nBaa 比 Aaa 多出的殖利率  0.43%  07-01\n  近1年 13 筆裡 0 筆比這一筆低\n  近10年 121 筆裡 0 筆比這一筆低\n  自1919 1291 筆裡 22 筆比這一筆低(1.7%)\n\n高收益債相對基準多出的殖利率  2.84%  07-30\n  近1年 265 筆裡 117 筆比這一筆低(44.1%)\n  自2023 789 筆裡 194 筆比這一筆低(24.5%)\n\n投資級債相對基準多出的殖利率  0.80%  07-30\n  近1年 265 筆裡 155 筆比這一筆低(58.4%)\n  自2023 788 筆裡 173 筆比這一筆低(21.9%)</blockquote>\n\n資料:日 至 2026-07-30(5 天前)・月 至 2026-07\nSIGNAL-ONLY:窗口越短對當下越敏感,越長越穩定。";
+
+#[test]
+fn golden_message_html() {
+    let lines = v3_golden_lines();
+    let lead = golden_lead(&lines);
+    let rendered = render_html(&lines, &lead, "2026-08-04");
+    assert_eq!(
+        rendered, GOLDEN_HTML,
+        "the HTML payload must match the owner-approved target byte-for-byte"
+    );
+}
+
+#[test]
+fn exactly_one_blockquote_expandable_wraps_the_evidence_block() {
+    let lines = v3_golden_lines();
+    let lead = golden_lead(&lines);
+    let html = render_html(&lines, &lead, "2026-08-04");
+
+    assert_eq!(
+        html.matches("<blockquote expandable>").count(),
+        1,
+        "exactly one collapsible open tag: {html}"
+    );
+    assert_eq!(
+        html.matches("</blockquote>").count(),
+        1,
+        "exactly one collapsible close tag: {html}"
+    );
+
+    let open = html.find("<blockquote expandable>").expect("open tag present");
+    let close = html.find("</blockquote>").expect("close tag present");
+    assert!(open < close, "open must precede close: {html}");
+
+    // Opens exactly at the 佐證 header -- nothing from the lead pair or the
+    // header/explanation lines above it is swallowed into the quote.
+    assert!(
+        html[open..].starts_with("<blockquote expandable>──── 佐證 ────"),
+        "blockquote must open directly at the 佐證 separator, wrapping \
+         nothing before it: {html}"
+    );
+
+    // Everything before the open tag -- header, lead pair, explanation --
+    // stays outside and visible.
+    let before = &html[..open];
+    assert!(
+        before.contains("扣掉利率(利差)") && before.contains("沒扣(總殖利率)"),
+        "the lead pair must be outside the blockquote: {before}"
+    );
+    assert!(
+        !before.contains('<'),
+        "nothing before the blockquote may carry markup: {before}"
+    );
+
+    // Everything after the close tag -- freshness + SIGNAL-ONLY -- stays
+    // outside and visible too.
+    let after = &html[close + "</blockquote>".len()..];
+    assert!(
+        after.contains("資料:") && after.contains("SIGNAL-ONLY"),
+        "the freshness line and SIGNAL-ONLY footer must be outside the \
+         blockquote: {after}"
+    );
+    assert!(
+        !after.contains('<'),
+        "nothing after the blockquote may carry markup: {after}"
+    );
+}
+
+/// Walks every `<...>` sequence in `html` and asserts a simple open/close
+/// stack balances. Generic (not hardcoded to "exactly the blockquote
+/// pair"), so it also catches a FUTURE unmatched tag of any kind. Because
+/// every real `<`/`>` in author data is escaped to `&lt;`/`&gt;` BEFORE any
+/// literal tag is added (see `escape_html`'s doc comment), any `<...>`
+/// surviving in the payload can only be a tag this crate itself wrote.
+fn assert_tags_balanced(html: &str) {
+    let mut stack: Vec<&str> = Vec::new();
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        let after = &rest[start + 1..];
+        let end = after
+            .find('>')
+            .unwrap_or_else(|| panic!("unterminated tag in: {html}"));
+        let tag = &after[..end];
+        if let Some(name) = tag.strip_prefix('/') {
+            let top = stack
+                .pop()
+                .unwrap_or_else(|| panic!("closing tag </{name}> with nothing open: {html}"));
+            assert_eq!(top, name, "mismatched tag: opened <{top}>, closed </{name}>: {html}");
+        } else {
+            // Tag name is the part before the first space; attributes (e.g.
+            // `expandable`) follow.
+            let name = tag.split(' ').next().unwrap();
+            stack.push(name);
+        }
+        rest = &after[end + 1..];
+    }
+    assert!(stack.is_empty(), "unclosed tag(s) {stack:?}: {html}");
+}
+
+#[test]
+fn html_tag_structure_is_balanced() {
+    let lines = v3_golden_lines();
+    let lead = golden_lead(&lines);
+    assert_tags_balanced(&render_html(&lines, &lead, "2026-08-04"));
+
+    // A second, structurally different fixture (no lead pair at all, so
+    // every configured series lands in the evidence block) exercises the
+    // same guard on a different render_parts path.
+    assert_tags_balanced(&render_html(&golden_lines(), &[], "2026-07-31"));
+}
+
+#[test]
+fn plain_representation_never_escapes_or_adds_markup_even_with_unsafe_labels() {
+    // stdout / an agent reading the run always gets THIS representation --
+    // it must render exactly what was configured, unescaped, with no
+    // <blockquote> or any other tag added. Markup belongs to the HTML
+    // representation only.
+    let unsafe_label = "<XLABEL>&\"'";
+    let line = SeriesLine {
+        key: "hy_oas".into(),
+        label: unsafe_label.into(),
+        kind: SeriesKind::Spread,
+        value: Some(2.79),
+        windows: vec![WindowPct { label: "近1年".into(), below: 117, n: 265 }],
+        coverage_start: Some("2023-07-28".into()),
+        latest: Some("2026-07-24".into()),
+        frequency: Frequency::Daily,
+        config_order: 0,
+    };
+    let msg = render_lines(&[line], &[], "2026-07-31");
+    assert!(
+        msg.contains(unsafe_label),
+        "plain text must carry the label exactly as configured, unescaped: {msg}"
+    );
+    assert!(
+        !msg.contains("&lt;") && !msg.contains("&amp;") && !msg.contains("&gt;"),
+        "plain text must never escape: {msg}"
+    );
+    assert!(
+        !msg.contains("<blockquote"),
+        "plain text must never add markup: {msg}"
+    );
+}
+
+#[test]
+fn every_field_reaching_the_html_payload_is_escaped() {
+    // Mirrors plan-viewer-rs's `article_escapes_every_field`: walk every
+    // DISTINCT field that can carry owner-edited text into the HTML
+    // payload -- a `cds_series` Label (佐證 block), a `cds_message_lead`
+    // override label (a separate field from `cds_series`' own Label, see
+    // `LeadEntry`), and a series KEY (surfaces via the freshness line's
+    // `缺 <key>` listing for a missing series) -- and prove each is
+    // escaped, not spot-checked. A safe sibling label on each fixture
+    // proves the assertions are catching real escaping, not a swallowed/
+    // dropped field.
+    let unsafe_label = "<XLABEL>&\"'";
+    let unsafe_lead_label = "<XLEAD>&\"'";
+    let unsafe_key = "<XKEY>&\"'";
+
+    let baa10y = SeriesInput {
+        spec: SeriesSpec {
+            key: "baa10y".into(),
+            series_id: "BAA10Y".into(),
+            label: "SAFE-BAA10Y".into(),
+            kind: Some(SeriesKind::Spread),
+        },
+        rows: obs(&[("1986-01-02", 1.0), ("2026-07-24", 1.59)]),
+        frequency: Frequency::Daily,
+    };
+    let hy_oas = SeriesInput {
+        spec: SeriesSpec {
+            key: "hy_oas".into(),
+            series_id: "HY".into(),
+            label: unsafe_label.into(),
+            kind: Some(SeriesKind::Spread),
+        },
+        rows: obs(&[("2023-07-28", 2.0), ("2026-07-24", 2.79)]),
+        frequency: Frequency::Daily,
+    };
+    let missing_series = SeriesInput {
+        spec: SeriesSpec {
+            key: unsafe_key.into(),
+            series_id: "MISSING".into(),
+            label: "SAFE-MISSING-LABEL".into(),
+            kind: Some(SeriesKind::Spread),
+        },
+        rows: vec![], // empty -> n/a, and named in the freshness line's 缺 list
+        frequency: Frequency::Daily,
+    };
+    let series = vec![baa10y, hy_oas, missing_series];
+    let lead_config = vec![LeadEntry { key: "baa10y".into(), label: unsafe_lead_label.into() }];
+    let message_keys = keys(&["baa10y", "hy_oas", unsafe_key]);
+
+    let html = format_message_html(&series, "2026-07-31", &message_keys, &lead_config)
+        .expect("all three series share kind=Spread outside the lead, so this must render");
+
+    for raw in [unsafe_label, unsafe_lead_label, unsafe_key] {
+        assert!(
+            !html.contains(raw),
+            "field leaked raw, unescaped, into the HTML payload ('{raw}'): {html}"
+        );
+    }
+    for raw in [unsafe_label, unsafe_lead_label, unsafe_key] {
+        let want = escape_html(raw);
+        assert!(
+            html.contains(&want),
+            "missing escaped output for '{raw}' (want '{want}'): {html}"
+        );
+    }
+    // A literal `<script>` (or any tag) can never actually form: every `<`
+    // that reached the payload came out the other side as `&lt;`.
+    assert!(!html.contains("<script>"), "{html}");
+
+    // Prove the escaping is real, not the field having been dropped. Note
+    // `baa10y`'s OWN `cds_series` label ("SAFE-BAA10Y") legitimately never
+    // appears: it is the lead entry, and the lead block always displays
+    // `cds_message_lead`'s override label (`unsafe_lead_label`, already
+    // asserted above) instead of the series' own `Label` -- that override is
+    // existing, tested behaviour (see `lead_block`'s doc comment), not
+    // something this test should expect to see bypassed.
+    assert!(html.contains("SAFE-MISSING-LABEL"), "{html}");
+
+    // Attacker-controlled content must not be able to break the ONE
+    // blockquote pair this crate itself adds.
+    assert_tags_balanced(&html);
+    assert_eq!(html.matches("<blockquote expandable>").count(), 1, "{html}");
+    assert_eq!(html.matches("</blockquote>").count(), 1, "{html}");
 }

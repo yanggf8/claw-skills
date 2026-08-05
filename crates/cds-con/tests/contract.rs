@@ -790,15 +790,52 @@ async fn without_deliver_to_the_body_still_reaches_stdout() {
 }
 
 #[test]
-fn parse_mode_is_none_because_the_message_has_no_markdown() {
-    // claw-core DeliverOptions::default() is Some("Markdown"). oilcon keeps
-    // that for its backticked job id. This message has no Markdown markup and
-    // the job id is bare, so we pin parse_mode to None deliberately.
+fn parse_mode_is_html_because_the_body_now_carries_the_evidence_blockquote() {
+    // Replaces `parse_mode_is_none_because_the_message_has_no_markdown`,
+    // which pinned a real decision that has since changed for a stated
+    // reason -- rewritten, not deleted (the old test's premise, "this
+    // message has no Markdown markup", stopped being true).
+    //
+    // claw-core DeliverOptions::default() is Some("Markdown"). Until
+    // 2026-08-05 cds-con pinned `None` because the body was plain text with
+    // no markup of any kind. It now wraps the 佐證 (evidence) section in a
+    // literal `<blockquote expandable>` tag (owner-approved, collapses the
+    // section behind a tap on Telegram) — so `None` would deliver those
+    // tags to the reader as visible text instead of collapsing anything.
+    // `Some("HTML")` is required for the SAME reason `None` used to be:
+    // the parse_mode must match what the body actually contains.
     let opts = deliver_options("main");
     assert_eq!(
-        opts.parse_mode, None,
-        "cds-con must set parse_mode: None (not rely on Default)"
+        opts.parse_mode,
+        Some("HTML".to_string()),
+        "cds-con must set parse_mode: Some(\"HTML\") now that the body carries the evidence blockquote"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Delivery representations (2026-08-05 collapsible evidence): stdout must
+// always carry the plain, unmarked-up body -- the html payload (with its
+// literal <blockquote expandable> tag) is for Telegram only, never for a
+// human/agent reading the run's own stdout.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn stdout_never_carries_html_markup() {
+    // deliver_to is not set (matches every other test in this file), so
+    // `emit` takes the no-chat-id path -- exactly the path whose whole job
+    // is to salvage readable content onto stdout. It must salvage the PLAIN
+    // body, never the html one.
+    let conn = mem().await;
+    seed_ok(&conn).await;
+    let (code, out, err) = go(&["cds-con"], Some(JOB), StoreAccess::Ok(&conn), AS_OF).await;
+    assert_eq!(code, 0, "{err}");
+    for banned in ["<blockquote", "</blockquote>", "&lt;", "&gt;", "&amp;"] {
+        assert!(
+            !out.contains(banned),
+            "stdout must carry no HTML markup or escape sequence (found '{banned}'): {out}"
+        );
+    }
+    assert!(out.contains("💾 信用利差"), "the plain report must still print: {out}");
 }
 
 // ---------------------------------------------------------------------------
