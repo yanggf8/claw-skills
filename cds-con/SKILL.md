@@ -16,14 +16,21 @@ advice, no position sizing, no portfolio edits.
 Every other skill in this repo opens with a classified status. cds-con does
 not, and it must not be "fixed" to add one.
 
-A percentile is a rank **within a stated window**, and the window can flip the
-conclusion. `baa10y` on 2026-07-31 sat at p14.8 over one year, p10.2 over ten,
-and p11.2 over the whole store — a ladder would have to pick one and would be
-reporting an artefact of that choice. The same rule already governs
-`price cds show`, which emits no verdict either, and it is not weakened by this
-message being pushed rather than pulled.
+A rank is a rank **within a stated window**, and the window can flip the
+conclusion. On 2026-08-05 the Baa total yield had **92.3%** of the last year's
+observations below it, **95.8%** of the last ten years' — and **50.5%** of
+everything since 1919. Near the top on one reading, mid-range on another, from
+the same number on the same day. A ladder would have to pick one window and
+would be reporting that choice as much as the market. The same rule already
+governs `price cds show`, which emits no verdict either, and it is not weakened
+by this message being pushed rather than pulled.
 
-The message lays out levels, percentiles and coverage. The reader judges.
+That example is also why the lead pair keeps the monthly `BAA` series rather
+than switching to the daily `DBAA`: the daily series only reaches 1986, so the
+`自1919` line — the one that does the flipping — would disappear. A same-day,
+arithmetically exact pair was considered and rejected for exactly that reason.
+
+The message lays out levels, counts and coverage. The reader judges.
 
 ## Script
 
@@ -109,7 +116,7 @@ in config order, under the 佐證 heading.
 沒扣(總殖利率)  6.19%  07-01
   近1年 92.3%  近10年 95.8%  自1919 50.5%
 
-上面那條的算法,就是下面那條減掉十年期美債
+上面那條的算法,就是下面那條減掉十年期美債(同一天的)
 但兩排的百分比不能相減 —— 排名不是水位
 
 ──── 佐證 ────
@@ -131,7 +138,7 @@ The lead pair is the ONE place this repo allows a spread and a yield to sit
 next to each other, and only because (a) it is the *same underlying bonds*
 and (b) the explanation lines right after them say how they relate and warn
 against the one comparison that still manufactures a signal:
-`上面那條的算法,就是下面那條減掉十年期美債` (how the top line is computed —
+`上面那條的算法,就是下面那條減掉十年期美債(同一天的)` (how the top line is computed —
 never a claim about which line is higher today) and `但兩排的百分比不能相減
 —— 排名不是水位` (a percentile is a rank within a window, not a level; unlike
 the two dollar-levels above it, it cannot be subtracted between the rows).
