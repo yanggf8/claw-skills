@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Do not write live numbers into this file — name the query instead.** Job counts, per-skill
+> tallies, platform counts and skill lists all drifted here, and one of them inverted a whole
+> section's meaning: this file said "34 of 38 jobs are on `retry_once`" when the real split was 12
+> and 28, so every skill it called defective was in fact unretried and the two it praised were the
+> ones actually at risk. Live state lives in `~/.nullclaw/cron.db`, in each `SKILL.md`, and in
+> `crates/`. Cite the command, not the answer.
+>
+> **New narrative goes to [`HISTORY.md`](HISTORY.md), not here** — retirements, migrations and
+> post-mortems. `docs/specs/` stays the authority for how a thing is supposed to work.
+
 ## What this repo is
 
 Personal agent skills invoked as cron jobs or on-demand by the **nullclaw**, **openclaw**, or **nanoclaw** agent. Each skill lives in its own directory. Same source, same `SKILL.md` format, three hosts.
@@ -68,7 +78,7 @@ OpenClaw's skill loader (`src/agents/skills/workspace.ts`) calls `realpath` on e
 ## Skill structure
 
 Every skill directory contains:
-- `SKILL.md` — frontmatter (`name`, `description`, `always: true`) + usage docs. All three agents read this.
+- `SKILL.md` — frontmatter (`name`, `description`, `always`) + usage docs. `always` is **not** uniformly `true`: `liko-finance-weekly` and `mindfulness-spirit` set it `false`. All three agents read this.
 - `bin/<name>` — the published binary, gitignored. Put it there with
   `tools/install-skill.sh <name>`, never by hand.
 
@@ -124,9 +134,7 @@ export CLAW_ENV="$HOME/.openclaw/.env"           # optional, only if you keep AP
 path; it prints the body to stdout when `chat_id` is absent and, on a send
 failure, prints it anyway so the cron capture keeps the data.
 
-Every skill accepts `--deliver-to CHAT_ID` and `--account NAME` except
-`mindfulness-spirit`, which routes by the persona-core column's
-`delivery_target` so there is only one source of routing truth. Omitting
+Most skills accept `--deliver-to CHAT_ID` and `--account NAME`. **Two do not:** `mindfulness-spirit`, which routes by the persona-core column's `delivery_target` so there is only one source of routing truth, and `liko-finance-weekly`, which accepts neither flag at all. (`agent-reach` has no binary and takes no flags.) Omitting
 `--deliver-to` sends output to stdout, which is how a cron job is debugged by
 hand.
 
@@ -192,7 +200,7 @@ nullclaw cron backup
 
 **nanoclaw**: use `nanoclaw cron` (see nanoclaw docs).
 
-Cron expressions use UTC. Taiwan (CST) = UTC+8, EST = UTC-5.
+**Cron expressions are NOT UTC by default — pass `--tz`.** `cron_jobs` carries a `tz_offset_s` per job and most of them are Taipei (`--tz +08:00`), not UTC; scheduling a new job as if the field were UTC puts it 8 hours out. Taiwan (CST) = UTC+8, EST = UTC-5. Check what a job actually uses before copying its expression (`SELECT expr, tz_offset_s FROM cron_jobs`).
 
 ## Scheduler contract (hard constraints)
 
@@ -221,8 +229,7 @@ Classification, straight from that function:
 | non-zero exit | `exec_error` | 3 |
 | timeout | `timeout` | 3 |
 
-Emit them **after** delivery is confirmed, and only when `NULLCLAW_JOB_ID` is
-set, so manual runs stay clean. `NULLCLAW_JOB_ID` is the per-**run** trace id, and
+Emit them **after** delivery is confirmed — **but classify BEFORE you deliver.** These two are not in tension: on a successful path the marker is emitted after delivery for accuracy, while a **hard-failure path must decide it is failing first and then deliver nothing at all** (option A — see the `retry_once` section below). Reading this line as an unconditional "deliver, then classify" is exactly what produced duplicate messages under `retry_once`. Emit markers only when `NULLCLAW_JOB_ID` is set, so manual runs stay clean. `NULLCLAW_JOB_ID` is the per-**run** trace id, and
 `classifySkillRun` compares the `[trace:]` payload to it byte for byte — read it
 fresh each run, never cache it. Anything else on stdout is the message body —
 keep diagnostics on stderr. `verified` is not a boolean: `0=unverified 1=ok
@@ -246,12 +253,9 @@ Net effect: telegram is capped at 3 attempts with 2s+5s backoff, so wall time
 stays under ~52s regardless of budget. The budget only tightens that bound; it
 never adds attempts.
 
-### 2. Every cron job now runs `skill_contract` — there is no lax mode left
+### 2. Every *skill* cron job runs `skill_contract`
 
-All 38 jobs use `verification_mode = skill_contract`
-(`weather` 8, `traffic` 7, `news` 6, `cct` 4, `doughcon` 4, `cct2` 2,
-`ainews` 2, one each for the rest). A skill that gets the markers wrong alerts
-the same day.
+Every `job_type='skill'` job uses `verification_mode = skill_contract`. **One `shell` job does not** (`verification_mode = none`), so "there is no lax mode left" is not literally true — check before relying on it. **Per-skill job counts are not written here on purpose**: they drifted (this said 38 when there were 40) and they change whenever a job is added or paused. Query them: `sqlite3 ~/.nullclaw/cron.db "SELECT skill, COUNT(*) FROM cron_jobs GROUP BY skill"`. Note `ainews` appears there but **lives outside this repo** (`~/b/ainews`).
 
 This is new. The four `cct` jobs sat on `verification_mode = none` until
 2026-07-27, which passes unconditionally — that is why a dead upstream pipeline
@@ -274,20 +278,18 @@ The scheduler retries whenever a run ends `verified != 1` and the job is on
 `NULLCLAW_JOB_ID` is byte-identical. **A skill cannot tell it is the retry.**
 There is no attempt counter to branch on.
 
-Meanwhile skills deliver *before* they classify, because that is what this file
-prescribes ("call only after delivery confirmation" — correct for marker
-accuracy). **The Rust port inherits the pattern rather than fixing it**, so this
-is a live defect in ported code, not a Python-only legacy:
+Delivery-then-classify was the shape that caused it, and this file used to prescribe it unconditionally ("call only after delivery confirmation" — correct for marker accuracy on a *success* path, wrong as a blanket rule). **That instruction has since been qualified** (see the stdout-markers section), and the port is now mixed rather than uniformly defective:
 
 | Impl | Skills | Evidence |
 |------|--------|----------|
-| Rust (live) | `weather`, `doughcon`, `traffic` | `weather/src/main.rs:116` deliver → `:129` `Finish::Marked`; `doughcon/src/main.rs:108` → `:113`. `traffic` sidesteps it: its degraded path exits before delivery, and its jobs are on `repair_policy = none` because no traffic failure is repaired by a retry. |
-| Rust (live) | `news` | Satisfies option A rather than inheriting the defect: both hard-failure paths (`all_feeds_empty`, `ai_exhausted`) alert and exit 1 without delivering, and the skill never emits `degraded` at all — a section that falls back still ships as `ok`. One duplicate window remains, inherited from the Python: a long digest is sent as several chunks in sequence, so a failure on chunk 2 exits 1 with chunk 1 already delivered, and the retry re-sends it. |
+| **Fixed** | `weather` | The only skill with a *named* option-A helper: `orchestrate::chat_id_for_delivery` (`crates/weather/src/orchestrate.rs:66`) suppresses the chat id on `Failed`, so `deliver()` echoes to stdout only. **It is private to `weather`** — reusing it means lifting it, not calling it. |
+| **Still deliver-then-classify** | `doughcon` | `crates/doughcon/src/main.rs`: `deliver()` runs, *then* status is computed and `Finish::Marked` emitted. Not currently exploitable — its jobs are on `repair_policy = none` — but the shape is the defect, and a policy change re-arms it. |
+| **Sidesteps it** | `traffic` | Its degraded path exits before delivery; jobs are on `none` because no traffic failure is repaired by a retry. |
+| **Satisfies option A** | `news`, `cct2` | `news`: both hard-failure paths (`all_feeds_empty`, `ai_exhausted`) alert and exit 1 without delivering, and it never emits `degraded` — a section that falls back still ships as `ok`. One duplicate window remains: a long digest is sent as several chunks, so a failure on chunk 2 exits 1 with chunk 1 already delivered. `cct2` classifies before delivering inline. |
 
 So any first attempt that delivers successfully and then reports `degraded` or
 `failed` has already put a message in front of the user when the retry fires.
-34 of 38 jobs are on `retry_once`. Prior occurrences: oilcon 2026-07-20,
-cct2 eod 2026-07-10, chipcon 2026-07-08 (×2).
+**Do not read a job count from this file — query it** (`sqlite3 ~/.nullclaw/cron.db "SELECT repair_policy, COUNT(*) FROM cron_jobs GROUP BY repair_policy"`). It said "34 of 38" until 2026-08-06, when the real split was **12 on `retry_once`, 28 on `none`** — and the inversion mattered: every skill this section called defective was on `none` (so no duplicate could fire), while the two it praised were the ones actually running under `retry_once`. Prior occurrences: oilcon 2026-07-20, cct2 eod 2026-07-10, chipcon 2026-07-08 (×2).
 
 **Decision for the Rust port — option A: the hard-failure path must not
 deliver.** When a skill has no usable result, emit `[skill-status:failed]` and
@@ -298,7 +300,7 @@ If both attempts fail the user gets no Telegram message at all; that is
 intended, because the cron alert is the right channel for "the skill produced
 nothing", not a report body.
 
-Reference implementation: `crates/cct2/src/main.rs` and its delivery-target
+Reference implementations: `crates/weather/` (named helper, cleanest) and `crates/cct2/src/main.rs` (inline branch). **Neither is callable from another crate** — weather's helper is private and cct2's is an inline if/else, so "reuse" here means copying the rule, and the rule is: decide the status first, and pass no chat id when it is `Failed`.
 branch. Reuse it rather than reinventing the rule; the remaining
 deliver-then-mark skills still need it.
 
@@ -311,43 +313,15 @@ duplicate. Either drop `retry_once` from jobs whose skills deliver on
 retry cannot repair `degraded` anyway: stale or empty upstream data returns
 identical on the second attempt.
 
-### Related: `lib/` has dependents outside this repo
+### What survived the Python deletion
 
-`~/.nullclaw/skills/lib` symlinks to this repo's `lib/`, and two skills that do
-**not** live here resolve their imports through it:
+`lib/`, every `scripts/run.py` and the `~/.nullclaw/skills/lib` symlink were deleted on 2026-08-02; nothing imports them. Three consequences are still live rules:
 
-**There are no external consumers left, as of 2026-08-01.** `cct` moved into
-this repo and runs Rust; `autocli` was retired.
+- **`tools/differential/fixtures/` must stay** even though the differential harness is gone — `crates/weather/tests/sources.rs` reads `cwa_past_only.json` from it.
+- **The sanitizer corpus lives at `claw-core/tests/sanitize_corpus/`**, with the Python's answers recorded beside it. That is the authority, not any surviving Python.
+- **Rust comments citing `run.py:NNN` are provenance for a rule, not links.** Do not go looking for the file; git history is where that line lives.
 
-autocli was removed rather than ported. It had no cron job, had not been
-touched since 2026-04-13, and was the only skill not under version control —
-a real directory inside `~/.nullclaw/skills` that the local repo there did not
-track, with no remote. Its advertised surface did not hold up either: of four
-sites tested, only `hackernews top` returned data. `bbc news` and
-`reddit frontpage` both failed with "Chrome extension not connected", and
-`arxiv paper` failed because the skill passes `--limit` to every subcommand and
-that one does not accept it. A copy is at
-`~/.nullclaw/skills-archive/autocli.retired.20260801-144629`.
-
-`lib/` and every `scripts/run.py` were deleted on 2026-08-02, along with the
-`~/.nullclaw/skills/lib` symlink. Nothing imported them any more: `cct` had
-moved into this repo, `autocli` was retired, and `ainews` had been Rust for
-weeks — its remaining mentions of `claw-skills/lib` are provenance comments and
-an archived script, not imports.
-
-Three things did depend on the Python at deletion time, and were dealt with
-first rather than discovered afterwards:
-
-- `crates/{chipcon,inflation-con,oilcon}/tests/differential.rs` each spawned a
-  `drive_python.py`. Their verdicts are frozen now; see the oracle table above.
-- `tools/differential/*.sh` could not survive the Python and are gone. The
-  fixture directory stays, because `crates/weather/tests/sources.rs` reads
-  `tools/differential/fixtures/cwa_past_only.json`.
-- The sanitizer corpus moved to `claw-core/tests/sanitize_corpus/`, with the
-  Python's answers recorded beside it.
-
-Rust source comments still cite `run.py:NNN`. Those are provenance for a rule,
-not links — git history is where the line lives now.
+Retirement details (autocli, the deletion order, what was checked first) → [`HISTORY.md`](HISTORY.md).
 
 ## HTTP timeouts (hard constraint)
 
@@ -400,6 +374,8 @@ The suites that look like they would need something — the differentials, the
 sanitizer corpus, the delivery and pipeline tests — read recorded fixtures or
 drive a local stub.
 
+**`cds-con` carries a reverse rule — do not "fix" it.** It is the only skill with **no `狀態：` line**, and its `SKILL.md` says so explicitly: it prints levels, historical position and coverage and makes no judgement, because a percentile is a rank *within a stated window* and the window flips the conclusion. Every other skill has a status ladder, so a consistency pass will want to add one here. Don't.
+
 ## Gotchas
 
 - **`weather` needs `CWA_API_KEY`**: put it in `~/.nullclaw/.env` (default) or `~/.openclaw/.env` and export `CLAW_ENV` to point at it. Without the key, Taiwan forecasts silently return no data.
@@ -408,7 +384,7 @@ drive a local stub.
 
 ## Design notes
 
-Prior design context lives in `docs/specs/` (`2026-04-15-oilcon-skill-design.md`, `2026-04-16-turso-consolidation.md`, `2026-04-18-persona-webapp-reconciliation.md`, `oil-trend-rule.md`). Check there before redesigning a skill from scratch.
+Prior design context lives in `docs/specs/` — **browse it, do not rely on a list here** (this named four files while twenty existed, hiding the Rust-port and intentional-differences specs). Check there before redesigning a skill from scratch.
 
 ## Skills reference
 
@@ -423,7 +399,9 @@ Prior design context lives in `docs/specs/` (`2026-04-15-oilcon-skill-design.md`
 | `traffic` | `--from`, `--to`, `--via` | TomTom Routing API |
 | `doughcon` | `--mode deliver\|record`, `--et-hour H` (DST gate) | PizzINT API |
 | `oilcon` | `--mode deliver\|record` | Yahoo Finance, Turso |
-| `agent-reach` | agent-only, see SKILL.md | 13+ platforms |
+| `inflation-con` | `--mode deliver\|record`, `--config` | FRED (core-PCE / core-CPI / breakeven) |
+| `cds-con` | `--mode deliver\|record` | Turso `credit_spreads` (written by `price cds fetch`) |
+| `agent-reach` | agent-only, see SKILL.md | see `agent-reach/SKILL.md` (this table said `13+` while `README.md` said `17`) |
 | `mindfulness-spirit` | `write`, `fix-signature DEVTO_ID`, `--dry-run` | Google News RSS, Turso + delivery via `persona-core` CLI |
 | `liko-finance-weekly` | `--dry-run`, `--check` | Turso (via `persona-core` CLI) |
 
