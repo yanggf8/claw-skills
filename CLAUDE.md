@@ -342,7 +342,7 @@ address routed nowhere, with a 50 ms budget:
 | `ureq::get(u).timeout(d)`                | 30.02 s |
 | `timeout_connect` + `timeout_read/write` | 50.8 ms |
 
-Thirteen call sites had it: all twelve skills plus `claw-core`'s Telegram send,
+At the time of the port every skill had it, plus `claw-core`'s Telegram send,
 whose documented "~52s across three attempts" was really ~97s whenever
 api.telegram.org was unreachable rather than slow. Every one of them is a
 **port regression** — Python's `urlopen(req, timeout=N)` covers the connect, so

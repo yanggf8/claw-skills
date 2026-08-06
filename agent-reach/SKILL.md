@@ -20,7 +20,7 @@ metadata:
 
 # Agent Reach — Usage Guide
 
-Upstream tools for 13+ platforms. Call them directly.
+Upstream tools for the platforms named in the frontmatter above. Call them directly.
 
 Run `agent-reach doctor` to check which channels are available.
 

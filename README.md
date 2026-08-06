@@ -68,8 +68,10 @@ Config schema auto-detected:
 | agent-reach | Give the agent internet eyes — search/read 17 platforms (Twitter/X, Reddit, YouTube, GitHub, Bilibili, etc.) and any web page |
 | cct | Fetch CCT 4-moment trading intelligence and deliver to Telegram |
 | cct2 | Dual-LLM market sentiment analysis for configured tickers — pre-market and EOD reports |
+| cds-con | Report corporate credit-spread levels and how many stored observations sit below each — signal-only, deliberately unclassified (no status ladder) |
 | chipcon | Observe SMH semiconductor momentum via trend/relative-strength signals; signal-only observation report |
 | doughcon | Fetch PizzINT DOUGHCON level and deliver or record |
+| inflation-con | Judge whether inflation is genuinely persistent from FRED core-PCE / core-CPI / breakeven data — signal-only evidence packet |
 | liko-finance-weekly | Draft, validate, and publish the weekly liko-finance cross-border wealth signal stream |
 | mindfulness-spirit | 身心靈 × AI series — auto-draft, check, and publish columns via persona-core |
 | news | Fetch and summarize Taiwan news from Google RSS feeds |
@@ -77,6 +79,8 @@ Config schema auto-detected:
 | stock | Fetch TWSE/HSI market indices and individual stock quotes |
 | traffic | Fetch TomTom route travel time between waypoints |
 | weather | Fetch weather forecast for Taiwan (CWA) and Hong Kong (HKO) |
+
+Descriptions come from each skill's `SKILL.md` frontmatter — **when you add a skill, add its row here and in `CLAUDE.md`'s skills table.** Both tables missed `cds-con` and `inflation-con` for weeks.
 
 `crates/` is the Cargo workspace, not a skill — OpenClaw's loader ignores it since it has no `SKILL.md`.
 
