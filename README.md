@@ -65,7 +65,6 @@ Config schema auto-detected:
 
 | Skill | Description |
 |-------|-------------|
-| agent-reach | Give the agent internet eyes — search/read 17 platforms (Twitter/X, Reddit, YouTube, GitHub, Bilibili, etc.) and any web page |
 | cct | Fetch CCT 4-moment trading intelligence and deliver to Telegram |
 | cct2 | Dual-LLM market sentiment analysis for configured tickers — pre-market and EOD reports |
 | cds-con | Report corporate credit-spread levels and how many stored observations sit below each — signal-only, deliberately unclassified (no status ladder) |

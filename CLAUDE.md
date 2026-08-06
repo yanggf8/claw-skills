@@ -134,7 +134,7 @@ export CLAW_ENV="$HOME/.openclaw/.env"           # optional, only if you keep AP
 path; it prints the body to stdout when `chat_id` is absent and, on a send
 failure, prints it anyway so the cron capture keeps the data.
 
-Most skills accept `--deliver-to CHAT_ID` and `--account NAME`. **Two do not:** `mindfulness-spirit`, which routes by the persona-core column's `delivery_target` so there is only one source of routing truth, and `liko-finance-weekly`, which accepts neither flag at all. (`agent-reach` has no binary and takes no flags.) Omitting
+Most skills accept `--deliver-to CHAT_ID` and `--account NAME`. **Two do not:** `mindfulness-spirit`, which routes by the persona-core column's `delivery_target` so there is only one source of routing truth, and `liko-finance-weekly`, which accepts neither flag at all. Omitting
 `--deliver-to` sends output to stdout, which is how a cron job is debugged by
 hand.
 
@@ -200,7 +200,7 @@ nullclaw cron backup
 
 **nanoclaw**: use `nanoclaw cron` (see nanoclaw docs).
 
-**Cron expressions are NOT UTC by default — pass `--tz`.** `cron_jobs` carries a `tz_offset_s` per job and most of them are Taipei (`--tz +08:00`), not UTC; scheduling a new job as if the field were UTC puts it 8 hours out. Taiwan (CST) = UTC+8, EST = UTC-5. Check what a job actually uses before copying its expression (`SELECT expr, tz_offset_s FROM cron_jobs`).
+**Cron expressions are NOT UTC by default — pass `--tz`.** `cron_jobs` carries a `tz_offset_s` per job and most of them are Taipei (`--tz +08:00`), not UTC; scheduling a new job as if the field were UTC puts it 8 hours out. Taiwan (CST) = UTC+8, EST = UTC-5. Check what a job actually uses before copying its expression (`SELECT skill_name, expression, tz_offset_s FROM cron_jobs`).
 
 ## Scheduler contract (hard constraints)
 
@@ -255,7 +255,7 @@ never adds attempts.
 
 ### 2. Every *skill* cron job runs `skill_contract`
 
-Every `job_type='skill'` job uses `verification_mode = skill_contract`. **One `shell` job does not** (`verification_mode = none`), so "there is no lax mode left" is not literally true — check before relying on it. **Per-skill job counts are not written here on purpose**: they drifted (this said 38 when there were 40) and they change whenever a job is added or paused. Query them: `sqlite3 ~/.nullclaw/cron.db "SELECT skill, COUNT(*) FROM cron_jobs GROUP BY skill"`. Note `ainews` appears there but **lives outside this repo** (`~/b/ainews`).
+Every `job_type='skill'` job uses `verification_mode = skill_contract`. **One `shell` job does not** (`verification_mode = none`), so "there is no lax mode left" is not literally true — check before relying on it. **Per-skill job counts are not written here on purpose**: they drifted (this said 38 when there were 40) and they change whenever a job is added or paused. Query them: `sqlite3 ~/.nullclaw/cron.db "SELECT skill_name, COUNT(*) FROM cron_jobs GROUP BY skill_name"`. Note `ainews` appears there but **lives outside this repo** (`~/b/ainews`).
 
 This is new. The four `cct` jobs sat on `verification_mode = none` until
 2026-07-27, which passes unconditionally — that is why a dead upstream pipeline
@@ -401,7 +401,6 @@ Prior design context lives in `docs/specs/` — **browse it, do not rely on a li
 | `oilcon` | `--mode deliver\|record` | Yahoo Finance, Turso |
 | `inflation-con` | `--mode deliver\|record`, `--config` | FRED (core-PCE / core-CPI / breakeven) |
 | `cds-con` | `--mode deliver\|record` | Turso `credit_spreads` (written by `price cds fetch`) |
-| `agent-reach` | agent-only, see SKILL.md | see `agent-reach/SKILL.md` (this table said `13+` while `README.md` said `17`) |
 | `mindfulness-spirit` | `write`, `fix-signature DEVTO_ID`, `--dry-run` | Google News RSS, Turso + delivery via `persona-core` CLI |
 | `liko-finance-weekly` | `--dry-run`, `--check` | Turso (via `persona-core` CLI) |
 
