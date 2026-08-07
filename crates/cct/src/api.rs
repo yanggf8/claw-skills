@@ -42,6 +42,22 @@ fn head(s: &str) -> String {
     s.chars().take(120).collect()
 }
 
+/// A report, plus what the envelope says about it.
+///
+/// `unwrap_envelope` used to return the payload alone, so no envelope field
+/// could reach the skill however faithfully the worker published one — the
+/// provenance was thrown away one layer before anything could read it.
+///
+/// `business_date` is the ET trading day the content is about and `has_content`
+/// says whether anything was found for it. Both are `Option` because a worker
+/// that predates them is a normal thing to meet: the skill and the worker
+/// deploy independently, in either order.
+pub struct Report {
+    pub data: serde_json::Value,
+    pub business_date: Option<String>,
+    pub has_content: Option<bool>,
+}
+
 /// Unwrap the report envelope, saying why whenever it refuses.
 ///
 /// Every `None` out of this function writes a line to `err`. On 2026-08-06 the
@@ -51,7 +67,7 @@ fn head(s: &str) -> String {
 /// empty. The reader saw "尚未產生或暫時無法存取", which is also what a dead
 /// pipeline and an unreachable host print, so telling them apart cost a manual
 /// curl. The provenance in the warning is the part that separates them.
-pub fn unwrap_envelope(text: &str, err: &mut impl std::io::Write) -> Option<serde_json::Value> {
+pub fn unwrap_envelope(text: &str, err: &mut impl std::io::Write) -> Option<Report> {
     let parsed: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => {
@@ -108,10 +124,23 @@ pub fn unwrap_envelope(text: &str, err: &mut impl std::io::Write) -> Option<serd
         return None;
     }
 
-    Some(data)
+    let metadata = parsed.get("metadata");
+    Some(Report {
+        data,
+        // A non-string date is read as absent rather than as an error. A
+        // malformed provenance field must not cost the reader a report they
+        // could otherwise have had — the fallback path still answers.
+        business_date: metadata
+            .and_then(|m| m.get("business_date"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        has_content: metadata
+            .and_then(|m| m.get("has_content"))
+            .and_then(|v| v.as_bool()),
+    })
 }
 
-pub fn get(path: &str) -> Option<serde_json::Value> {
+pub fn get(path: &str) -> Option<Report> {
     let url = format!("{}{path}", base());
     let resp = match claw_core::http::agent(std::time::Duration::from_secs(TIMEOUT_S))
         .get(&url)

@@ -16,7 +16,7 @@ use cct::api::unwrap_envelope;
 /// Captured live from the pre-market route during the incident.
 const EMPTY: &str = include_str!("empty_envelope.json");
 
-fn run(text: &str) -> (Option<serde_json::Value>, String) {
+fn run(text: &str) -> (Option<cct::api::Report>, String) {
     let mut err: Vec<u8> = Vec::new();
     let got = unwrap_envelope(text, &mut err);
     (got, String::from_utf8(err).expect("warnings are utf-8"))
@@ -44,7 +44,7 @@ fn the_incident_warning_carries_the_cache_provenance() {
 #[test]
 fn a_healthy_envelope_unwraps_to_its_payload_in_silence() {
     let (got, warn) = run(r#"{"success":true,"data":{"type":"pre_market_briefing","symbols_analyzed":5}}"#);
-    assert_eq!(got.unwrap()["symbols_analyzed"], 5);
+    assert_eq!(got.unwrap().data["symbols_analyzed"], 5);
     assert_eq!(warn, "", "a good payload must not warn");
 }
 
@@ -95,5 +95,57 @@ fn a_payload_that_merely_omits_success_is_not_caught_by_the_inner_test() {
     // explicit `false` would reject every healthy pre-market report.
     let (got, warn) = run(r#"{"success":true,"data":{"type":"pre_market_briefing","symbols_analyzed":5}}"#);
     assert!(got.is_some());
+    assert_eq!(warn, "");
+}
+
+#[test]
+fn the_envelopes_provenance_survives_the_unwrap() {
+    // The whole point of the change. `unwrap_envelope` returned `Some(data)` and
+    // dropped everything around it, so the worker could publish business_date
+    // perfectly and the skill would still never see it.
+    let (got, warn) = run(
+        r#"{"success":true,"data":{"symbols_analyzed":5},
+            "metadata":{"business_date":"2026-08-06","has_content":true,"source":"d1_fallback"}}"#,
+    );
+    let report = got.expect("a payload");
+    assert_eq!(report.data["symbols_analyzed"], 5);
+    assert_eq!(report.business_date.as_deref(), Some("2026-08-06"));
+    assert_eq!(report.has_content, Some(true));
+    assert_eq!(warn, "");
+}
+
+#[test]
+fn an_envelope_without_the_fields_is_still_accepted() {
+    // A worker that has not shipped the field yet — which is every deploy order
+    // where this skill lands first. Absent is not an error; it selects the
+    // fallback path rather than costing the reader a report.
+    let (got, _) = run(r#"{"success":true,"data":{"symbols_analyzed":5}}"#);
+    let report = got.expect("a payload");
+    assert_eq!(report.business_date, None);
+    assert_eq!(report.has_content, None);
+}
+
+#[test]
+fn a_business_date_that_is_not_a_string_is_treated_as_absent() {
+    // Fail soft, not loud. A malformed provenance field must not cost the reader
+    // a report they could otherwise have had; the fallback still answers.
+    let (got, _) = run(
+        r#"{"success":true,"data":{"symbols_analyzed":5},"metadata":{"business_date":20260806}}"#,
+    );
+    assert_eq!(got.expect("a payload").business_date, None);
+}
+
+#[test]
+fn has_content_false_is_carried_through_rather_than_rejected() {
+    // An envelope that says it holds nothing is still a valid envelope: the
+    // skill needs the day and the flag to say *why* it is degrading. Rejecting
+    // it here would put it back on the silent path this file exists for.
+    let (got, warn) = run(
+        r#"{"success":true,"data":{"type":"end_of_day_summary"},
+            "metadata":{"business_date":"2026-08-07","has_content":false}}"#,
+    );
+    let report = got.expect("an empty report is still a report");
+    assert_eq!(report.has_content, Some(false));
+    assert_eq!(report.business_date.as_deref(), Some("2026-08-07"));
     assert_eq!(warn, "");
 }

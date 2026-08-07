@@ -64,14 +64,14 @@ fn main() {
             format!("📭 CCT {}尚未產生或暫時無法存取", label(args.mode)),
             SkillStatus::Degraded,
         ),
-        Some(data) => {
+        Some(report) => {
             let body = match args.mode {
-                Mode::PreMarket => format_pre_market(&data, today),
+                Mode::PreMarket => format_pre_market(&report.data, today),
                 Mode::Intraday => {
-                    format_intraday(&data, &now.strftime("%Y-%m-%d %H:%M UTC").to_string())
+                    format_intraday(&report.data, &now.strftime("%Y-%m-%d %H:%M UTC").to_string())
                 }
-                Mode::Eod => format_eod(&data, &now.strftime("%Y-%m-%d").to_string()),
-                Mode::Weekly => format_weekly(&data),
+                Mode::Eod => format_eod(&report.data, &now.strftime("%Y-%m-%d").to_string()),
+                Mode::Weekly => format_weekly(&report.data),
             };
             // A degraded verdict reached this way used to be silent, and
             // nullclaw prints the literal "no stderr" in the alert when a skill
@@ -79,7 +79,7 @@ fn main() {
             // warnings cover only the other fork — the one where no payload
             // arrives — so an intact payload with nothing in it alerted with no
             // reason at all on 2026-08-07.
-            let gap = content_gap(args.mode, &data, today);
+            let gap = content_gap(args.mode, &report.data, today);
             if let Some(reason) = &gap {
                 let _ = writeln!(
                     err,
