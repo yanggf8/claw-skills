@@ -9,6 +9,58 @@ this file is only the record of what changed and why.
 
 ---
 
+## The degraded alert with no reason, and the ET/UTC split behind it (2026-08-07)
+
+A `cct` eod cron alerted `failure=contract_degraded repair=none` with a body of exactly one string:
+`no stderr`. That is nullclaw's literal placeholder (`gateway.zig`, the degraded branch) for a skill
+that wrote none. A fix the day before — 58dbcb2, "every rejected envelope has to say why" — was
+supposed to have abolished reasonless alerts, and had not.
+
+**It had instrumented one half of a fork.** `api::get` returning `None` warned on every path. The
+other arm — payload arrives intact, and the per-mode predicate says it holds no analysis — wrote
+nothing at all. Same symptom, other branch. Fixed in 8e92b91 with `content_gap`, which returns `Some`
+exactly when the predicate refuses and carries the route's own words as the reason.
+
+**Why the data was missing was not a bug here at all.** GitHub Actions never created cct's 20:05 UTC
+end-of-day run on 2026-08-06 — no run exists — after the 16:00 UTC one failed with "The job was not
+acquired by Runner of type hosted". The skill was right to degrade; it just would not say so.
+
+**The review found more than the review was for.** An adversarial pass over the fix, corroborated by
+hand, turned up three things the fix had not touched:
+
+- The quoted upstream text was unbounded. A hostile `key_events` produced 12,079 bytes of stderr, and
+  nullclaw truncates the alert preview at 200 **bytes** — landing mid-codepoint, which hands Telegram
+  invalid UTF-8 and can destroy the very alert the commit existed to populate. Bounded in 0bb481b.
+- The tests exercised `--mode eod` and nothing else, so suppressing the warning for pre-market alone
+  left the whole suite green.
+- The report routes derived "today" as `new Date().toISOString().split('T')[0]` — a UTC date — while
+  the jobs write under an ET business date. That is the four-to-five-hour window after 00:00 UTC in
+  which the reader asks D1 for a day the writer never used.
+
+**That last one turned out to be the real subject.** Chasing it across the cct repo found the same
+shape four more times: a `toLocaleString` → `new Date` → `toISOString` round trip that agreed with ET
+only because Workers run TZ=UTC; a `normalizeToETDate` that shifts a date-only string back a day; an
+`isTradingDay` reading the *host's* weekday, correct on Workers and one day out on the UTC+8
+development machine, where it called Sunday a trading day; and `getWeekString`/`getWeekStartDate`
+that were not inverses, so on Mondays and Tuesdays the weekly route read the previous week's rows and
+labelled them as the current week. Each was individually plausible. None was written down anywhere.
+
+The answer was to stop deriving the day at all. `metadata.business_date` and `metadata.has_content`
+now travel on every report envelope: the day the content is *about*, from the row that supplied it,
+and whether anything was found for it. "No data for this day" and "here is this day" no longer arrive
+in the same shape — which is what let a dead upstream look healthy for 50 days (2026-06-08 to 07-27).
+
+Design: `~/a/cct/docs/specs/2026-08-07-business-date-envelope-design.md`. Consumer plan:
+[`docs/superpowers/plans/2026-08-07-cct-consumer-business-date.md`](docs/superpowers/plans/2026-08-07-cct-consumer-business-date.md).
+The present-tense rule is in [`CLAUDE.md`](CLAUDE.md).
+
+**Worth keeping from how it went.** Both plans were corrected *during* execution, four times between
+them, and every correction was a step that would have produced a working-looking bug: an intraday
+content predicate reading a field only the empty shape sets; a weekly clamp writing `2026-W52` into a
+`YYYY-MM-DD` field; a clock test that can only fail during four hours of the day. Writing a date rule
+without running the code that implements it is the failure this whole entry is about, and the plans
+committed it twice before review caught them.
+
 ## `lib/`, `scripts/run.py` and autocli — the Python deletion (2026-08-02)
 
 Moved out of `CLAUDE.md` on 2026-08-06. The section had outlived itself in a specific way worth

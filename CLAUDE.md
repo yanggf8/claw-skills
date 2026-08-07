@@ -200,6 +200,8 @@ nullclaw cron backup
 
 **nanoclaw**: use `nanoclaw cron` (see nanoclaw docs).
 
+**A market business date is ET, and is never derived from UTC.** For anything keyed on a trading day — the `cct` skill, the cct worker it reads — ET is the market's own time, so the trading day *is* the ET date. Derive it in the zone (`in_tz("America/New_York")`, or `Intl.DateTimeFormat('en-CA', {timeZone})` on the worker side); never from a UTC date, and never by round-tripping an ET value back through UTC. For the four to five hours after 00:00 UTC the UTC day is already tomorrow while the ET session is still today — which is exactly when end-of-day work lands — so a UTC-keyed reader misses rows a correct writer just wrote. `crates/cct/src/freshness.rs::comparison_today` carries the one subtlety: the clock follows the *field* that supplied the date, because `metadata.business_date` is ET while the legacy `data["date"]` is UTC, and binding them per-field is what lets this repo and the worker deploy in either order. Post-mortem: [`HISTORY.md`](HISTORY.md).
+
 **Cron expressions are NOT UTC by default — pass `--tz`.** `cron_jobs` carries a `tz_offset_s` per job and most of them are Taipei (`--tz +08:00`), not UTC; scheduling a new job as if the field were UTC puts it 8 hours out. Taiwan (CST) = UTC+8, EST = UTC-5. Check what a job actually uses before copying its expression (`SELECT skill_name, expression, tz_offset_s FROM cron_jobs`).
 
 ## Scheduler contract (hard constraints)

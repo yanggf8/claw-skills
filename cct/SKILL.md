@@ -32,6 +32,11 @@ Fetch CCT (Capital Cloudflare Trading) 4-moment market intelligence and deliver 
 
 ## Cron Schedule
 
+The cron expressions are fixed UTC, so the ET time each one lands at **moves
+with daylight saving**: the comments below are the EST (winter) reading, and
+every one of them is an hour later in ET from March to November. Check against
+the market clock before treating any of them as "shortly after the close".
+
 ```bash
 # Pre-market: 8:35 AM EST = 13:35 UTC weekdays
 nullclaw cron add-skill "35 13 * * 1-5" cct --deliver-to 7972814626 --skill-args "--mode pre-market"
@@ -92,9 +97,21 @@ claw-skills siblings:
   **and** not stale. The pre-market route falls back to the latest D1 snapshot
   when today's job never ran, so a payload can carry a full set of signals and
   still describe a market day weeks back. `pre_market_freshness()` treats a
-  payload as stale when `is_stale` is set, when `date` is absent or
-  unparseable, or when `date` is not today (UTC). Stale is `degraded`, not
+  payload as stale when `is_stale` is set, when the date is absent or
+  unparseable, or when the date is not today. Stale is `degraded`, not
   `failed` — a retry returns the same snapshot.
+
+  **Which "today" depends on where the date came from.** The worker publishes
+  `metadata.business_date` on the envelope — an **ET** business date, because ET
+  is the market's own time — and that is compared against today in
+  `America/New_York`. When the field is absent, the skill falls back to the
+  payload's own `date`, which is what the route served before it learned the
+  difference, and compares it against today in **UTC**. `comparison_today()`
+  holds that rule. Binding the clock to the field, rather than switching
+  globally, is what lets this skill and the worker deploy in either order: for
+  the four to five hours after 00:00 UTC the two calendars name different days,
+  so a global switch would call fresh reports stale from whichever side ran
+  ahead.
   The delivered header then carries the *source* date plus a warning:
   `📊 CCT 盤前報告｜2026-06-08  ⚠️ 資料已過期（50 天前）`, or
   `⚠️ 資料已過期` with no day count when the age is not a positive number of
@@ -117,8 +134,11 @@ claw-skills siblings:
   synthesises when it finds no snapshot for the requested date. Testing for
   `daily_summary.symbols_analyzed` alone therefore reported `degraded` on every
   genuine report; `has_eod_data()` and `format_eod()` now accept both, and
-  `eod_session_date()` takes the date from the payload's own timestamps rather
-  than the clock, because the scorecard has no `date` field.
+  `eod_session_date()` prefers `metadata.business_date` and only falls through
+  the payload's own timestamps when the worker has not published it. The
+  fallback is kept but is a guess chain, and one of its links is worse than a
+  guess: `timestamp` is an ISO **UTC** instant, so truncating it to ten
+  characters prints a UTC day for a session that closed the evening before.
   Fixture: `crates/cct/tests/eod_scorecard.json`, captured from the live API.
 
   Empty payloads are `degraded`, not `failed`: `failed` triggers repair/retry,
