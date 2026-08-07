@@ -57,15 +57,19 @@ fn main() {
         }
     };
 
-    let now = jiff::Timestamp::now().in_tz("UTC").expect("UTC");
+    // One instant, read in two zones. Calling `now()` twice would leave a
+    // midnight race where the two dates come from different days — the same
+    // shape of defect this whole change is about, one layer down.
+    //
+    // ET is the market's own time, so the trading day IS the ET date, and it is
+    // also what the reports are stamped with. jiff is built with
+    // `tzdb-bundle-always`, so the zone needs nothing from the host and this
+    // works inside the nanoclaw container too.
+    let instant = jiff::Timestamp::now();
+    let now = instant.in_tz("UTC").expect("UTC");
+    let now_et = instant.in_tz("America/New_York").expect("tzdb is bundled");
     let utc_today = now.date();
-    // ET is the market's own time, so the trading day IS the ET date. jiff is
-    // built with `tzdb-bundle-always`, so the zone needs nothing from the host
-    // and this works inside the nanoclaw container too.
-    let et_today = jiff::Timestamp::now()
-        .in_tz("America/New_York")
-        .expect("tzdb is bundled")
-        .date();
+    let et_today = now_et.date();
 
     let (body, status) = match api::get(endpoint(args.mode)) {
         None => (
@@ -79,12 +83,12 @@ fn main() {
             let body = match args.mode {
                 Mode::PreMarket => format_pre_market(&report.data, today),
                 Mode::Intraday => {
-                    format_intraday(&report.data, &now.strftime("%Y-%m-%d %H:%M UTC").to_string())
+                    format_intraday(&report.data, &now_et.strftime("%Y-%m-%d %H:%M ET").to_string())
                 }
                 Mode::Eod => format_eod(
                     report.business_date.as_deref(),
                     &report.data,
-                    &now.strftime("%Y-%m-%d").to_string(),
+                    &now_et.strftime("%Y-%m-%d").to_string(),
                 ),
                 Mode::Weekly => format_weekly(&report.data),
             };

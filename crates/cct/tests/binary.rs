@@ -308,3 +308,38 @@ fn a_payload_the_worker_vouches_for_is_still_checked() {
     );
     assert!(!stderr.is_empty(), "and it still says why: {stderr:?}");
 }
+
+#[test]
+fn the_intraday_header_is_stamped_in_market_time() {
+    // The header used to read "… 05:57 UTC". Honest, but it asks a reader who
+    // thinks in sessions to convert, and it is the one line in the report still
+    // quoting a clock that is not the market's. ET is the market's own time.
+    //
+    // The hour is the discriminator and it never coincides: ET runs four hours
+    // behind UTC in EDT and five in EST, so an ET-stamped header can never show
+    // the UTC hour. Asserting the exact rendered minute would be flaky at
+    // boundaries; asserting the hour differs is deterministic at every instant.
+    let data = r#"{"type":"intraday_check","market_status":"open","total_symbols":0,"symbols":[]}"#;
+    let (stdout, _, code) = run_envelope(envelope_with(data, "2026-08-07", true), "intraday");
+    assert_eq!(code, 0);
+
+    let header = stdout.lines().next().expect("a header");
+    assert!(header.ends_with(" ET"), "header must be stamped ET: {header}");
+    assert!(!header.contains("UTC"), "and no longer UTC: {header}");
+
+    let utc_hour = jiff::Timestamp::now()
+        .in_tz("UTC")
+        .expect("UTC")
+        .strftime("%H")
+        .to_string();
+    let rendered_hour = header
+        .rsplit(' ')
+        .nth(1)
+        .and_then(|hm| hm.split(':').next())
+        .expect("an hour in the header")
+        .to_string();
+    assert_ne!(
+        rendered_hour, utc_hour,
+        "an ET stamp can never show the UTC hour: {header}"
+    );
+}
