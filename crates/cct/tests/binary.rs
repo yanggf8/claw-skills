@@ -208,6 +208,24 @@ fn an_unknown_flag_exits_two() {
     assert_eq!(out.status.code(), Some(2));
 }
 
+/// Run the binary against a caller-supplied envelope: (stdout, stderr, exit code).
+fn run_envelope(envelope: String, mode: &str) -> (String, String, i32) {
+    let stub = Stub::serving(envelope);
+    let out = Command::new(env!("CARGO_BIN_EXE_cct"))
+        .args(["--mode", mode])
+        .env("CCT_BASE", stub.base())
+        .env("CLAW_ENV", "/dev/null")
+        .env("CLAW_CONFIG", "/dev/null")
+        .env("NULLCLAW_JOB_ID", "test-trace:1")
+        .output()
+        .expect("run cct");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
 /// An envelope carrying the worker's provenance fields.
 fn envelope_with(data: &str, business_date: &str, has_content: bool) -> String {
     format!(
@@ -221,18 +239,8 @@ fn a_report_carrying_a_business_date_still_renders_and_classifies() {
     // that a report arriving with provenance still comes out the other side.
     let data = r#"{"type":"pre_market_briefing","date":"2020-01-01","is_stale":false,
                    "high_confidence_signals":[{"symbol":"AAPL"}]}"#;
-    let stub = Stub::serving(envelope_with(data, "2020-01-01", true));
-    let out = Command::new(env!("CARGO_BIN_EXE_cct"))
-        .args(["--mode", "pre-market"])
-        .env("CCT_BASE", stub.base())
-        .env("CLAW_ENV", "/dev/null")
-        .env("CLAW_CONFIG", "/dev/null")
-        .env("NULLCLAW_JOB_ID", "test-trace:1")
-        .output()
-        .expect("run cct");
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    let (stdout, stderr, code) = run_envelope(envelope_with(data, "2020-01-01", true), "pre-market");
+    assert_eq!(code, 0, "stderr: {stderr}");
     assert!(stdout.contains("[skill-status:degraded]"), "stdout: {stdout}");
     assert!(stderr.contains("2020-01-01"), "the reason names the day: {stderr:?}");
 }
@@ -266,4 +274,37 @@ fn main_takes_its_clock_from_the_rule_and_not_from_one_of_the_two() {
             "nothing downstream of the rule may reach for {clock} directly"
         );
     }
+}
+
+#[test]
+fn the_worker_saying_it_found_nothing_is_taken_at_its_word() {
+    // The end-of-day placeholder, as production serves it: a well-formed report
+    // about a day for which no analysis exists. The per-mode predicates had to
+    // infer that from the payload's shape; the envelope states it outright, and
+    // the reason names the day so the cron alert points somewhere.
+    let data = r#"{"type":"end_of_day_summary","date":"2026-08-07",
+                   "daily_summary":{"symbols_analyzed":0,"key_events":["Market closed"]}}"#;
+    let (stdout, stderr, code) = run_envelope(envelope_with(data, "2026-08-07", false), "eod");
+    assert_eq!(code, 0);
+    assert!(stdout.contains("[skill-status:degraded]"), "stdout: {stdout}");
+    assert!(stderr.contains("2026-08-07"), "the reason must name the day: {stderr:?}");
+    assert!(stderr.contains("eod"), "and the mode: {stderr:?}");
+}
+
+#[test]
+fn a_payload_the_worker_vouches_for_is_still_checked() {
+    // `has_content: true` does not silence the predicates. The envelope is
+    // trusted for "nothing here", which it knows about its own storage better
+    // than any reader can; it is not trusted for "everything here", which it
+    // does not. Those predicates are what caught a dead pipeline serving
+    // plausible reports for 50 days, and a field that could switch them off
+    // would hand that failure a way back in.
+    let data = r#"{"type":"end_of_day_summary","daily_summary":{"symbols_analyzed":0}}"#;
+    let (stdout, stderr, code) = run_envelope(envelope_with(data, "2026-08-07", true), "eod");
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("[skill-status:degraded]"),
+        "an empty payload is degraded however the envelope labels it: {stdout}"
+    );
+    assert!(!stderr.is_empty(), "and it still says why: {stderr:?}");
 }

@@ -90,7 +90,21 @@ fn main() {
             // warnings cover only the other fork — the one where no payload
             // arrives — so an intact payload with nothing in it alerted with no
             // reason at all on 2026-08-07.
-            let gap = content_gap(args.mode, &report.data, today);
+            // `has_content: false` is the worker's own answer about its own
+            // storage, so it wins over any predicate a reader can apply to the
+            // shape of a payload the route synthesised. The reverse is refused
+            // deliberately: `true` does not silence the predicates, because they
+            // are what caught a dead pipeline serving plausible reports for 50
+            // days, and a field that could switch them off would hand that
+            // failure a way back in.
+            let gap = match report.has_content {
+                Some(false) => Some(format!(
+                    "the worker has no {} content for {}",
+                    args.mode.slug(),
+                    report.business_date.as_deref().unwrap_or("the day requested"),
+                )),
+                _ => content_gap(args.mode, &report.data, today),
+            };
             if let Some(reason) = &gap {
                 let _ = writeln!(
                     err,
