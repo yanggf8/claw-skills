@@ -207,3 +207,63 @@ fn an_unknown_flag_exits_two() {
         .expect("run cct");
     assert_eq!(out.status.code(), Some(2));
 }
+
+/// An envelope carrying the worker's provenance fields.
+fn envelope_with(data: &str, business_date: &str, has_content: bool) -> String {
+    format!(
+        r#"{{"success":true,"data":{data},"metadata":{{"business_date":"{business_date}","has_content":{has_content},"source":"d1_fallback"}}}}"#
+    )
+}
+
+#[test]
+fn a_report_carrying_a_business_date_still_renders_and_classifies() {
+    // The ET branch is new code between the fetch and the render, so this pins
+    // that a report arriving with provenance still comes out the other side.
+    let data = r#"{"type":"pre_market_briefing","date":"2020-01-01","is_stale":false,
+                   "high_confidence_signals":[{"symbol":"AAPL"}]}"#;
+    let stub = Stub::serving(envelope_with(data, "2020-01-01", true));
+    let out = Command::new(env!("CARGO_BIN_EXE_cct"))
+        .args(["--mode", "pre-market"])
+        .env("CCT_BASE", stub.base())
+        .env("CLAW_ENV", "/dev/null")
+        .env("CLAW_CONFIG", "/dev/null")
+        .env("NULLCLAW_JOB_ID", "test-trace:1")
+        .output()
+        .expect("run cct");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("[skill-status:degraded]"), "stdout: {stdout}");
+    assert!(stderr.contains("2020-01-01"), "the reason names the day: {stderr:?}");
+}
+
+#[test]
+fn main_takes_its_clock_from_the_rule_and_not_from_one_of_the_two() {
+    // The composition gap this file exists for, in its smallest form. The rule
+    // lives in `freshness::comparison_today` and is unit-tested against fixed
+    // dates — but which clock main *passes on* is invisible to those tests, and
+    // invisible end to end too: ET and UTC name the same day for twenty hours
+    // out of twenty-four, so a binary test asserting a rendered date would pass
+    // whatever main did, almost always. Asserted over the source instead, which
+    // discriminates at every hour.
+    let main_rs = include_str!("../src/main.rs");
+    assert!(
+        main_rs.contains("comparison_today(report.business_date.as_deref(), et_today, utc_today)"),
+        "main must derive `today` from the rule, not pick a clock itself"
+    );
+    // Everything after that *line* — splitting mid-line would catch the rule's
+    // own arguments and fail on correct code.
+    let after_resolve = main_rs
+        .split_once("let today = comparison_today")
+        .expect("the resolution line")
+        .1
+        .split_once('\n')
+        .expect("a line ending")
+        .1;
+    for clock in ["utc_today", "et_today"] {
+        assert!(
+            !after_resolve.contains(clock),
+            "nothing downstream of the rule may reach for {clock} directly"
+        );
+    }
+}

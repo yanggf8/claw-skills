@@ -53,3 +53,26 @@ pub fn pre_market_freshness(data: &serde_json::Value, today: Date) -> Freshness 
         age_days: if age > 0 { Some(age) } else { None },
     }
 }
+
+/// The clock a report's own date must be judged against.
+///
+/// `business_date` comes off the envelope and is an **ET** business date — ET is
+/// the market's own time, so the trading day is the ET date. The legacy
+/// `data["date"]` is what the route served before it learned that difference,
+/// and is only comparable to **UTC**. One clock cannot judge both: for the four
+/// to five hours after 00:00 UTC the UTC day is already tomorrow while the ET
+/// session is still today, which is exactly when end-of-day work lands. Judging
+/// an ET date by a UTC clock in that window calls a fresh briefing a day old.
+///
+/// Binding the clock to the field's provenance, rather than switching globally,
+/// is also what lets this skill and the worker deploy in either order. A skill
+/// that moved to ET unconditionally would break the other direction — calling
+/// fresh reports stale for the same hours the original defect covered — for as
+/// long as it ran ahead of the worker.
+pub fn comparison_today(business_date: Option<&str>, et_today: Date, utc_today: Date) -> Date {
+    if business_date.is_some() {
+        et_today
+    } else {
+        utc_today
+    }
+}

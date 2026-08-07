@@ -17,6 +17,7 @@ use std::io::Write;
 use cct::api;
 use cct::cli::{self, Mode};
 use cct::content::content_gap;
+use cct::freshness::comparison_today;
 use cct::render::{format_eod, format_intraday, format_pre_market, format_weekly};
 use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use claw_core::env::load_env;
@@ -57,7 +58,14 @@ fn main() {
     };
 
     let now = jiff::Timestamp::now().in_tz("UTC").expect("UTC");
-    let today = now.date();
+    let utc_today = now.date();
+    // ET is the market's own time, so the trading day IS the ET date. jiff is
+    // built with `tzdb-bundle-always`, so the zone needs nothing from the host
+    // and this works inside the nanoclaw container too.
+    let et_today = jiff::Timestamp::now()
+        .in_tz("America/New_York")
+        .expect("tzdb is bundled")
+        .date();
 
     let (body, status) = match api::get(endpoint(args.mode)) {
         None => (
@@ -65,6 +73,9 @@ fn main() {
             SkillStatus::Degraded,
         ),
         Some(report) => {
+            // The clock follows the field that was read — see
+            // `freshness::comparison_today` for why the two travel together.
+            let today = comparison_today(report.business_date.as_deref(), et_today, utc_today);
             let body = match args.mode {
                 Mode::PreMarket => format_pre_market(&report.data, today),
                 Mode::Intraday => {

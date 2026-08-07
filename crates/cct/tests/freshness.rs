@@ -345,3 +345,41 @@ fn the_eod_branch_is_chosen_by_shape_not_by_output() {
     let v = serde_json::json!({"totalSignals": 0, "daily_summary": {"overall_sentiment": "bullish"}});
     assert!(!format_eod(&v, "d").contains("今日總結"));
 }
+
+// --- which clock a report's date is judged against ----------------------------
+//
+// `business_date` is an ET business date. `data["date"]` is what the route
+// served before it learned the difference, and is only comparable to UTC. One
+// clock cannot judge both, and the disagreement is not hypothetical: for the
+// four to five hours after 00:00 UTC the UTC day is already tomorrow while the
+// ET session is still today — the hours when end-of-day work lands.
+//
+// Tested as a function against fixed dates rather than end to end, because the
+// two clocks agree for twenty hours out of twenty-four. A binary-level test
+// would pass whatever the rule was, for most of the day, and read as coverage.
+
+#[test]
+fn a_stated_business_date_is_judged_against_the_et_clock() {
+    let et: Date = "2026-08-06".parse().unwrap();
+    let utc: Date = "2026-08-07".parse().unwrap();
+    assert_eq!(cct::freshness::comparison_today(Some("2026-08-06"), et, utc), et);
+}
+
+#[test]
+fn without_one_the_legacy_utc_clock_is_kept() {
+    // Deploy order: this skill first, the worker not yet. Switching to ET
+    // unconditionally would break this direction instead of the other — calling
+    // a fresh report stale for the same hours the original bug covered.
+    let et: Date = "2026-08-06".parse().unwrap();
+    let utc: Date = "2026-08-07".parse().unwrap();
+    assert_eq!(cct::freshness::comparison_today(None, et, utc), utc);
+}
+
+#[test]
+fn the_choice_is_the_field_and_not_the_value() {
+    // Any stated date selects ET, including one that will read as stale. The
+    // rule is about where the date came from, not about what it says.
+    let et: Date = "2026-08-06".parse().unwrap();
+    let utc: Date = "2026-08-07".parse().unwrap();
+    assert_eq!(cct::freshness::comparison_today(Some("2020-01-01"), et, utc), et);
+}

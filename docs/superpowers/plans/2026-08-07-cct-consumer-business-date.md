@@ -187,90 +187,42 @@ them impossible."
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `crates/cct/tests/binary.rs`. The stub already serves one scripted envelope; these cases vary what it contains.
+**Corrected during execution.** This step first specified two binary-level tests
+comparing a rendered verdict against the ET clock. They cannot discriminate: ET
+and UTC name the same day for twenty hours out of twenty-four, so outside the
+00:00–04:00 UTC window those tests pass whatever the rule is — while reading as
+coverage. Noting "confirm it discriminates" in the step was not enough; a test
+that can only fail during four hours of the day is one that will be green when
+it matters least.
+
+Split in three instead:
+
+1. **The rule, as a function, against fixed dates** — `comparison_today(business_date, et_today, utc_today)` in `freshness.rs`, tested with `et = 2026-08-06` and `utc = 2026-08-07` so the two never coincide. Deterministic at every hour.
+2. **The composition, over the source** — the unit tests cannot see whether `main` *uses* the rule, and end-to-end cannot see it either for the same twenty hours. So `binary.rs` asserts `main.rs` derives `today` from `comparison_today(...)` and that nothing downstream of that line reaches for `et_today` or `utc_today` directly. Mutation-verified: replacing the call with either clock turns it red.
+3. **The path still works** — one binary test that a report carrying provenance renders and classifies, since the ET branch is new code between the fetch and the render.
 
 ```rust
-/// An envelope carrying the worker's provenance fields.
-fn envelope_with(data: &str, business_date: &str, has_content: bool) -> String {
-    format!(
-        r#"{{"success":true,"data":{data},"metadata":{{"business_date":"{business_date}","has_content":{has_content},"source":"d1_fallback"}}}}"#
-    )
+#[test]
+fn a_stated_business_date_is_judged_against_the_et_clock() {
+    let et: Date = "2026-08-06".parse().unwrap();
+    let utc: Date = "2026-08-07".parse().unwrap();
+    assert_eq!(cct::freshness::comparison_today(Some("2026-08-06"), et, utc), et);
 }
 
 #[test]
-fn a_report_for_todays_et_session_is_not_called_stale() {
-    // The case the two clocks exist for. Between 00:00 and ~04:00 UTC the UTC
-    // day is already tomorrow while the ET session is still today, so a report
-    // correctly dated for the ET session reads as a day old to a UTC clock —
-    // and the skill would deliver "資料已過期" over a fresh briefing.
-    let et_today = et_business_date();
-    let data = format!(
-        r#"{{"type":"pre_market_briefing","date":"{et_today}","is_stale":false,
-             "high_confidence_signals":[{{"symbol":"AAPL"}}]}}"#
-    );
-    let stub = Stub::serving(envelope_with(&data, &et_today, true));
-    let (stdout, stderr, code) = run_stub(&stub, "pre-market");
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("[skill-status:ok]"), "stdout: {stdout}");
-    assert_eq!(stderr, "", "a fresh report must not warn");
+fn without_one_the_legacy_utc_clock_is_kept() {
+    let et: Date = "2026-08-06".parse().unwrap();
+    let utc: Date = "2026-08-07".parse().unwrap();
+    assert_eq!(cct::freshness::comparison_today(None, et, utc), utc);
 }
 
 #[test]
-fn without_the_field_the_legacy_utc_comparison_is_kept() {
-    // Deploy order: skill first, worker not yet. The payload is what the old
-    // route served — a UTC day — so it has to be judged against a UTC clock.
-    // Switching to ET unconditionally would break this direction instead.
-    let utc_today = utc_date();
-    let data = format!(
-        r#"{{"type":"pre_market_briefing","date":"{utc_today}","is_stale":false,
-             "high_confidence_signals":[{{"symbol":"AAPL"}}]}}"#
-    );
-    let stub = Stub::serving(format!(r#"{{"success":true,"data":{data}}}"#));
-    let (stdout, stderr, code) = run_stub(&stub, "pre-market");
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("[skill-status:ok]"), "stdout: {stdout}");
+fn the_choice_is_the_field_and_not_the_value() {
+    let et: Date = "2026-08-06".parse().unwrap();
+    let utc: Date = "2026-08-07".parse().unwrap();
+    assert_eq!(cct::freshness::comparison_today(Some("2020-01-01"), et, utc), et);
 }
 ```
-
-Add the two clock helpers and a stub runner beside the existing `run`:
-
-```rust
-fn et_business_date() -> String {
-    jiff::Timestamp::now()
-        .in_tz("America/New_York")
-        .expect("tzdb is bundled")
-        .date()
-        .to_string()
-}
-
-fn utc_date() -> String {
-    jiff::Timestamp::now().in_tz("UTC").expect("UTC").date().to_string()
-}
-
-/// Run the binary against an already-built stub, so the caller controls the body.
-fn run_stub(stub: &Stub, mode: &str) -> (String, String, i32) {
-    let out = Command::new(env!("CARGO_BIN_EXE_cct"))
-        .args(["--mode", mode])
-        .env("CCT_BASE", stub.base())
-        .env("CLAW_ENV", "/dev/null")
-        .env("CLAW_CONFIG", "/dev/null")
-        .env("NULLCLAW_JOB_ID", "test-trace:1")
-        .output()
-        .expect("run cct");
-    (
-        String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
-        out.status.code().unwrap_or(-1),
-    )
-}
-```
-
-Add `jiff` to `[dev-dependencies]` in `crates/cct/Cargo.toml` if it is not already available to tests (it is a normal dependency, so it is).
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cargo test -p cct --test binary`
-Expected: `a_report_for_todays_et_session_is_not_called_stale` FAILS whenever the run happens between 00:00 and ~04:00 UTC, because `today` is UTC and the ET date is a day behind. Outside that window it passes vacuously — note this in the run, and re-check by temporarily comparing against `utc_date()` to confirm the assertion discriminates.
 
 - [ ] **Step 3: Implement**
 
