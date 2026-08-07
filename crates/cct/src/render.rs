@@ -139,7 +139,21 @@ fn bias_label(b: &str) -> String {
 /// does), so fall through the timestamps the snapshot does carry before
 /// resorting to now(). Stamping a stale report with today's date is the exact
 /// failure the pre-market gate exists to prevent; the same rule applies here.
-pub fn eod_session_date(data: &serde_json::Value, now: &str) -> String {
+pub fn eod_session_date(
+    business_date: Option<&str>,
+    data: &serde_json::Value,
+    now: &str,
+) -> String {
+    // Stated beats inferred. Everything below is a guess chain that exists only
+    // because nothing used to state the answer, and one of its links is worse
+    // than a guess: `timestamp` is an ISO **UTC** instant, so its first ten
+    // characters are a UTC day, not a business date — a session that closed on
+    // 2026-08-06 ET renders as 2026-08-07. The envelope outranks even `date`,
+    // because it is what the worker keyed its storage by, while the payload is
+    // what it happened to render.
+    if let Some(day) = business_date {
+        return day.to_string();
+    }
     for key in [
         "date",
         "_scheduled_date",
@@ -278,9 +292,12 @@ fn scorecard_lines(data: &serde_json::Value) -> Vec<String> {
 /// synthesises when it has no snapshot. Dispatch on which one arrived rather
 /// than assuming — testing only for `daily_summary` is what reported degraded
 /// on every genuine report from 2026-07-21.
-pub fn format_eod(data: &serde_json::Value, now: &str) -> String {
+pub fn format_eod(business_date: Option<&str>, data: &serde_json::Value, now: &str) -> String {
     let mut lines = vec![
-        format!("📊 CCT 收盤報告｜{}", eod_session_date(data, now)),
+        format!(
+            "📊 CCT 收盤報告｜{}",
+            eod_session_date(business_date, data, now)
+        ),
         String::new(),
     ];
 

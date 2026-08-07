@@ -81,7 +81,11 @@ fn main() {
                 Mode::Intraday => {
                     format_intraday(&report.data, &now.strftime("%Y-%m-%d %H:%M UTC").to_string())
                 }
-                Mode::Eod => format_eod(&report.data, &now.strftime("%Y-%m-%d").to_string()),
+                Mode::Eod => format_eod(
+                    report.business_date.as_deref(),
+                    &report.data,
+                    &now.strftime("%Y-%m-%d").to_string(),
+                ),
                 Mode::Weekly => format_weekly(&report.data),
             };
             // A degraded verdict reached this way used to be silent, and

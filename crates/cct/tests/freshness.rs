@@ -260,7 +260,7 @@ fn scorecard() -> serde_json::Value {
 fn the_eod_header_uses_the_session_date_not_todays() {
     // Stamping a stale report with today's date is the failure the pre-market
     // gate exists to prevent; the same rule applies here.
-    let out = format_eod(&scorecard(), "2099-01-01");
+    let out = format_eod(None, &scorecard(), "2099-01-01");
     assert!(!out.contains("2099-01-01"), "got:\n{out}");
 }
 
@@ -268,25 +268,25 @@ fn the_eod_header_uses_the_session_date_not_todays() {
 fn the_session_date_falls_through_the_timestamps_the_payload_carries() {
     // The scorecard has no `date` — only the placeholder does.
     assert_eq!(
-        eod_session_date(&serde_json::json!({"timestamp": "2026-07-29T20:05:00Z"}), "2099-01-01"),
+        eod_session_date(None, &serde_json::json!({"timestamp": "2026-07-29T20:05:00Z"}), "2099-01-01"),
         "2026-07-29"
     );
     assert_eq!(
-        eod_session_date(&serde_json::json!({"marketCloseTime": "2026-07-29T20:00:00Z"}), "2099-01-01"),
+        eod_session_date(None, &serde_json::json!({"marketCloseTime": "2026-07-29T20:00:00Z"}), "2099-01-01"),
         "2026-07-29"
     );
     // Nothing usable: only then does it reach for the clock.
-    assert_eq!(eod_session_date(&serde_json::json!({}), "2099-01-01"), "2099-01-01");
+    assert_eq!(eod_session_date(None, &serde_json::json!({}), "2099-01-01"), "2099-01-01");
 }
 
 #[test]
 fn a_short_timestamp_string_is_not_mistaken_for_a_date() {
-    assert_eq!(eod_session_date(&serde_json::json!({"date": "2026"}), "2099-01-01"), "2099-01-01");
+    assert_eq!(eod_session_date(None, &serde_json::json!({"date": "2026"}), "2099-01-01"), "2099-01-01");
 }
 
 #[test]
 fn the_scorecard_renders_its_grade_and_hit_rate() {
-    let out = format_eod(&scorecard(), "2099-01-01");
+    let out = format_eod(None, &scorecard(), "2099-01-01");
     assert!(out.contains("模型評級") || out.contains("高信心命中"), "got:\n{out}");
 }
 
@@ -298,7 +298,7 @@ fn the_placeholder_still_renders_without_panicking() {
     // rather than from the payload. The live placeholder says
     // `overall_sentiment`.
     let v = serde_json::json!({"daily_summary": {"symbols_analyzed": 0, "overall_sentiment": "neutral"}});
-    let out = format_eod(&v, "2026-08-01");
+    let out = format_eod(None, &v, "2026-08-01");
     assert!(out.starts_with("📊 CCT 收盤報告｜2026-08-01"));
     assert!(out.contains("中性"));
 }
@@ -310,7 +310,7 @@ fn a_signal_row_carries_its_arrow_and_outcome() {
             {"ticker": "AAPL", "predicted": "↑ Expected up", "actual": "↓ 0.6%", "correct": false, "confidence": 82}
         ]
     });
-    let out = format_eod(&v, "2026-08-01");
+    let out = format_eod(None, &v, "2026-08-01");
     // The arrow only, and the actual tightened so the row fits a phone.
     assert!(out.contains("預測↑ 實際↓0.6%  ✗ 82%"), "got:\n{out}");
 }
@@ -325,7 +325,7 @@ fn the_placeholder_summary_reads_overall_sentiment_not_market_sentiment() {
         "daily_summary": {"symbols_analyzed": 0, "overall_sentiment": "neutral",
                           "key_events": ["Market closed", "EOD analysis not yet available"]}
     });
-    let out = format_eod(&v, "2026-08-01");
+    let out = format_eod(None, &v, "2026-08-01");
     assert!(out.contains("今日總結：中性 ⚪"), "got:\n{out}");
 }
 
@@ -334,7 +334,7 @@ fn a_summary_confidence_is_appended_when_present() {
     let v = serde_json::json!({
         "daily_summary": {"overall_sentiment": "bullish", "confidence": 0.82}
     });
-    assert!(format_eod(&v, "d").contains("今日總結：看漲 🟢（信心 82%）"));
+    assert!(format_eod(None, &v, "d").contains("今日總結：看漲 🟢（信心 82%）"));
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn the_eod_branch_is_chosen_by_shape_not_by_output() {
     // branch; deciding by "did the renderer produce lines" would fall through
     // to the placeholder path and print a summary the payload never had.
     let v = serde_json::json!({"totalSignals": 0, "daily_summary": {"overall_sentiment": "bullish"}});
-    assert!(!format_eod(&v, "d").contains("今日總結"));
+    assert!(!format_eod(None, &v, "d").contains("今日總結"));
 }
 
 // --- which clock a report's date is judged against ----------------------------
@@ -382,4 +382,44 @@ fn the_choice_is_the_field_and_not_the_value() {
     let et: Date = "2026-08-06".parse().unwrap();
     let utc: Date = "2026-08-07".parse().unwrap();
     assert_eq!(cct::freshness::comparison_today(Some("2020-01-01"), et, utc), et);
+}
+
+// ── the stated session date beats the guess chain ────────────────────────────
+
+#[test]
+fn a_stated_business_date_beats_the_guess_chain() {
+    // `timestamp` is an ISO **UTC** instant, so taking its first ten characters
+    // launders a UTC day into a business date: this session closed on
+    // 2026-08-06 ET and the header would have printed 2026-08-07. The chain
+    // exists only because nothing used to state the answer.
+    let data = serde_json::json!({
+        "timestamp": "2026-08-07T00:16:14.266Z",
+        "signalBreakdown": [{"ticker": "AAPL"}],
+    });
+    assert_eq!(eod_session_date(Some("2026-08-06"), &data, "2099-01-01"), "2026-08-06");
+}
+
+#[test]
+fn the_stated_date_wins_even_over_the_payloads_own_date() {
+    // Not just over the weaker links. `data["date"]` is the chain's first
+    // choice, and the envelope still outranks it — the envelope is what the
+    // worker keyed its storage by, the payload is what it happened to render.
+    let data = serde_json::json!({"date": "2026-08-07"});
+    assert_eq!(eod_session_date(Some("2026-08-06"), &data, "2099-01-01"), "2026-08-06");
+}
+
+#[test]
+fn without_a_stated_date_the_old_chain_still_answers() {
+    // A worker that has not shipped the field. The fallback is untouched, so
+    // deploy order stays free in both directions.
+    let data = serde_json::json!({"date": "2026-08-05"});
+    assert_eq!(eod_session_date(None, &data, "2099-01-01"), "2026-08-05");
+}
+
+#[test]
+fn the_header_carries_the_stated_session_through_format_eod() {
+    // The composition: eod_session_date being right is no use if format_eod
+    // does not pass the field along.
+    let out = format_eod(Some("2026-08-06"), &scorecard(), "2099-01-01");
+    assert!(out.contains("收盤報告｜2026-08-06"), "got: {out}");
 }
