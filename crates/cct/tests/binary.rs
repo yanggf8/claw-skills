@@ -140,6 +140,64 @@ fn a_real_scorecard_is_ok_and_silent() {
 }
 
 #[test]
+fn every_mode_that_degrades_says_why_through_the_whole_binary() {
+    // The hole an adversarial review found in the first version of this file:
+    // it exercised `eod` only, so suppressing the warning for one of the other
+    // three left the entire suite green — `content_reason.rs` never spawns the
+    // process, and this file never asked about them. Lessons §1, the same
+    // composition gap in a smaller shape.
+    for mode in ["pre-market", "intraday", "eod", "weekly"] {
+        let (stdout, stderr, code) = run("{}", mode);
+        assert_eq!(code, 0, "{mode}: stderr {stderr}");
+        assert!(
+            stdout.contains("[skill-status:degraded]"),
+            "{mode} called an empty payload usable: {stdout}"
+        );
+        assert!(
+            stderr.contains(&format!("CCT {mode} carries no analysis")),
+            "{mode} degraded without a reason: {stderr:?}"
+        );
+    }
+}
+
+#[test]
+fn a_hostile_upstream_string_cannot_crowd_the_reason_out_of_the_alert() {
+    // nullclaw previews the first 200 BYTES of stderr and sends them as the
+    // alert. An unbounded quote would fill that with upstream boilerplate, and
+    // a cut landing mid-codepoint would hand Telegram invalid UTF-8 — losing
+    // the alert this whole change exists to populate. Multi-byte on purpose.
+    let flood = "顆".repeat(4000);
+    let data = format!(
+        r#"{{"type":"end_of_day_summary","daily_summary":{{"symbols_analyzed":0,"key_events":["{flood}"]}}}}"#
+    );
+    let (_, stderr, code) = run(&data, "eod");
+    assert_eq!(code, 0);
+    let line = stderr.lines().next().expect("a warning line");
+    assert!(
+        line.len() <= 200,
+        "the warning must survive nullclaw's 200-byte preview whole, got {} bytes",
+        line.len()
+    );
+    assert!(line.ends_with('…'), "truncation should be visible: {line}");
+    assert!(
+        std::str::from_utf8(&stderr.as_bytes()[..200.min(stderr.len())]).is_ok(),
+        "a 200-byte cut must not split a codepoint"
+    );
+}
+
+#[test]
+fn control_characters_from_upstream_do_not_break_the_warning_into_lines() {
+    // A `message` carrying newlines would split the warning, and only the first
+    // line reads as the reason. NUL is worse. Both are upstream-controlled.
+    let data = r#"{"type":"intraday_check","total_symbols":0,"symbols":[],"message":"line one\nline two\u0000tail"}"#;
+    let (_, stderr, code) = run(data, "intraday");
+    assert_eq!(code, 0);
+    assert_eq!(stderr.lines().count(), 1, "stderr: {stderr:?}");
+    assert!(stderr.contains("line one line two"), "stderr: {stderr:?}");
+    assert!(!stderr.contains('\u{0}'), "stderr: {stderr:?}");
+}
+
+#[test]
 fn an_unknown_flag_exits_two() {
     // tools/install-skill.sh probes for exactly this before publishing.
     let out = Command::new(env!("CARGO_BIN_EXE_cct"))

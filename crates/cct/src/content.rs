@@ -65,11 +65,48 @@ pub fn has_weekly_data(data: &serde_json::Value) -> bool {
     truthy(report.get("weekly_overview")) || truthy(report.get("daily_breakdown"))
 }
 
+/// How much upstream text a reason may quote, in bytes.
+///
+/// nullclaw cuts the alert preview at 200 **bytes**, not characters
+/// (gateway.zig, the degraded branch). Two things follow. An unbounded quote
+/// pushes the rest of the reason out of the preview, so a route that leads with
+/// 500 characters of boilerplate would hide the sentence worth reading. And a
+/// cut landing mid-codepoint hands Telegram invalid UTF-8, which loses the whole
+/// alert — the quoted string is upstream-controlled and need not be ASCII.
+/// 120 bytes keeps the longest warning line ("[WARN: CCT pre-market carries no
+/// analysis] " is 43) under the preview, so the cut never fires on it at all.
+const QUOTE_MAX_BYTES: usize = 120;
+
+/// Upstream text, made safe to put in a log line and an alert.
+///
+/// Control characters become spaces — a newline would split the warning across
+/// lines in the operator's alert, and a NUL is worse. Truncation is on a
+/// character boundary.
+fn tidy(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.len() <= QUOTE_MAX_BYTES {
+        return trimmed.to_string();
+    }
+    let mut kept = String::with_capacity(QUOTE_MAX_BYTES + 3);
+    for c in trimmed.chars() {
+        if kept.len() + c.len_utf8() > QUOTE_MAX_BYTES {
+            break;
+        }
+        kept.push(c);
+    }
+    kept.push('…');
+    kept
+}
+
 /// A non-empty string field, for quoting the route back at the reader.
 fn quoted(v: Option<&serde_json::Value>) -> Option<String> {
     v.and_then(|x| x.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_string)
+        .map(tidy)
+        .filter(|s| !s.is_empty())
 }
 
 /// Why this payload counts as empty, or `None` when it carries analysis.
@@ -130,10 +167,12 @@ pub fn content_gap(mode: Mode, data: &serde_json::Value, today: Date) -> Option<
                 .and_then(|s| s.get("key_events"))
                 .and_then(|v| v.as_array())
                 .map(|a| {
-                    a.iter()
-                        .filter_map(|e| e.as_str())
-                        .collect::<Vec<_>>()
-                        .join("; ")
+                    tidy(
+                        &a.iter()
+                            .filter_map(|e| e.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    )
                 })
                 .filter(|s| !s.is_empty());
             Some(events.unwrap_or_else(|| {
