@@ -16,7 +16,7 @@ use std::io::Write;
 
 use cct::api;
 use cct::cli::{self, Mode};
-use cct::content::{has_eod_data, has_intraday_data, has_pre_market_data, has_weekly_data};
+use cct::content::content_gap;
 use cct::render::{format_eod, format_intraday, format_pre_market, format_weekly};
 use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use claw_core::env::load_env;
@@ -73,15 +73,23 @@ fn main() {
                 Mode::Eod => format_eod(&data, &now.strftime("%Y-%m-%d").to_string()),
                 Mode::Weekly => format_weekly(&data),
             };
-            let ok = match args.mode {
-                Mode::PreMarket => has_pre_market_data(&data, today),
-                Mode::Intraday => has_intraday_data(&data),
-                Mode::Eod => has_eod_data(&data),
-                Mode::Weekly => has_weekly_data(&data),
-            };
+            // A degraded verdict reached this way used to be silent, and
+            // nullclaw prints the literal "no stderr" in the alert when a skill
+            // writes none (gateway.zig, the degraded branch). The envelope
+            // warnings cover only the other fork — the one where no payload
+            // arrives — so an intact payload with nothing in it alerted with no
+            // reason at all on 2026-08-07.
+            let gap = content_gap(args.mode, &data, today);
+            if let Some(reason) = &gap {
+                let _ = writeln!(
+                    err,
+                    "[WARN: CCT {} carries no analysis] {reason}",
+                    args.mode.slug()
+                );
+            }
             (
                 body,
-                if ok {
+                if gap.is_none() {
                     SkillStatus::Ok
                 } else {
                     SkillStatus::Degraded

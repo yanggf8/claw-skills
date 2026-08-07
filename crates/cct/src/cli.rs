@@ -18,6 +18,20 @@ impl Mode {
             _ => return None,
         })
     }
+
+    /// The `--mode` spelling, for diagnostics.
+    ///
+    /// Four cron jobs share the skill name, and nullclaw's alert prints the
+    /// name without the args, so a warning that omits the mode leaves the
+    /// reader guessing which of the four degraded.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Mode::PreMarket => "pre-market",
+            Mode::Intraday => "intraday",
+            Mode::Eod => "eod",
+            Mode::Weekly => "weekly",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

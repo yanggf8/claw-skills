@@ -1,0 +1,21 @@
+{
+  "type": "end_of_day_summary",
+  "date": "2026-08-07",
+  "timestamp": "2026-08-07T00:16:14.266Z",
+  "market_status": "closed",
+  "daily_summary": {
+    "symbols_analyzed": 0,
+    "overall_sentiment": "neutral",
+    "key_events": [
+      "Market closed",
+      "EOD analysis not yet available"
+    ]
+  },
+  "tomorrow_outlook": {
+    "sentiment": "neutral",
+    "confidence": 0.5,
+    "key_factors": [
+      "Awaiting market close data"
+    ]
+  }
+}

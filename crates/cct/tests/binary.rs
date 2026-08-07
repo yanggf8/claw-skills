@@ -1,0 +1,151 @@
+//! Binary-level: the reason has to reach stderr, not just exist.
+//!
+//! `content_reason.rs` proves `content_gap` can explain itself. It cannot prove
+//! main prints it, and printing it is the entire defect — on 2026-08-07 the eod
+//! alert read `failure=contract_degraded … no stderr` while every predicate in
+//! the crate was working exactly as designed. A unit test on the predicate side
+//! of that fork stays green through the whole incident (lessons §1, assertions
+//! that never see the composition).
+//!
+//! The stub fails closed: one scripted response, then a 418 that the client
+//! treats as terminal, so an unexpected second request surfaces as a failure
+//! instead of a quiet pass.
+
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+
+const EOD_PLACEHOLDER: &str = include_str!("eod_placeholder.json");
+const EOD_SCORECARD: &str = include_str!("eod_scorecard.json");
+
+struct Stub {
+    port: u16,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Stub {
+    fn serving(body: String) -> Stub {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let served = AtomicUsize::new(0);
+
+        let handle = thread::spawn(move || {
+            if let Some(Ok(mut stream)) = listener.incoming().next() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => break,
+                        Ok(_) if line == "\r\n" => break,
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+                let first = served.fetch_add(1, Ordering::SeqCst) == 0;
+                let resp = if first {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                } else {
+                    "HTTP/1.1 418 I'm a teapot\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                };
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        Stub {
+            port,
+            handle: Some(handle),
+        }
+    }
+
+    fn base(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
+impl Drop for Stub {
+    fn drop(&mut self) {
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+fn envelope(data: &str) -> String {
+    format!(r#"{{"success":true,"data":{data},"metadata":{{"source":"fresh"}}}}"#)
+}
+
+/// Run the real binary against a stubbed route: (stdout, stderr, exit code).
+fn run(data: &str, mode: &str) -> (String, String, i32) {
+    let stub = Stub::serving(envelope(data));
+    let out = Command::new(env!("CARGO_BIN_EXE_cct"))
+        .args(["--mode", mode])
+        .env("CCT_BASE", stub.base())
+        // A developer's real dotenv and config must not reach this run.
+        .env("CLAW_ENV", "/dev/null")
+        .env("CLAW_CONFIG", "/dev/null")
+        // Markers are gated on this, and the status line is half the assertion.
+        .env("NULLCLAW_JOB_ID", "test-trace:1")
+        .output()
+        .expect("run cct");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+#[test]
+fn the_eod_placeholder_degrades_and_says_why_on_stderr() {
+    let (stdout, stderr, code) = run(EOD_PLACEHOLDER, "eod");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("[skill-status:degraded]"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("EOD analysis not yet available"),
+        "this is the line the 2026-08-07 alert wanted and did not get. stderr: {stderr:?}"
+    );
+}
+
+#[test]
+fn the_reason_names_the_mode_so_the_alert_points_at_one_of_four_jobs() {
+    let (_, stderr, _) = run(EOD_PLACEHOLDER, "eod");
+    assert!(stderr.contains("eod"), "stderr: {stderr:?}");
+}
+
+#[test]
+fn the_diagnosis_stays_off_stdout_where_the_message_body_lives() {
+    // stdout is delivered text plus the two markers. A warning there becomes
+    // part of what the reader receives on Telegram.
+    let (stdout, _, _) = run(EOD_PLACEHOLDER, "eod");
+    assert!(!stdout.contains("[WARN"), "stdout: {stdout}");
+}
+
+#[test]
+fn a_real_scorecard_is_ok_and_silent() {
+    let (stdout, stderr, code) = run(EOD_SCORECARD, "eod");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("[skill-status:ok]"), "stdout: {stdout}");
+    assert_eq!(stderr, "", "a good payload must not warn");
+}
+
+#[test]
+fn an_unknown_flag_exits_two() {
+    // tools/install-skill.sh probes for exactly this before publishing.
+    let out = Command::new(env!("CARGO_BIN_EXE_cct"))
+        .arg("--definitely-not-a-flag")
+        .env("CLAW_ENV", "/dev/null")
+        .output()
+        .expect("run cct");
+    assert_eq!(out.status.code(), Some(2));
+}

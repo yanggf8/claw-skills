@@ -1,5 +1,6 @@
-//! Whether a payload carries real analysis, per mode.
+//! Whether a payload carries real analysis, per mode — and why not.
 
+use crate::cli::Mode;
 use crate::freshness::pre_market_freshness;
 use jiff::civil::Date;
 
@@ -62,4 +63,93 @@ pub fn has_weekly_data(data: &serde_json::Value) -> bool {
         return false;
     }
     truthy(report.get("weekly_overview")) || truthy(report.get("daily_breakdown"))
+}
+
+/// A non-empty string field, for quoting the route back at the reader.
+fn quoted(v: Option<&serde_json::Value>) -> Option<String> {
+    v.and_then(|x| x.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// Why this payload counts as empty, or `None` when it carries analysis.
+///
+/// Paired with the predicates above and returning `Some` exactly when the
+/// mode's `has_*_data` returns false, so the reason and the verdict cannot
+/// drift apart. `content_reason.rs` pins that agreement.
+///
+/// The reason exists because a degraded alert without one is unreadable: on
+/// 2026-08-07 the eod job alerted `failure=contract_degraded … no stderr` while
+/// the route was up, the envelope was well-formed and the payload was the
+/// placeholder the worker synthesises when no snapshot exists. A dead upstream
+/// job, a stale-but-real report and an unreachable host all reached the
+/// operator as the same sentence. Prefer the route's own words — they name the
+/// next step ("Run POST /api/v1/jobs/intraday") more precisely than any
+/// paraphrase.
+pub fn content_gap(mode: Mode, data: &serde_json::Value, today: Date) -> Option<String> {
+    match mode {
+        Mode::PreMarket => {
+            if has_pre_market_data(data, today) {
+                return None;
+            }
+            let f = pre_market_freshness(data, today);
+            if f.is_stale {
+                // The case that reads as healthy: every field populated, all of
+                // it describing a market day in the past. Only the date tells.
+                Some(format!(
+                    "stale: payload date={} today={today}{}",
+                    f.source_date.as_deref().unwrap_or("unknown"),
+                    f.age_days
+                        .map(|d| format!(" age={d}d"))
+                        .unwrap_or_default(),
+                ))
+            } else {
+                Some(
+                    "no signals: high_confidence_signals empty and symbols_analyzed/overall_sentiment absent"
+                        .into(),
+                )
+            }
+        }
+        Mode::Intraday => {
+            if has_intraday_data(data) {
+                return None;
+            }
+            Some(
+                quoted(data.get("message"))
+                    .unwrap_or_else(|| "no symbols: total_symbols and symbols both empty".into()),
+            )
+        }
+        Mode::Eod => {
+            if has_eod_data(data) {
+                return None;
+            }
+            // The placeholder explains itself in key_events — "Market closed;
+            // EOD analysis not yet available" is the upstream job's status.
+            let events = data
+                .get("daily_summary")
+                .and_then(|s| s.get("key_events"))
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .filter(|s| !s.is_empty());
+            Some(events.unwrap_or_else(|| {
+                "no scorecard: signalBreakdown, totalSignals and symbols_analyzed all empty".into()
+            }))
+        }
+        Mode::Weekly => {
+            if has_weekly_data(data) {
+                return None;
+            }
+            let report = data.get("report").unwrap_or(data);
+            Some(
+                quoted(report.get("message"))
+                    .or_else(|| quoted(data.get("message")))
+                    .unwrap_or_else(|| "no weekly_overview and no daily_breakdown".into()),
+            )
+        }
+    }
 }
