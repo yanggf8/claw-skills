@@ -9,6 +9,55 @@ this file is only the record of what changed and why.
 
 ---
 
+## cds-con: the spread renderer, retired (2026-08-13)
+
+cds-con is the daily push for attribute 2 of the `~/b/finance-engineering`
+research — "was corporate bond cost high or not". It had drifted into
+measuring the wrong thing: not the Baa yield's own **level** (borrowing cost)
+but the **direction** of the Baa−Aaa quality spread (how much more junk costs
+than quality — credit stratification, a different question). A high-cost year
+can be compressing and a low-cost year widening, and the direction measure
+could not separate the anchors: five of six carried the same label, and 1966
+(50th percentile) sat in the same class as 1999 (12th).
+
+The owner's ruling of 2026-08-12 retired the charter and made `finance-cli`'s
+`cost level` the single definition of attribute 2. The measure is the Baa
+yield itself, cut at the median of an as-of expanding window (observations up
+to and including the one being read, never the future).
+`crates/cds-con/src/cost.rs` mirrors `cost_cmd::level_at` byte for byte,
+including the integer truncation that decides the label on the boundary — when
+the two disagree, finance-cli is right. The present-tense rule is in
+[`CLAUDE.md`](CLAUDE.md).
+
+Once the message became the level reading (`render_cost_parts`), the entire
+spread renderer beneath it — `render_parts` and everything it called: the
+`baa10y`/`baa` lead pair, the per-series 佐證 blocks, the
+`cds_message_series` / `cds_message_lead` config plumbing, the
+`require_single_kind` adjacency guard — became callerless. It was kept for a
+day under a "retired, do not read anything below as delivered" module doc,
+then cut: ~518 lines out of `render.rs` and 1878 lines of tests
+(`tests/render.rs`) with it. The attribute-2 path (`render_cost_parts`,
+`cost.rs`, and the `cost` / `cost_message` / `contract` test files) is
+unchanged and green.
+
+**The shape worth keeping.** The baa−aaa derivation lived in `analyze()`,
+which the level path still calls — so it was *not* callerless. It ran on
+every `analyze()`, computed a `SeriesKind::Spread` row, and was displayed by
+nothing after the renderer went: dead-but-reachable, not
+dead-and-unreferenced. A shared function can keep a retired feature's
+computation alive invisibly, and "no caller" is the wrong test for a function
+on a shared path — the right test is whether anything reads its output. The
+`BAA_AAA_KEY` / `BAA_AAA_LABEL` / `DERIVED_ORDER` constants and the
+`baa_aaa_spread` import went with it, because that derive block was their
+only remaining user.
+
+An earlier reverse rule in `CLAUDE.md` forbade any classification in cds-con,
+written up from an implementation detail and then cited as policy. It was
+never the owner's. The window-flipping objection behind it is answered by the
+as-of basis, which fixes one window and prints its `n` — a reading on 129
+observations cannot be read as if it were on 1291. The design authority for
+the retired shape is `docs/specs/2026-08-04-cds-con-readability-v2-design.md`.
+
 ## The degraded alert with no reason, and the ET/UTC split behind it (2026-08-07)
 
 A `cct` eod cron alerted `failure=contract_degraded repair=none` with a body of exactly one string:

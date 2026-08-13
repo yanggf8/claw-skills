@@ -134,8 +134,9 @@ never run.
 
 The retired spread message (the `baa10y`/`baa` lead pair, the 佐證 series
 blocks, and the four readability passes behind them) is documented in
-`docs/specs/2026-08-04-cds-con-readability-v2-design.md`. Its renderer is
-still in `render.rs` below `render_parts`, with no caller.
+`docs/specs/2026-08-04-cds-con-readability-v2-design.md`. Its renderer was
+removed from `render.rs` on 2026-08-13 once attribute 2 became the Baa yield's
+own level; the spec stays as the historical record of that shape.
 
 
 ## Cron
@@ -161,17 +162,12 @@ than the clock; the `資料:` line is what makes a missed fetch visible.
   `degraded` would be a verdict about the data, which this skill does not make.
   It would also trip `repair_policy=retry_once`, and a retry cannot repair
   stale upstream data — it would just deliver the identical message twice.
-- **`failed`, and nothing delivered** — the store is unreachable, the read
-  fails, there are zero usable observations (empty store or every configured
-  series missing), a series lacks its `kind` so the family split cannot be
-  rendered, `cds_message_series` is absent, unreadable, or unparseable (empty,
-  or a blank key from a stray/doubled comma), a `cds_message_series` key
-  names a series that does not exist among the loaded series,
-  `cds_message_lead` is absent, unreadable, or unparseable (not exactly two
-  `key|Label` records), a `cds_message_lead` key names a series not present
-  in `cds_message_series`, or the 佐證 block ends up holding both a spread
-  and a yield (see **Message layout** above). This follows the repo's
-  standing rule that a hard-failure path must not deliver.
+- **`failed`, and nothing delivered** — the store is unreachable, `cds_series`
+  is absent or unreadable, a configured series' history cannot be read, `baa`
+  is not present in `cds_series`, there are zero observations for `baa` (empty
+  store or `baa` never fetched), or a series lacks its `kind` so `analyze`
+  cannot proceed. This follows the repo's standing rule that a hard-failure
+  path must not deliver.
 
 "Seven days old" is `ok`. "Nothing to report at all" is `failed`.
 

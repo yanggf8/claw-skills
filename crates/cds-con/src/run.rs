@@ -150,8 +150,8 @@ fn append_job_id(body: &str, job_id: Option<&str>, escape: impl Fn(&str) -> Stri
 /// Deliver then markers. Job id is appended bare (not backticks — oilcon differs).
 /// On hard delivery failure returns 1 without markers.
 ///
-/// `message` is the [`MessageVariants`] pair [`format_message_variants`]
-/// built from the SAME [`render_parts`](crate::render::render_parts) call —
+/// `message` is the [`MessageVariants`] pair [`format_cost_variants`]
+/// built from the SAME [`render_cost_parts`](crate::render::render_cost_parts) call —
 /// `message.html` is what actually goes to Telegram (`deliver_options` now
 /// pins `parse_mode: HTML`); `message.plain` is what this function
 /// guarantees reaches stdout on every path that prints anything at all,

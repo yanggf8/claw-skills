@@ -278,9 +278,8 @@ async fn missing_kind_is_failed_and_does_not_deliver() {
     // Decision 6: three-field rows parse, but the family split cannot render.
     let conn = mem().await;
     set_config(&conn, "cds_series", CDS_SERIES_NO_KIND).await;
-    // Set so this run reaches analyze()'s kind check (the thing under test)
-    // rather than failing earlier on the now-mandatory message-series /
-    // message-lead reads.
+    // Seed baa so the run reaches analyze()'s kind check (the thing under
+    // test) rather than failing earlier on "no usable observations".
     seed_rows(
         &conn,
         "baa",
