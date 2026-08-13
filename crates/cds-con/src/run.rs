@@ -15,10 +15,8 @@ use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use credit_store::{parse_series_list, read_credit_history, Observation};
 use libsql::Connection;
 
-use crate::render::{
-    escape_html, format_message_variants, parse_message_lead, parse_message_series, Frequency,
-    LeadEntry, MessageVariants, SeriesInput,
-};
+use crate::cost::{latest_level, COST_SERIES};
+use crate::render::{escape_html, format_cost_variants, Frequency, MessageVariants, SeriesInput};
 
 /// Injected environment: job id (`NULLCLAW_JOB_ID`) and HOME for paths.
 #[derive(Debug, Clone)]
@@ -250,57 +248,7 @@ async fn load_series(conn: &Connection) -> Result<Vec<SeriesInput>, String> {
     Ok(out)
 }
 
-/// Which series the daily message shows, and in what order. Config, not code
-/// -- same pattern as a missing `cds_series` or a missing `kind` (decision
-/// 6): an absent key, a failed read, and an unparseable value are three
-/// distinct situations, and each fails the run loudly and by name. No
-/// default value, and no hardcoded series list, anywhere in Rust. Whether
-/// each named key actually exists among the configured series is checked
-/// later, by `select_message_series` once the series are loaded and derived
-/// rows (like `baa−aaa`) exist to be named.
-async fn message_series_keys(conn: &Connection) -> Result<Vec<String>, String> {
-    let raw = read_config(conn, "cds_message_series")
-        .await
-        .map_err(|e| {
-            format!(
-                "could not read config key 'cds_message_series' from price-registry: {e}; set it with: price config set cds_message_series <comma-separated keys>"
-            )
-        })?
-        .ok_or_else(|| {
-            "missing config key 'cds_message_series' in price-registry; set it with: price config set cds_message_series <comma-separated keys>"
-                .to_string()
-        })?;
-    parse_message_series(&raw).map_err(|e| {
-        format!(
-            "{e}; set it with: price config set cds_message_series <comma-separated keys>"
-        )
-    })
-}
-
-/// `cds_message_lead`: the opening pair (the lead-block redesign, item 1/3
-/// of `docs/specs/2026-08-04-cds-con-readability-v2-design.md`). Same
-/// no-default standard as `cds_message_series`: an absent key, a failed
-/// read, and an unparseable value are three distinct situations, each named
-/// and each failing the run loudly. Whether each lead key actually resolves
-/// inside `cds_message_series` is checked later, by `resolve_lead` once the
-/// message series are selected.
-async fn message_lead_keys(conn: &Connection) -> Result<Vec<LeadEntry>, String> {
-    let raw = read_config(conn, "cds_message_lead")
-        .await
-        .map_err(|e| {
-            format!(
-                "could not read config key 'cds_message_lead' from price-registry: {e}; set it with: price config set cds_message_lead <key|Label;key|Label>"
-            )
-        })?
-        .ok_or_else(|| {
-            "missing config key 'cds_message_lead' in price-registry; set it with: price config set cds_message_lead <key|Label;key|Label>"
-                .to_string()
-        })?;
-    parse_message_lead(&raw).map_err(|e| {
-        format!("{e}; set it with: price config set cds_message_lead <key|Label;key|Label>")
-    })
-}
-
+/// One config value from the price registry, or `None` when the key is absent.
 async fn read_config(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     let mut rows = conn
         .query(
@@ -410,36 +358,44 @@ pub async fn run(
         }
     };
 
-    // Decision 7: zero usable observations is a run failure, not an all-n/a ok.
-    if !series.iter().any(|s| !s.rows.is_empty()) {
+    // Attribute 2 is defined on the Baa corporate bond yield, so the series
+    // that answers it is fixed here rather than read from config. A config key
+    // able to redirect it silently is the exact shape of drift that let this
+    // attribute measure the wrong thing — the Baa−Aaa direction — for as long
+    // as it did. `cds_message_series` and `cds_message_lead` are no longer
+    // read; they still describe the retired spread message.
+    let Some(cost_series) = series.into_iter().find(|s| s.spec.key == COST_SERIES) else {
         return finish_failed(
-            "no usable observations — empty store or every configured series missing",
+            &format!(
+                "cds_series does not configure '{COST_SERIES}', which is the series \
+                 attribute 2 is defined on; set it with: price config set cds_series <value>"
+            ),
+            env,
+            out,
+            err,
+        );
+    };
+
+    // Decision 7: zero usable observations is a run failure, not an all-n/a ok.
+    if cost_series.rows.is_empty() {
+        return finish_failed(
+            &format!("no usable observations for '{COST_SERIES}' — empty store or series missing"),
             env,
             out,
             err,
         );
     }
 
-    let message_keys = match message_series_keys(conn).await {
-        Ok(k) => k,
-        Err(e) => {
-            return finish_failed(&e, env, out, err);
-        }
-    };
+    // The reading, from the same rule `cost level` prints. `None` means the
+    // series does not reach its own newest row, which cannot happen here
+    // (`latest_level` reads that very row) but is carried rather than
+    // unwrapped: an absent reading renders 無資料, never a fabricated level.
+    let level = latest_level(&cost_series.rows);
 
-    let lead = match message_lead_keys(conn).await {
-        Ok(l) => l,
-        Err(e) => {
-            return finish_failed(&e, env, out, err);
-        }
-    };
-
-    // Missing kind, a cds_message_series key naming an unknown series, a
-    // cds_message_lead key absent from cds_message_series, or a spread/yield
-    // mix left outside the lead pair all fail here (RenderError) — failed,
-    // no deliver. Both representations come from ONE call so they can never
-    // disagree on content (see `format_message_variants`'s doc comment).
-    let message = match format_message_variants(&series, as_of, &message_keys, &lead) {
+    // A missing `kind` still fails here (RenderError) — failed, no deliver.
+    // Both representations come from ONE call so they can never disagree on
+    // content (see `format_cost_variants`'s doc comment).
+    let message = match format_cost_variants(&cost_series, level.as_ref(), as_of) {
         Ok(m) => m,
         Err(e) => {
             return finish_failed(&e.message, env, out, err);

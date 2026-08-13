@@ -1,7 +1,19 @@
-//! Credit-spread message rendering.
+//! Message rendering.
 //!
-//! **No classification.** No `Status` enum, no `狀態：` line, no summary
-//! adjective. The job is to lay out levels, percentiles and coverage honestly.
+//! **The live message is the attribute-2 reading** -- [`render_cost_parts`]:
+//! the Baa corporate bond yield's own level, its as-of percentile, the 高/不高
+//! label that follows from it, and the trailing windows as collapsible
+//! background. `finance-cli`'s `cost level` is the authority for the rule;
+//! `crate::cost` mirrors it and this module only lays the result out.
+//!
+//! **The spread message below is retired and has no caller.** `run.rs` no
+//! longer reads `cds_message_series` or `cds_message_lead`, and the two config
+//! rows still in the price registry describe a message that is no longer sent.
+//! It is kept for now because its shape and the reasoning behind it were
+//! earned over four readability passes; do not read anything below
+//! [`render_parts`] as describing what gets delivered.
+//!
+//! The historical notes that follow apply to that retired message.
 //!
 //! **Lead-block redesign (2026-08-04).** The message now opens with a
 //! guided PAIR — the same Baa bonds, one line with the risk-free rate
@@ -37,6 +49,7 @@
 //! hand-sent proof-of-concept; report in
 //! `.superpowers/sdd/2026-08-04-cds-con-readability-v2/collapsible-report.md`.
 
+use crate::cost::{label, Level};
 use credit_store::{
     baa_aaa_spread, below_and_total, window_counts, Observation, SeriesKind, SeriesSpec,
     WindowCounts,
@@ -388,6 +401,88 @@ fn series_line_from_rows(
 ///
 /// `as_of` is an injected YYYY-MM-DD used only for age-in-days on the
 /// freshness line. No clock.
+/// The attribute-2 message: the Baa yield's own level, its as-of reading, and
+/// the trailing windows as collapsible background.
+///
+/// **The subject is not configurable.** Attribute 2 is defined on the Baa
+/// corporate bond yield, so which series answers it is a property of the
+/// research, not of a config row. A key that could silently redirect it is the
+/// exact shape of drift that made attribute 2 measure the wrong thing for as
+/// long as it did.
+///
+/// The lead carries a label, because there is now one fixed basis to label
+/// against: an as-of expanding window, cut at the median. The trailing windows
+/// below it carry **no** label — they are a different basis, and labelling
+/// each would put several verdicts on one number, which is the objection that
+/// used to rule out labelling anything at all. They are evidence for the
+/// reader, not a second opinion.
+pub fn render_cost_parts(line: &SeriesLine, level: Option<&Level>, as_of: &str) -> Vec<Segment> {
+    let mut out: Vec<Segment> = vec![prose("💾 企業債成本｜attribute 2"), blank()];
+
+    out.extend(title_lines(&line.label, &value_with_date(line)).into_iter().map(data));
+    out.push(data(match level {
+        Some(l) => format!("狀態：{}（as-of 分位 {}，n={}）", label(l.pct), l.pct, l.n),
+        // Not a level of zero, and not silence: the series does not reach this
+        // month. `cost level` prints the same row rather than dropping it,
+        // because a missing line looks like a query that was never run.
+        None => "狀態：無資料".to_string(),
+    }));
+
+    out.push(blank());
+    // Mechanism, never today's numbers, so no line here can become false on a
+    // day the market moves the other way.
+    out.push(prose("量的是殖利率本身,不是任何相減後的利差"));
+    out.push(prose("分位只用該月之前(含當月)的觀測,不回望未來"));
+    out.push(prose("切點是中位數,分位 ≥ 50 為「高」"));
+    out.push(blank());
+
+    // Same index-range seam as the spread message used: the boundary is
+    // structural knowledge captured where the segments are pushed, never
+    // re-derived by matching rendered text.
+    let evidence_start = out.len();
+    out.push(prose("──── 佐證 ────"));
+    let windows = window_lines(line);
+    if !windows.is_empty() {
+        out.push(blank());
+        out.extend(windows.into_iter().map(data));
+        out.push(blank());
+        out.push(prose("這幾個窗口不是判定的依據,判定只看上面那個 as-of 分位"));
+    }
+    let evidence_end = out.len();
+    for seg in &mut out[evidence_start..evidence_end] {
+        seg.evidence = true;
+    }
+
+    out.push(blank());
+    out.push(prose(format_freshness_line(std::slice::from_ref(line), as_of)));
+    out.push(prose("finance-cli `cost level` 是這條規則的權威,本訊息跟隨它。"));
+
+    out
+}
+
+/// Plain-text body of the attribute-2 message.
+pub fn render_cost_lines(line: &SeriesLine, level: Option<&Level>, as_of: &str) -> String {
+    flatten_plain(&render_cost_parts(line, level, as_of))
+}
+
+/// Both delivery representations from ONE [`render_cost_parts`] call, so the
+/// delivered body and the stdout fallback can never disagree on content.
+pub fn format_cost_variants(
+    series: &SeriesInput,
+    level: Option<&Level>,
+    as_of: &str,
+) -> Result<MessageVariants, RenderError> {
+    let lines = analyze(std::slice::from_ref(series))?;
+    let line = lines
+        .first()
+        .ok_or_else(|| RenderError { message: "no series line produced".into() })?;
+    let parts = render_cost_parts(line, level, as_of);
+    Ok(MessageVariants {
+        plain: flatten_plain(&parts),
+        html: flatten_html(&parts),
+    })
+}
+
 pub fn render_parts(shown: &[SeriesLine], lead: &[(&SeriesLine, &str)], as_of: &str) -> Vec<Segment> {
     let mut out: Vec<Segment> = vec![
         // No shared date on the header: the series shown do not share one
