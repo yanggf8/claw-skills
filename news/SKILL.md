@@ -228,8 +228,18 @@ seed), keeping seeds empty is what makes any entry removable.
 ```json
 {"paywall_domains": ["nytimes.com","cn.nytimes.com","wsj.com","cn.wsj.com","ft.com",
   "ftchinese.com","bloomberg.com","economist.com","nikkei.com","asia.nikkei.com",
-  "barrons.com","washingtonpost.com","newyorker.com","wired.com"]}
+  "barrons.com","washingtonpost.com","newyorker.com","wired.com","theatlantic.com"]}
 ```
+
+**A metered paywall is invisible to the body check — only the host list stops it.**
+Measured 2026-08-12 against `theatlantic.com/technology/2026/08/openai-hacks-panic/688264/`
+through the real precheck path: `word_count=2195`, `truncated=false`, no paywall marker,
+verdict `(Keep, None)`. The Atlantic serves a *crawler* the entire article and applies its
+wall to a *browser*, via a counter the fetcher never trips. The page's only `Sign In` /
+`Subscribe` strings are nav chrome, not the `subscribe to read` / `continue reading`
+wording `PAYWALL_MARKERS` looks for. So for any metered publisher the second tier is
+structurally blind, and adding the host is the only fix. That host list is hand-maintained
+and can only ever be updated after the fact.
 
 **Paywall free-replacement (double bullet)** — when a `title_only` (paywalled) item
 survives selection (i.e. it was the only coverage of its story), the skill searches Google
@@ -246,6 +256,42 @@ Env knobs: `NEWS_PAYWALL_REPLACE=0` disables the lookup (note-only);
 `NEWS_PAYWALL_REPLACE_DEADLINE` (default 20s), `NEWS_PAYWALL_REPLACE_MAX` (default 4) bound it;
 `NEWS_PAYWALL_REPLACE_SOURCES` (default `google,bing`) selects which RSS indexes to query;
 `NEWS_PAYWALL_REPLACE_BING_MKT` (default `en-US`) sets Bing's market parameter.
+
+**Cross-language replacement** — the same-story gate is three-valued, not a boolean.
+`topic_words` emits Latin runs for English and CJK *bigrams* for Chinese, and no Latin run
+can equal a bigram, so an English original and a Chinese candidate intersect in exactly
+**zero** tokens however plainly they report the same event — a property of the alphabets,
+not of the stories. Measured 2026-08-12: Wired's *A New Trick Reveals AI Models' Inner
+Thoughts* against TechNews' *AI「內心戲」全曝光？新技術破解大模型推理軌跡…*, which cites
+the Wired piece as its source, scored 0. (Even `AI` cannot bridge it — two characters,
+where `topic_words` keeps Latin runs of three or more.) Such a pair is therefore
+`Undecidable` and settled by **one** model call that answers "same event?" and returns the
+Traditional Chinese headline together — replacing the translation call rather than adding
+to it, so the pass's wall-clock budget is unchanged. Same-script pairs keep the free,
+network-free token gate. `NEWS_PAYWALL_REPLACE_CROSS_LANG=0` restores the old behaviour
+(every cross-language candidate rejected). Trace: `paywall_cross_lang_judge`, and
+`paywall_replacement_found` carries `cross_lang`.
+
+**Paywalled-article summary (last resort)** — when an item has a paywall host *and* no free
+replacement was found, the skill fetches the article and asks for a 2–3 line Traditional
+Chinese summary, rendered as `　↳ ` continuation lines under the headline so the chunker
+keeps them together. It runs only on entries with no replacement (a link the reader can
+open beats this repo restating the paid one), and it re-fetches because a listed paywall
+host short-circuits `precheck_action` on the host check and never fetches a body at all.
+A body under `NEWS_PAYWALL_SUMMARY_MIN_WORDS` (default 300) is treated as a stub and
+skipped — that is what separates a metered publisher, which hands a crawler the whole
+piece, from a hard one, which hands it nav chrome. The Chinese-character floor is applied
+**per line**: a model that half-complies by returning one English sentence among Chinese
+ones would pass a whole-block check and inject English past the section language gate,
+which has already run by then. Env knobs: `NEWS_PAYWALL_SUMMARY=0` disables it,
+`NEWS_PAYWALL_SUMMARY_MIN_WORDS` (default 300), `NEWS_PAYWALL_SUMMARY_BODY_CHARS`
+(default 8000) bounds what the model is shown. It shares the replacement pass's deadline.
+Trace: `paywall_summary`, `paywall_summary_skipped`, `paywall_summary_deadline`,
+`paywall_summary_agent`.
+
+Note this pushes a rewrite of paid content rather than only a link to it. That is a
+deliberate trade for a personal digest, and it is why the summary is last-resort rather
+than the default.
 
 Env knobs: `NEWS_PRECHECK=0` disables both tiers; `NEWS_PRECHECK_DECODE_TIMEOUT`,
 `NEWS_PRECHECK_FETCH_TIMEOUT`, `NEWS_PRECHECK_DEADLINE`, `NEWS_PRECHECK_WORKERS` bound latency

@@ -7,9 +7,10 @@
 //! failing closed costs a real story.
 
 use crate::config::{
-    paywall_replace_deadline, paywall_replace_enabled, paywall_replace_max,
-    paywall_replace_sources, precheck_decode_timeout, precheck_enabled, precheck_fetch_timeout,
-    precheck_max_workers, precheck_total_deadline,
+    paywall_replace_cross_lang, paywall_replace_deadline, paywall_replace_enabled,
+    paywall_replace_max, paywall_replace_sources, paywall_summary_body_chars,
+    paywall_summary_enabled, paywall_summary_min_words, precheck_decode_timeout, precheck_enabled,
+    precheck_fetch_timeout, precheck_max_workers, precheck_total_deadline,
 };
 use crate::feed::{
     bing_news_feed_url, fetch_feed, normalize_replacement_candidate, split_url, topic_feed_url,
@@ -19,7 +20,7 @@ use crate::render::Replacement;
 use crate::select::NumberedMap;
 use crate::text::{dedup, title_without_source, topic_words, Item};
 use crate::trace::log_trace;
-use crate::validate::{leading_marker, leading_marker_ids};
+use crate::validate::{count_cjk, leading_marker, leading_marker_ids};
 use claw_core::budget::monotonic_secs;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -103,6 +104,9 @@ pub struct PaywallEntry {
     /// Filled in later by [`resolve_paywall_replacements`], if a free article
     /// covering the same story turns up.
     pub replacement: Option<Replacement>,
+    /// A summary of the paywalled article itself, written only when no
+    /// replacement was found — see [`resolve_paywall_summaries`].
+    pub summary: Option<String>,
 }
 
 pub type PaywallMap = BTreeMap<u32, PaywallEntry>;
@@ -208,6 +212,7 @@ pub fn precheck_apply(
                 title: item.title,
                 source_name: item.source_name,
                 replacement: None,
+                summary: None,
             },
         );
     }
@@ -256,6 +261,84 @@ fn netloc_lower(url: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether a headline is written in CJK, judged after the source suffix is
+/// removed.
+///
+/// The suffix matters: Google appends `" - 自由時報"` to an English headline
+/// carried by a Taiwanese outlet, and counting that would call the headline
+/// Chinese when it is not.
+fn is_cjk_title(title: &str) -> bool {
+    count_cjk(title_without_source(title)) >= 2
+}
+
+/// The three answers the deterministic same-story check can give.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoryGate {
+    /// Enough shared tokens to treat the two headlines as one event.
+    Same,
+    /// Same script, too few shared tokens.
+    Different,
+    /// Different scripts. Token overlap cannot answer this — see
+    /// [`same_story_gate`].
+    Undecidable,
+}
+
+/// Does this candidate cover the same story, as far as tokens can tell?
+///
+/// Two shared significant tokens mean "same event". That test is sound only
+/// while both headlines are in one script: `topic_words` emits Latin runs for
+/// English and CJK *bigrams* for Chinese, and no Latin run can ever equal a
+/// bigram. So an English original and a Chinese candidate intersect in exactly
+/// zero tokens no matter how plainly they report the same thing — the count is
+/// a property of the alphabets, not of the stories.
+///
+/// Observed 2026-08-12: Wired's "A New Trick Reveals AI Models' Inner Thoughts"
+/// against TechNews' "AI「內心戲」全曝光？新技術破解大模型推理軌跡…" — the
+/// TechNews piece cites the Wired one as its source, and the intersection was
+/// still 0. Even `AI` cannot bridge it, being two characters where
+/// `topic_words` keeps Latin runs of three or more.
+///
+/// So a cross-script pair is reported as [`StoryGate::Undecidable`] rather than
+/// rejected, and the caller decides it by other means.
+pub fn same_story_gate(orig_title: &str, cand_title: &str) -> StoryGate {
+    if is_cjk_title(orig_title) != is_cjk_title(cand_title) {
+        return StoryGate::Undecidable;
+    }
+    if topic_words(orig_title)
+        .intersection(&topic_words(cand_title))
+        .count()
+        >= 2
+    {
+        StoryGate::Same
+    } else {
+        StoryGate::Different
+    }
+}
+
+/// The Traditional Chinese headline to show for an accepted candidate, or
+/// `None` to reject it.
+///
+/// The two model paths are alternatives, never both: a same-script candidate is
+/// translated, and a cross-script one is settled by `judge`, which answers the
+/// equivalence question and returns the headline in one call. That keeps the
+/// cost of a cross-language replacement at exactly one model call — the same as
+/// the translation it replaces — so the pass's wall-clock budget is unchanged.
+pub fn headline_for(
+    gate: StoryGate,
+    orig_title: &str,
+    cand_title: &str,
+    date_str: &str,
+    translate: &dyn Fn(&str, &str) -> Option<String>,
+    judge: &dyn Fn(&str, &str, &str) -> Option<String>,
+) -> Option<String> {
+    let title = match gate {
+        StoryGate::Different => return None,
+        StoryGate::Same => translate(cand_title, date_str)?,
+        StoryGate::Undecidable => judge(orig_title, cand_title, date_str)?,
+    };
+    (!title.trim().is_empty()).then_some(title)
+}
+
 /// For each paywalled pick, look for a free article on a *different* publisher
 /// covering the same story, and translate its headline.
 ///
@@ -263,10 +346,14 @@ fn netloc_lower(url: &str) -> String {
 /// or model step, and by a cap on how many entries are attempted at all.
 /// Without a replacement the render stage degrades to one bullet plus the
 /// 付費牆 note, which is a worse digest but never a late one.
+///
+/// `judge` settles the cross-language case that `translate` cannot: see
+/// [`same_story_gate`] for why token overlap is blind to it.
 pub fn resolve_paywall_replacements(
     paywall: &mut PaywallMap,
     date_str: &str,
     translate: &dyn Fn(&str, &str) -> Option<String>,
+    judge: &dyn Fn(&str, &str, &str) -> Option<String>,
 ) {
     if paywall.is_empty() || !paywall_replace_enabled() || !precheck_enabled() {
         return;
@@ -336,7 +423,7 @@ pub fn resolve_paywall_replacements(
             }
         }
         let candidates = dedup(&candidates);
-        let orig_words = topic_words(&orig_title);
+        let cross_lang = paywall_replace_cross_lang();
 
         for cand in candidates {
             // Checked before each step, not just between entries, so one slow
@@ -348,10 +435,14 @@ pub fn resolve_paywall_replacements(
             if cand.title.is_empty() || cand.link.is_empty() {
                 continue;
             }
-            // Same story, roughly: two shared significant tokens.
-            if orig_words.intersection(&topic_words(&cand.title)).count() < 2 {
-                continue;
-            }
+            // Cheap reject first, so an unrelated candidate never costs a
+            // network precheck. An undecidable pair survives to be settled by
+            // the model, but only after the cheap checks below have passed.
+            let gate = match same_story_gate(&orig_title, &cand.title) {
+                StoryGate::Different => continue,
+                StoryGate::Undecidable if !cross_lang => continue,
+                g => g,
+            };
             let verdict = cached_precheck(
                 &rep_cache,
                 &cand.source,
@@ -381,24 +472,94 @@ pub fn resolve_paywall_replacements(
                 log_trace("paywall_replace_deadline", json!({"resolved": processed}));
                 break;
             }
-            let Some(title_zh) = translate(&cand.title, date_str) else {
+            let Some(title_zh) = headline_for(
+                gate,
+                &orig_title,
+                &cand.title,
+                date_str,
+                translate,
+                judge,
+            ) else {
                 continue;
             };
-            if title_zh.is_empty() {
-                continue;
-            }
             if let Some(entry) = paywall.get_mut(&num) {
                 entry.replacement = Some(Replacement {
                     title_zh,
                     link: verdict.decoded_url.clone().unwrap_or(cand.link.clone()),
+                    summary: String::new(),
                 });
             }
             log_trace(
                 "paywall_replacement_found",
-                json!({"marker": num, "source": cand.source}),
+                json!({"marker": num, "source": cand.source,
+                       "cross_lang": gate == StoryGate::Undecidable}),
             );
             break;
         }
+    }
+}
+
+/// Is this fetched text an article, or the chrome around a wall?
+///
+/// A metered paywall serves a crawler the whole piece — the wall is applied to
+/// a browser, by a counter the fetcher never trips — so there is real text to
+/// summarise. A hard paywall serves a stub, and the word count is what tells
+/// the two apart.
+pub fn body_is_summarisable(word_count: usize) -> bool {
+    word_count >= paywall_summary_min_words()
+}
+
+/// Summarise the paywalled articles that no free replacement covered.
+///
+/// Runs after [`resolve_paywall_replacements`] and deliberately only on what it
+/// left behind: a story with a free version is better served by a link to that
+/// version than by this repo restating the paid one.
+///
+/// This re-fetches rather than reusing the precheck's body, because for a
+/// listed paywall host there is no such body — `quality::precheck_action`
+/// returns `TitleOnly` on the host check alone and never calls the fetcher. It
+/// is the same reason the fetch is worth doing here: what the host list knows
+/// is that a *reader* will be stopped, which says nothing about whether a
+/// crawler was.
+pub fn resolve_paywall_summaries(
+    paywall: &mut PaywallMap,
+    date_str: &str,
+    summarise: &dyn Fn(&str, &str, &str) -> Option<String>,
+) {
+    if paywall.is_empty() || !paywall_summary_enabled() || !precheck_enabled() {
+        return;
+    }
+    let deadline = monotonic_secs() + paywall_replace_deadline();
+    let body_chars = paywall_summary_body_chars();
+
+    for (num, entry) in paywall.iter_mut() {
+        if entry.replacement.is_some() {
+            continue;
+        }
+        if monotonic_secs() >= deadline {
+            log_trace("paywall_summary_deadline", json!({"marker": num}));
+            break;
+        }
+        let Some(url) = entry.decoded_url.clone().filter(|u| !u.is_empty()) else {
+            continue;
+        };
+        let left = (deadline - monotonic_secs()).clamp(0.5, 15.0);
+        let article = quality::fetch_article_text(&url, Duration::from_secs_f64(left));
+        if article.error.is_some() || !body_is_summarisable(article.word_count) {
+            log_trace(
+                "paywall_summary_skipped",
+                json!({"marker": num, "words": article.word_count,
+                       "error": article.error.is_some()}),
+            );
+            continue;
+        }
+        let body: String = article.text.chars().take(body_chars).collect();
+        entry.summary = summarise(&entry.title, &body, date_str).filter(|s| !s.trim().is_empty());
+        log_trace(
+            "paywall_summary",
+            json!({"marker": num, "words": article.word_count,
+                   "written": entry.summary.is_some()}),
+        );
     }
 }
 
@@ -407,10 +568,14 @@ pub fn render_replacements(paywall: &PaywallMap) -> HashMap<u32, Replacement> {
     paywall
         .iter()
         .map(|(k, v)| {
-            (
-                *k,
-                v.replacement.clone().unwrap_or_default(),
-            )
+            let mut r = v.replacement.clone().unwrap_or_default();
+            // Only when nothing free stood in: the renderer picks the
+            // replacement branch first, and a summary alongside it would be
+            // dead weight carried through the width and chunk guards.
+            if r.title_zh.trim().is_empty() || r.link.trim().is_empty() {
+                r.summary = v.summary.clone().unwrap_or_default();
+            }
+            (*k, r)
         })
         .collect()
 }

@@ -65,6 +65,7 @@ fn main() {
                             Replacement {
                                 title_zh: r["title_zh"].as_str().unwrap_or("").to_string(),
                                 link: r["link"].as_str().unwrap_or("").to_string(),
+                                summary: r["summary"].as_str().unwrap_or("").to_string(),
                             },
                         );
                     }

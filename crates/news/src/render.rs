@@ -47,11 +47,19 @@ impl From<&Item> for Numbered {
     }
 }
 
-/// A free article standing in for a paywalled pick.
+/// What a paywalled pick gets in place of a body the reader cannot open.
+///
+/// Three states, in descending order of what they give the reader: a free
+/// article covering the same story (`title_zh` + `link`), a summary of the
+/// paid article itself (`summary`), or neither — the headline plus the note.
+/// The two are never both populated: a summary is only written for an entry
+/// that found no replacement.
 #[derive(Debug, Clone, Default)]
 pub struct Replacement {
     pub title_zh: String,
     pub link: String,
+    /// Summary lines of the paywalled article, already newline-separated.
+    pub summary: String,
 }
 
 /// Title → link, in feed order.
@@ -208,8 +216,24 @@ pub fn attach_numbered_links(
                 let head = linked(&rep_title, rep.link.trim(), &mut attached);
                 rendered.push(format!("{head}\n{orig_line}"));
             }
+            Some(rep) if !rep.summary.trim().is_empty() => {
+                // Nothing free covers this story, but the article itself was
+                // readable, so the reader gets what it said. The summary lines
+                // carry the continuation prefix so the chunker keeps them with
+                // the headline they belong to.
+                let l = linked(&body, link, &mut attached);
+                let mut block = format!("{l}  {PAYWALL_NOTE}");
+                for s in rep.summary.lines().filter(|s| !s.trim().is_empty()) {
+                    block.push_str(&format!(
+                        "\n{PAYWALL_CONT_PREFIX}{}",
+                        neutralize_markdown(s.trim())
+                    ));
+                }
+                rendered.push(block);
+            }
             Some(_) => {
-                // Nothing free found — one bullet plus the note, degraded.
+                // Nothing free found and nothing readable — one bullet plus
+                // the note, degraded.
                 let l = linked(&body, link, &mut attached);
                 rendered.push(format!("{l}  {PAYWALL_NOTE}"));
             }

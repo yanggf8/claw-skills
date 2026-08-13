@@ -81,6 +81,7 @@ fn a_paywalled_pick_with_a_replacement_renders_as_a_pair() {
         Replacement {
             title_zh: "免費替代標題".into(),
             link: "https://free/1".into(),
+            ..Default::default()
         },
     )]
     .into();

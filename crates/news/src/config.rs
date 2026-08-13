@@ -114,6 +114,33 @@ pub fn paywall_replace_sources() -> Vec<String> {
 pub fn paywall_replace_bing_mkt() -> String {
     env_str("NEWS_PAYWALL_REPLACE_BING_MKT", "en-US")
 }
+/// Summarising a paywalled article that has no free replacement.
+///
+/// Costs one fetch plus one model call, and only for an item that found no
+/// replacement — a story with a free version is better served by the free
+/// version. Off, the reader gets the headline and the 付費牆 note alone.
+pub fn paywall_summary_enabled() -> bool {
+    env_flag("NEWS_PAYWALL_SUMMARY")
+}
+/// Below this many words the fetched text is navigation chrome, not an
+/// article. A hard paywall answers a crawler with a stub, and summarising a
+/// stub produces a confident paragraph about nothing.
+pub fn paywall_summary_min_words() -> usize {
+    env_usize("NEWS_PAYWALL_SUMMARY_MIN_WORDS", 300)
+}
+/// How much of the body the model is shown. Enough for the lede and the first
+/// few sections, which is what a three-line summary is drawn from.
+pub fn paywall_summary_body_chars() -> usize {
+    env_usize("NEWS_PAYWALL_SUMMARY_BODY_CHARS", 8000)
+}
+
+/// Settling an English-original/Chinese-candidate pair by asking the model,
+/// which the deterministic token gate structurally cannot do. Turning this off
+/// restores the pre-2026-08-13 behaviour: every cross-language candidate is
+/// rejected, and an English paywalled pick keeps its 付費牆 note.
+pub fn paywall_replace_cross_lang() -> bool {
+    env_flag("NEWS_PAYWALL_REPLACE_CROSS_LANG")
+}
 
 /// Soft pair hints injected into the selection prompt — never a hard drop.
 pub fn llm_dedup_hints_enabled() -> bool {

@@ -14,16 +14,18 @@ use crate::config::{
     LLM_TRANSLATION_TIMEOUT_SECS, TRANSLATION_RULES_STRICT,
 };
 use crate::precheck::{
-    precheck_apply, render_replacements, resolve_paywall_replacements, PaywallMap, SharedCache,
+    precheck_apply, render_replacements, resolve_paywall_replacements,
+    resolve_paywall_summaries, PaywallMap, SharedCache,
 };
 use crate::render::{
-    attach_numbered_links, strip_links_keep_spacing, LinkMap, Numbered, PAYWALL_NOTE,
+    attach_numbered_links, markdown_visible_text, strip_links_keep_spacing, LinkMap, Numbered,
+    PAYWALL_NOTE,
 };
 use crate::select::{
     default_pair_hints, dedup_pair_hints, format_dedup_hint_block, number_items_for_prompt,
     parse_pick_min, post_dedup_selected_summary, NumberedMap,
 };
-use crate::text::Item;
+use crate::text::{title_without_source, Item};
 use crate::trace::{clip_subprocess_text, log_trace, sample_nonempty_lines};
 use crate::validate::{
     count_cjk, language_ok, language_stats, leading_marker_ids, marker_stats, neutralize_markdown,
@@ -211,6 +213,136 @@ pub fn translate_single_title(title: &str, date_str: &str) -> Option<String> {
     let body = body.trim_start();
     let body = body.strip_prefix('-').unwrap_or(body).trim();
     (!body.is_empty()).then(|| body.to_string())
+}
+
+/// Decide a cross-language replacement candidate, and render its headline.
+///
+/// One call answers both questions because they are the same question to a
+/// reader: if this free Chinese article covers the paywalled English story,
+/// what should the bullet say? Splitting it into a judgement call and a
+/// translation call would double the model latency inside a 20-second pass for
+/// no extra information.
+///
+/// `None` means "do not use this candidate" — for a genuinely different event,
+/// for an unusable answer, and for an agent that failed. All three are the same
+/// decision here, and the caller simply tries the next candidate.
+pub fn judge_cross_language_candidate(
+    orig_title: &str,
+    cand_title: &str,
+    date_str: &str,
+) -> Option<String> {
+    let orig = title_without_source(orig_title);
+    let cand = title_without_source(cand_title);
+    let prompt = format!(
+        "你是新聞編輯。今天是 {date_str}。判斷以下兩則標題是否報導**同一則新聞事件**。\n\n\
+原文標題（付費牆）：{orig}\n\
+候選標題（免費）：{cand}\n\n\
+判準：同一份研究／同一份報告／同一場發布會／同一起事件的不同語言、不同媒體改寫，\
+算同一事件（標題角度不同不影響）。只是同一產業、同一家公司或同一個主題，但講的是不同事件，不算。\n\n\
+只輸出一行，不要解釋、不要引號、不要編號：\n\
+- 若是同一事件：輸出候選標題的繁體中文新聞標題（候選本身已是繁體中文就直接沿用）\n\
+- 若不是同一事件：輸出 NO",
+    );
+
+    let result = run_agent(
+        &prompt,
+        LLM_TRANSLATION_TIMEOUT_SECS,
+        "paywall_rep_cross_lang",
+        &[("paywall_rep_cross_lang".to_string(), 1)],
+        &NumberedMap::new(),
+    );
+    let verdict = cross_language_verdict(&result.stdout);
+    log_trace(
+        "paywall_cross_lang_judge",
+        json!({"rc": result.returncode, "same_event": verdict.is_some()}),
+    );
+    verdict
+}
+
+/// Summarise a paywalled article the reader cannot open.
+///
+/// Only ever called for an item with no free replacement, so this is the
+/// difference between a bare headline and knowing what the story said. The
+/// summary is drawn strictly from the fetched body — the prompt forbids
+/// outside knowledge, because a model filling gaps from memory would attribute
+/// invented claims to a named publisher.
+pub fn summarise_paywalled(title: &str, body: &str, date_str: &str) -> Option<String> {
+    let clean = title_without_source(title);
+    let prompt = format!(
+        "你是新聞編輯。今天是 {date_str}。以下是一篇讀者無法開啟（付費牆）的文章全文。\n\n\
+標題：{clean}\n\n\
+內文：\n{body}\n\n\
+請用繁體中文寫出這篇報導的重點摘要，2 到 3 句，每句一行，每行以 `- ` 開頭。\n\
+規則：\n\
+- 只根據上面的內文，不要加入內文沒有的資訊或你自己的背景知識\n\
+- 寫這篇報導說了什麼，不要寫「這篇文章討論了…」這種轉述句\n\
+- 不要輸出標題、開場白、結語或任何解釋\n\
+- 若內文不足以判斷報導內容，只輸出 NO",
+    );
+
+    let result = run_agent(
+        &prompt,
+        LLM_TRANSLATION_TIMEOUT_SECS,
+        "paywall_summary",
+        &[("paywall_summary".to_string(), 1)],
+        &NumberedMap::new(),
+    );
+    let out = paywall_summary_lines(&result.stdout);
+    log_trace(
+        "paywall_summary_agent",
+        json!({"rc": result.returncode, "written": out.is_some()}),
+    );
+    out
+}
+
+/// Parse the summary: two or three Chinese lines, or `None`.
+///
+/// Kept separate from the agent call so the parse is testable without one. The
+/// Chinese floor is applied per line rather than to the whole block: a model
+/// that half-complies by echoing an English sentence between two Chinese ones
+/// would pass a whole-block check and put English into a Chinese digest, past
+/// the section language gate that has already run.
+pub fn paywall_summary_lines(stdout: &str) -> Option<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for line in stdout.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        let l = l.strip_prefix('-').unwrap_or(l).trim();
+        let l = markdown_visible_text(l);
+        let l = l.trim();
+        if l.is_empty() || l.eq_ignore_ascii_case("no") {
+            continue;
+        }
+        if count_cjk(l) < 2 {
+            continue;
+        }
+        kept.push(l.to_string());
+        if kept.len() == 3 {
+            break;
+        }
+    }
+    (!kept.is_empty()).then(|| kept.join("\n"))
+}
+
+/// Parse the judge's answer: a headline, or `None` for a refusal.
+///
+/// Kept separate from the agent call so the parse is testable without one. The
+/// Chinese-character floor is the load-bearing check: a model that ignores the
+/// instruction usually does so by echoing the English original back, and
+/// rendering that as the free replacement would put an English headline into a
+/// Chinese digest — the exact failure the section language gate exists to
+/// prevent, arriving after that gate has already run.
+pub fn cross_language_verdict(stdout: &str) -> Option<String> {
+    let line = stdout.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line.strip_prefix('-').unwrap_or(line).trim();
+    let line = markdown_visible_text(line);
+    let line = line.trim();
+    if line.is_empty() || line.eq_ignore_ascii_case("no") {
+        return None;
+    }
+    (count_cjk(line) >= 2).then(|| line.to_string())
 }
 
 // ── the non-LLM fallback ─────────────────────────────────────────────────────
@@ -428,7 +560,13 @@ pub fn summarize_default_section(
         log_trace("quality_all_dropped", json!({"section": key}));
         return (vec![NO_NEWS.to_string()], false);
     }
-    resolve_paywall_replacements(&mut paywall, date_str, &translate_single_title);
+    resolve_paywall_replacements(
+        &mut paywall,
+        date_str,
+        &translate_single_title,
+        &judge_cross_language_candidate,
+    );
+    resolve_paywall_summaries(&mut paywall, date_str, &summarise_paywalled);
 
     if !language_passed {
         let selected = leading_marker_ids(&summary, &known);
@@ -566,7 +704,13 @@ pub fn run_ai_substage(
         log_trace("ai_substage_all_dropped", json!({"range": [start, end]}));
         return Ok(Vec::new());
     }
-    resolve_paywall_replacements(&mut paywall, date_str, &translate_single_title);
+    resolve_paywall_replacements(
+        &mut paywall,
+        date_str,
+        &translate_single_title,
+        &judge_cross_language_candidate,
+    );
+    resolve_paywall_summaries(&mut paywall, date_str, &summarise_paywalled);
 
     if !language_ok(&summary) {
         let selected = leading_marker_ids(&summary, &known);
@@ -870,7 +1014,13 @@ pub fn run_custom_topic(
         log_trace("quality_all_dropped", json!({"section": section_key}));
         return Ok(vec![NO_NEWS.to_string()]);
     }
-    resolve_paywall_replacements(&mut paywall, date_str, &translate_single_title);
+    resolve_paywall_replacements(
+        &mut paywall,
+        date_str,
+        &translate_single_title,
+        &judge_cross_language_candidate,
+    );
+    resolve_paywall_summaries(&mut paywall, date_str, &summarise_paywalled);
 
     let write_cache = |body: &str| {
         if let Some(dir) = path.parent() {
