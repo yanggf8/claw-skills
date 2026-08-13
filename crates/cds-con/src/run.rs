@@ -363,7 +363,8 @@ pub async fn run(
     // able to redirect it silently is the exact shape of drift that let this
     // attribute measure the wrong thing — the Baa−Aaa direction — for as long
     // as it did. `cds_message_series` and `cds_message_lead` are no longer
-    // read; they still describe the retired spread message.
+    // read; they once configured the retired spread message and were deleted
+    // from the registry on 2026-08-13.
     let Some(cost_series) = series.into_iter().find(|s| s.spec.key == COST_SERIES) else {
         return finish_failed(
             &format!(

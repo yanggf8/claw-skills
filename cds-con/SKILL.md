@@ -83,9 +83,10 @@ key able to redirect it silently is the exact shape of drift that let this
 attribute measure the wrong thing for as long as it did. `cds_series` still
 supplies that series' FRED id and display label.
 
-`cds_message_series` and `cds_message_lead` are **no longer read**. Both rows
-still sit in the registry and describe the retired spread message; they are
-inert.
+`cds_message_series` and `cds_message_lead` are **no longer read**; they
+configured the retired spread message. They were deleted from the registry on
+2026-08-13, which nothing noticed — the point: the run no longer depends on
+them.
 
 ## Message layout
 
@@ -188,10 +189,10 @@ prevent.
 defined on, and the run fails by name without it. Which series the message
 reports is not configurable — see **What it reads** above.
 
-`cds_message_series` and `cds_message_lead` are inert. They configured the
-retired spread message and are no longer read; the run does not fail if they
-are absent, unparseable, or name series that do not exist. Delete them
-whenever convenient.
+`cds_message_series` and `cds_message_lead` are gone — deleted from the
+registry on 2026-08-13, and nothing noticed. They configured the retired
+spread message and are no longer read; their absence is the proof, not a
+degradation.
 
 ## Not a CDS quote
 

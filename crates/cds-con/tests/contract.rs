@@ -644,9 +644,9 @@ async fn deliver_mode_is_accepted() {
 // `infer_frequency` (the only production code that ever returns
 // `Frequency::Monthly`) went untested. v3 removed the daily/monthly display
 // split entirely (design doc §「v3 decisions」2): a series inferred Monthly
-// still renders every day like any other, as long as `cds_message_series`
-// names it -- what `infer_frequency` still controls is only which bucket
-// (`日 至`/`月 至`) it lands in on the freshness line.
+// still renders every day like any other -- what `infer_frequency` still
+// controls is only which bucket (`日 至`/`月 至`) it lands in on the
+// freshness line.
 // ---------------------------------------------------------------------------
 
 /// `baa` spaced ~30 days apart, which is what the real series looks like
