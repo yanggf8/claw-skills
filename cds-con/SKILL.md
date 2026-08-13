@@ -1,34 +1,58 @@
 ---
 name: cds-con
-description: Report corporate credit-spread levels and how many stored observations sit below each, within stated windows; signal-only, deliberately unclassified (no status ladder, no cheap-or-expensive label).
+description: Daily push for attribute 2 of the finance-engineering research — the Baa corporate bond yield's own level, its as-of percentile, and whether borrowing reads 高 or 不高.
 always: true
 ---
 
 # cds-con
 
-Report **corporate borrowing cost** — what a bond buyer is paid for taking
-credit risk — as levels and counts (how many stored observations, in a stated
-window, sit below today's value). This is **observation-only**: no entry/exit
-advice, no position sizing, no portfolio edits.
+**This skill is not a standalone work.** It is the daily push for **attribute
+2** of the `~/b/finance-engineering` research — "was corporate bond cost high
+or not" — and it exists to carry that project's reading, in that project's
+terms. Where this skill and finance-engineering disagree, finance-engineering
+is right and this skill is the thing that changes.
 
-## This skill has no `狀態：` line, and that is deliberate
+## The authority is `finance-cli`, and the measure is the Baa yield itself
 
-Every other skill in this repo opens with a classified status. cds-con does
-not, and it must not be "fixed" to add one.
+The owner's ruling of 2026-08-12 retired the charter and made **`cost level`
+the single definition of attribute 2**: `attribute2()` in `finance-cli`
+delegates to `cost_cmd::level_at`, so there is exactly one implementation of
+the rule and changing the command changes the typing.
 
-A rank is a rank **within a stated window**, and the window can flip the
-conclusion. On 2026-08-05 the Baa total yield had **92.3%** of the last year's
-observations below it, **95.8%** of the last ten years' — and **50.5%** of
-everything since 1919. Near the top on one reading, mid-range on another, from
-the same number on the same day. A ladder would have to pick one window and
-would be reporting that choice as much as the market. The same rule already
-governs `price cds show`, which emits no verdict either, and it is not weakened
-by this message being pushed rather than pulled.
+**What is measured is the Baa corporate bond yield itself. Nothing is
+subtracted.** The implementation had drifted into measuring the *direction* of
+the Baa−Aaa quality spread, which answers a different question — how much more
+junk costs than quality, i.e. credit stratification, not whether borrowing was
+expensive. A high-cost year can be compressing and a low-cost year widening.
+Direction also could not separate the anchors: five of six carried the same
+label, and 1966 (50th percentile) sat in the same class as 1999 (12th).
 
-That example is also why the lead pair keeps the monthly `BAA` series rather
-than switching to the daily `DBAA`: the daily series only reaches 1986, so the
-`自1919` line — the one that does the flipping — would disappear. A same-day,
-arithmetically exact pair was considered and rejected for exactly that reason.
+`crates/cds-con/src/cost.rs` mirrors `cost_cmd::level_at` and must stay
+arithmetically identical to it, down to the integer truncation that decides
+the label on the boundary.
+
+## The reading
+
+- **Basis: an as-of expanding window.** Only observations up to and including
+  the one being read, never the future. This is what lets a reading be checked
+  against what was knowable at the time.
+- **`n` travels with every reading.** Early windows are thin (1929-09 rests on
+  129 observations, 2026-07 on 1291). Thinness is a fact about the reading,
+  not a blemish to hide.
+- **The cut is the median**: an as-of percentile ≥ 50 reads `高`, below it
+  `不高`. Owner's ruling, 2026-08-12.
+- **A date the series does not carry prints 無資料**, and does not vanish. A
+  dropped line looks like a query that was never run, and no-data is itself a
+  finding this research records.
+
+The series is the **monthly `baa`**, 1919-01 onward, from
+`price-registry.credit_spreads`. Not the daily `DBAA`, which only reaches 1986
+— attribute 2's anchors run back to 1929 and a 1986 series cannot read them.
+
+## Recall-only
+
+It reports a reading. It never recommends, predicts, ranks, or writes
+anything back.
 
 The message lays out levels, counts and coverage. The reader judges.
 

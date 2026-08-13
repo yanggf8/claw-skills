@@ -376,7 +376,9 @@ The suites that look like they would need something — the differentials, the
 sanitizer corpus, the delivery and pipeline tests — read recorded fixtures or
 drive a local stub.
 
-**`cds-con` carries a reverse rule — do not "fix" it.** It is the only skill with **no `狀態：` line**, and its `SKILL.md` says so explicitly: it prints levels, historical position and coverage and makes no judgement, because a percentile is a rank *within a stated window* and the window flips the conclusion. Every other skill has a status ladder, so a consistency pass will want to add one here. Don't.
+**`cds-con` is downstream of `~/b/finance-engineering`, not a work of its own.** It is the daily push for that project's **attribute 2** — "was corporate bond cost high or not" — and `finance-cli`'s `cost level` is the single authority for the rule (owner's ruling 2026-08-12 retired the charter; `attribute2()` delegates to `cost_cmd::level_at`). The measure is the **Baa yield itself, never a spread**: the Baa−Aaa direction measure it replaced answered a different question and could not separate the anchors. `crates/cds-con/src/cost.rs` mirrors that function and must stay arithmetically identical, including the integer truncation that decides the label on the boundary — if the two disagree, finance-cli is right. When that project's definition moves, this skill follows; do not resolve a disagreement in this repo's favour.
+
+This replaces an earlier reverse rule here that forbade any classification in cds-con. That rule was never the owner's; it was written up from an implementation detail and then cited as if it were policy. The window-flipping objection behind it is answered by the as-of expanding basis, which fixes one window and prints its `n`.
 
 ## Gotchas
 
