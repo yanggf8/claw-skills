@@ -1,6 +1,7 @@
 //! The delivered report.
 
 use crate::merge::{Agreement, Row};
+use crate::review::{tally, Outcome, Reviewed, NEUTRAL_BAND_PCT};
 
 pub fn fmt_sentiment(s: &str) -> String {
     match s {
@@ -29,13 +30,112 @@ fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-pub fn format_report(rows: &[Row], mode: &str, ticker_count: usize, date: &str) -> String {
+/// Signed percent with two decimals, e.g. `+1.24%`.
+fn fmt_pct(p: f64) -> String {
+    format!("{}{:.2}%", if p >= 0.0 { "+" } else { "" }, p)
+}
+
+/// The morning's calls, and what the close did to them.
+///
+/// Rendered above the day's own analysis because it is the part that can be
+/// checked. Returns no lines at all when there is no journal to review — an
+/// empty section would read as "we predicted nothing", which is a different
+/// claim from "no record was kept".
+pub fn format_review(reviewed: &[Reviewed], made_at: &str) -> Vec<String> {
+    if reviewed.is_empty() {
+        return Vec::new();
+    }
+    let (hits, scored) = tally(reviewed);
+    let mut lines = vec![if made_at.is_empty() {
+        "🔁 盤前預測覆盤".to_string()
+    } else {
+        format!("🔁 盤前預測覆盤（{made_at} 的判斷）")
+    }];
+
+    for r in reviewed {
+        let mark = match r.outcome {
+            Outcome::Hit => "✅",
+            Outcome::Miss => "❌",
+            Outcome::Unscored => "➖",
+        };
+        let moved = match r.pct_change {
+            Some(p) => format!("實際 {}", fmt_pct(p)),
+            None => "實際 無報價".to_string(),
+        };
+        lines.push(format!(
+            "  {mark} {} 盤前{} {} → {}",
+            r.ticker,
+            fmt_sentiment(&r.predicted),
+            fmt_conf(r.confidence),
+            moved
+        ));
+    }
+
+    lines.push(String::new());
+    // The band is printed because the verdicts are meaningless without it: the
+    // same close is a hit or a miss depending on where the neutral zone sits.
+    let unscored = reviewed.len() - scored;
+    let mut foot = if scored == 0 {
+        "  盤前預測無一可評分（缺少報價或方向）".to_string()
+    } else {
+        format!("  命中 {hits}/{scored}｜判定門檻 ±{NEUTRAL_BAND_PCT}%")
+    };
+    if unscored > 0 && scored > 0 {
+        foot.push_str(&format!("，{unscored} 支無法評分"));
+    }
+    lines.push(foot);
+    lines
+}
+
+/// Everything the header and the review section need, beside the rows.
+///
+/// A struct rather than a parameter list: the four strings are all `&str` and
+/// three of them are optional-by-emptiness, so positional arguments could be
+/// transposed silently — `date` and `market_time` would still compile swapped.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReportContext<'a> {
+    pub mode: &'a str,
+    pub ticker_count: usize,
+    /// The ET trading day.
+    pub date: &'a str,
+    /// Market-time stamp, e.g. `16:10 EDT`. Empty renders no stamp.
+    pub market_time: &'a str,
+    pub review: &'a [Reviewed],
+    /// When the reviewed predictions were made, in market time.
+    pub review_made_at: &'a str,
+}
+
+pub fn format_report(rows: &[Row], ctx: &ReportContext) -> String {
+    let ReportContext {
+        mode,
+        ticker_count,
+        date,
+        market_time,
+        review,
+        review_made_at,
+    } = *ctx;
     let label = if mode == "pre-market" {
         "盤前報告"
     } else {
         "收盤報告"
     };
-    let mut lines = vec![format!("📊 CCT2 {label}｜{date}"), String::new()];
+    // The date is the ET trading day and the stamp is market time, so the
+    // header names the session it belongs to rather than leaving the reader to
+    // infer it from when the message arrived in their own zone.
+    let head = if market_time.is_empty() {
+        format!("📊 CCT2 {label}｜{date}")
+    } else {
+        format!("📊 CCT2 {label}｜{date} {market_time}")
+    };
+    let mut lines = vec![head, String::new()];
+
+    let review_lines = format_review(review, review_made_at);
+    if !review_lines.is_empty() {
+        lines.extend(review_lines);
+        lines.push(String::new());
+        lines.push("────────────".to_string());
+        lines.push(String::new());
+    }
 
     if rows.is_empty() {
         lines.push("⚠️ 無法取得任何分析結果".to_string());

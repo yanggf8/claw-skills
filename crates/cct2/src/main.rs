@@ -16,11 +16,14 @@
 
 use std::io::Write;
 
+use cct2::clock::{self, Gate};
 use cct2::cli::{self, Mode};
+use cct2::journal::{self, Journal};
 use cct2::llm;
 use cct2::market;
 use cct2::merge::merge;
-use cct2::render::format_report;
+use cct2::render::{format_report, ReportContext};
+use cct2::review;
 use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use claw_core::env::load_env;
 use claw_core::marker::SkillStatus;
@@ -110,14 +113,74 @@ fn main() {
     let primary_model = model_of("primary_model", llm::DEFAULT_PRIMARY_MODEL);
     let backup_model = model_of("backup_model", llm::DEFAULT_BACKUP_MODEL);
 
+    // Market time, read once. Everything dated below is the ET trading day.
+    let now = clock::market_now();
+    if now.is_none() {
+        let _ = writeln!(err, "[cct2] WARN no zoneinfo; dates fall back to empty");
+    }
+
+    // DST gate, before any network work so a skipped run costs nothing. Fails
+    // open: without tz data there is no hour to compare, and refusing to run
+    // would turn a missing database into a silently missing report.
+    if let (Some(target), Some(z)) = (args.et_hour, now.as_ref()) {
+        let abbrev = z.strftime("%Z").to_string();
+        if let Gate::Skip {
+            current_hour,
+            abbrev,
+        } = clock::gate(z.hour() as i32, &abbrev, Some(target))
+        {
+            let _ = writeln!(
+                err,
+                "[skip: US-Eastern hour {current_hour:02} != target {target:02} ({abbrev})]"
+            );
+            std::process::exit(finish(
+                Finish::Marked {
+                    status: SkillStatus::Ok,
+                    exit: 0,
+                },
+                &mut out,
+            ));
+        }
+    } else if args.et_hour.is_some() {
+        let _ = writeln!(err, "[WARN: --et-hour requires zoneinfo; running unconditionally]");
+    }
+
+    let date = now.as_ref().map(clock::business_date).unwrap_or_default();
+    let market_time = now.as_ref().map(clock::market_stamp).unwrap_or_default();
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+
     let tickers = load_tickers();
     let _ = writeln!(err, "[cct2] fetching data for {tickers:?}...");
     let data: Vec<market::TickerData> = tickers.iter().map(|t| market::fetch_ticker(t)).collect();
+    let price_of = |t: &str| -> Option<f64> {
+        data.iter()
+            .find(|d| d.ticker == t)
+            .and_then(|d| d.quote.as_ref())
+            .map(|q| q.price)
+    };
 
-    let date = jiff::Timestamp::now()
-        .in_tz("UTC")
-        .map(|z| z.strftime("%Y-%m-%d").to_string())
-        .unwrap_or_default();
+    // The close is reviewed against the morning's record for the same trading
+    // day. A missing journal is normal — the pre-market run may have been
+    // skipped or failed — and renders no review section rather than an error.
+    let (reviewed, review_made_at) = match args.mode {
+        Mode::Eod => match journal::load(&home, &date) {
+            Some(j) => {
+                let _ = writeln!(
+                    err,
+                    "[cct2] reviewing {} pre-market prediction(s) from {}",
+                    j.predictions.len(),
+                    j.business_date
+                );
+                (review::review(&j.predictions, &price_of), j.made_at)
+            }
+            None => {
+                let _ = writeln!(err, "[cct2] no pre-market journal for {date}; review omitted");
+                (Vec::new(), String::new())
+            }
+        },
+        Mode::PreMarket => (Vec::new(), String::new()),
+    };
+
     let mode_label = match args.mode {
         Mode::PreMarket => "pre-market (before US open, give outlook for today's session)",
         Mode::Eod => "end-of-day (market just closed, summarize today and give tomorrow's outlook)",
@@ -139,7 +202,38 @@ fn main() {
     let (primary, backup) = llm::run_dual(&prompt, primary_ep.as_ref(), backup_ep.as_ref());
 
     let rows = merge(&tickers, primary.as_ref(), backup.as_ref());
-    let mut msg = format_report(&rows, args.mode.as_str(), tickers.len(), &date);
+
+    // Record before rendering, and only when there is something to record: the
+    // journal is what tonight's review reads, and a run that produced no rows
+    // must not overwrite a good morning record with an empty one.
+    if args.mode == Mode::PreMarket && !rows.is_empty() && !date.is_empty() {
+        let entry = Journal {
+            business_date: date.clone(),
+            made_at: market_time.clone(),
+            predictions: journal::predictions_from(&rows, &price_of),
+        };
+        match journal::save(&home, &entry) {
+            Ok(p) => {
+                let _ = writeln!(err, "[cct2] journal written: {}", p.display());
+            }
+            // A failed write costs tonight's review, not this report.
+            Err(e) => {
+                let _ = writeln!(err, "[cct2] WARN journal write failed: {e}");
+            }
+        }
+    }
+
+    let mut msg = format_report(
+        &rows,
+        &ReportContext {
+            mode: args.mode.as_str(),
+            ticker_count: tickers.len(),
+            date: &date,
+            market_time: &market_time,
+            review: &reviewed,
+            review_made_at: &review_made_at,
+        },
+    );
 
     let job_id = std::env::var("NULLCLAW_JOB_ID")
         .ok()

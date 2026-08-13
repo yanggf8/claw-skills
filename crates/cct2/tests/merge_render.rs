@@ -4,7 +4,7 @@
 //! got wrong: a ticker answered by only one model was reported as a consensus.
 
 use cct2::merge::{merge, Agreement};
-use cct2::render::{fmt_conf, format_report};
+use cct2::render::{fmt_conf, format_report, ReportContext};
 
 fn tickers(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
@@ -106,7 +106,7 @@ fn divergences_sort_ahead_of_everything_else() {
 fn a_solo_row_is_filed_under_its_own_heading_not_under_consensus() {
     let p = opinions(serde_json::json!({"AAPL":{"sentiment":"bullish","confidence":0.9,"reason":"only primary spoke"}}));
     let rows = merge(&tickers(&["AAPL"]), Some(&p), None);
-    let out = format_report(&rows, "eod", 1, "2026-07-31");
+    let out = format_report(&rows, &ReportContext { mode: "eod", ticker_count: 1, date: "2026-07-31", ..Default::default() });
     assert!(out.contains("📊 單一模型"), "got:\n{out}");
     assert!(!out.contains("🎯 共識訊號"), "got:\n{out}");
     // …and says which model it was, so the reader can judge the weight.
@@ -119,7 +119,7 @@ fn the_footer_stops_claiming_a_comparison_that_did_not_happen() {
     // where the backup never answered.
     let p = opinions(serde_json::json!({"AAPL":{"sentiment":"bullish","confidence":0.9}}));
     let rows = merge(&tickers(&["AAPL"]), Some(&p), None);
-    let out = format_report(&rows, "eod", 1, "2026-07-31");
+    let out = format_report(&rows, &ReportContext { mode: "eod", ticker_count: 1, date: "2026-07-31", ..Default::default() });
     assert!(out.contains("單一模型回應"), "got:\n{out}");
     assert!(!out.contains("雙模型對照"), "got:\n{out}");
 }
@@ -132,7 +132,7 @@ fn a_mixed_run_says_how_many_of_each() {
     }));
     let b = opinions(serde_json::json!({"AAPL":{"sentiment":"bullish","confidence":0.9}}));
     let rows = merge(&tickers(&["AAPL", "MSFT"]), Some(&p), Some(&b));
-    let out = format_report(&rows, "eod", 2, "2026-07-31");
+    let out = format_report(&rows, &ReportContext { mode: "eod", ticker_count: 2, date: "2026-07-31", ..Default::default() });
     assert!(out.contains("1 支雙模型對照，1 支僅單一模型"), "got:\n{out}");
 }
 
@@ -141,20 +141,20 @@ fn a_full_two_model_run_keeps_the_original_footer() {
     let p = opinions(serde_json::json!({"AAPL":{"sentiment":"bullish","confidence":0.9}}));
     let b = opinions(serde_json::json!({"AAPL":{"sentiment":"bullish","confidence":0.9}}));
     let rows = merge(&tickers(&["AAPL"]), Some(&p), Some(&b));
-    assert!(format_report(&rows, "eod", 1, "2026-07-31").contains("雙模型對照"));
+    assert!(format_report(&rows, &ReportContext { mode: "eod", ticker_count: 1, date: "2026-07-31", ..Default::default() }).contains("雙模型對照"));
 }
 
 #[test]
 fn no_rows_at_all_renders_the_failure_notice() {
-    let out = format_report(&[], "pre-market", 5, "2026-07-31");
+    let out = format_report(&[], &ReportContext { mode: "pre-market", ticker_count: 5, date: "2026-07-31", ..Default::default() });
     assert!(out.contains("⚠️ 無法取得任何分析結果"));
     assert!(out.starts_with("📊 CCT2 盤前報告｜2026-07-31"));
 }
 
 #[test]
 fn the_mode_selects_the_heading() {
-    assert!(format_report(&[], "pre-market", 1, "d").contains("盤前報告"));
-    assert!(format_report(&[], "eod", 1, "d").contains("收盤報告"));
+    assert!(format_report(&[], &ReportContext { mode: "pre-market", ticker_count: 1, date: "d", ..Default::default() }).contains("盤前報告"));
+    assert!(format_report(&[], &ReportContext { mode: "eod", ticker_count: 1, date: "d", ..Default::default() }).contains("收盤報告"));
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn a_divergence_shows_both_models_side_by_side() {
     let p = opinions(serde_json::json!({"AAPL":{"sentiment":"bullish","confidence":0.9,"reason":"pr"}}));
     let b = opinions(serde_json::json!({"AAPL":{"sentiment":"bearish","confidence":0.8,"reason":"br"}}));
     let rows = merge(&tickers(&["AAPL"]), Some(&p), Some(&b));
-    let out = format_report(&rows, "eod", 1, "2026-07-31");
+    let out = format_report(&rows, &ReportContext { mode: "eod", ticker_count: 1, date: "2026-07-31", ..Default::default() });
     assert!(out.contains("主模型：看漲 🟢 90% — pr"), "got:\n{out}");
     assert!(out.contains("備用模型：看跌 🔴 80% — br"), "got:\n{out}");
 }
@@ -188,7 +188,7 @@ fn a_long_chinese_reason_clips_by_character_without_panicking() {
     let long: String = "蘋果財報優於預期，".repeat(20);
     let p = serde_json::json!({"AAPL":{"sentiment":"bullish","confidence":0.9,"reason":long}});
     let rows = merge(&tickers(&["AAPL"]), Some(&p), None);
-    let out = format_report(&rows, "eod", 1, "2026-07-31");
+    let out = format_report(&rows, &ReportContext { mode: "eod", ticker_count: 1, date: "2026-07-31", ..Default::default() });
     let reason_line = out.lines().find(|l| l.contains("AAPL")).unwrap();
     let clipped: String = reason_line.chars().skip_while(|c| *c != '—').skip(2).collect();
     assert_eq!(clipped.chars().count(), 80);
