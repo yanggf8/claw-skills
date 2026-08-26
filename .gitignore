@@ -23,6 +23,10 @@ inflation-con/config.json
 # chipcon runtime config (local; not committed)
 chipcon/config.json
 
+# cct2 runtime journal — per-day predictions, resolved through the install
+# symlink (~/.nullclaw/skills/cct2 -> this dir), so they land in the tree
+cct2/journal/
+
 # Rust build artifacts
 target/
 
