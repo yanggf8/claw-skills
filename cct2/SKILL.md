@@ -46,7 +46,7 @@ Update via agent:
 ```json
 {
   "primary_provider": "anthropic-custom:minimax",
-  "primary_model": "MiniMax-M2.7",
+  "primary_model": "MiniMax-M3",
   "backup_provider": "glm-direct",
   "backup_model": "GLM-5.1"
 }

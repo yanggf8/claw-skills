@@ -2,7 +2,12 @@
 
 use crate::json::extract;
 
-pub const DEFAULT_PRIMARY_MODEL: &str = "MiniMax-M2.7";
+/// M2.7 until 2026-08-27. It intermittently spent the whole `MAX_TOKENS` budget
+/// on its thinking block and returned no text, so the report shipped backup-only
+/// — measured 1 run in 3. The nullclaw agents had already moved to M3 on
+/// 2026-06-30 against the same symptom. A host with no `config.json` falls back
+/// to this constant, so it tracks the config rather than lagging behind it.
+pub const DEFAULT_PRIMARY_MODEL: &str = "MiniMax-M3";
 pub const DEFAULT_BACKUP_MODEL: &str = "GLM-5.1";
 /// Both providers stream; a long reasoning pass legitimately takes minutes.
 const LLM_TIMEOUT_S: u64 = 120;

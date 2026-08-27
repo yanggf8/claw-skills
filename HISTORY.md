@@ -9,6 +9,74 @@ this file is only the record of what changed and why.
 
 ---
 
+## cct2: the timeout, and the primary model that was answering only sometimes (2026-08-27)
+
+A `[cron] skill 'cct2' degraded: failure=timeout repair=retried_failed` alert on
+2026-08-25 turned out to have two separate causes stacked on one job, and
+finding the second one required not trusting the first fix.
+
+**The timeout was a race the scheduler always wins.** `LLM_TIMEOUT_S = 120`
+(`crates/cct2/src/llm.rs`) is the budget for *one* LLM call; the four cct2 cron
+jobs carried `timeout_secs = 120` for the *whole run*. Equal budgets mean the
+scheduler kills the skill at the exact moment the inner call is still entitled
+to be waiting, so any slow upstream day is fatal. Nothing had changed in the
+job settings — every cron-seed backup shows the same 120 — and runs from 08-13
+to 08-24 all finished ok in 57–83 s. The 08-25 run took 241 s, which is
+120 + 120 plus change: the original and the `retry_once` retry, both killed.
+
+Two details worth keeping. The retry actually *completed its work* — the
+journal for that day was written at `made_at 08:32 EDT` — and died before
+delivery, so option A did its job and no half-finished report reached Telegram.
+And resizing the budget was not possible without churn: `nullclaw cron update`
+had no `--timeout`, so changing it meant remove + `add-skill`, which mints a new
+job id and orphans that job's `cron_runs` history. That gap was closed on the
+nullclaw side (`2d01f18f`, plus `84671712` / `a50560a2` bounding the value
+everywhere it is parsed or loaded — `sqlite3_bind_int` takes a `c_int`, so an
+over-range value used to trap mid-write rather than validate). The four jobs
+now hold 300 s.
+
+**The second cause was hiding behind an honest degradation.** Manual runs
+showed `WARN primary: no text block (stop_reason=max_tokens, blocks=["thinking"])`
+— MiniMax-M2.7 spending its entire `MAX_TOKENS = 4096` output budget on its
+thinking block and returning no text at all. The report still shipped, footed
+`單一模型回應` instead of `雙模型對照` (`render.rs:224`), rows non-empty,
+`[skill-status:ok]`, no retry, no alert. The WARN is stderr-only and
+`cron_runs.output` keeps just the ~74 bytes of marker lines, so none of this is
+visible after the fact.
+
+Measuring the frequency needed two tricks, because the obvious source is empty:
+
+- **Live sampling.** Three `--mode eod` runs on 2026-08-27 gave 1 WARN in 3.
+  So the first read — "reports have been backup-only since 08-26" — was
+  overstated; it is intermittent, and an intermittent quality loss is exactly
+  the kind that survives a spot check.
+- **The journal, read sideways.** A consensus confidence can only end in `.xx5`
+  if `merge.rs:94` averaged two models, so scanning `cct2/journal/*.json` for
+  three-decimal values proves dual-voice on a past day at zero API cost. Five of
+  the last ten trading days prove it, 2026-08-26 among them. Two-decimal values
+  prove nothing either way — the heuristic has one direction only.
+
+**Fix: primary switched to MiniMax-M3.** Raising `MAX_TOKENS` was the tempting
+move and the wrong one — it had already gone 2048 → 4096 for this same symptom
+during the port (the reasoning is still in the comment above the constant), and
+thinking length has no ceiling to buy headroom against. The nullclaw agents had
+moved to M3 on 2026-06-30 against the same thinking-stall symptom, so the
+precedent was same model family, same failure, already resolved. Downside was
+bounded: a model name the endpoint rejects degrades to backup-only, which was
+the status quo.
+
+Three runs after the switch: no WARN, `雙模型對照` all three times, and a real
+divergence (NVDA, primary 看漲 85% vs backup 中性 65%) proving the primary was
+genuinely answering rather than both paths falling to the backup. Runs also
+dropped from 35–49 s to 9–11 s, which retires the original timeout race on its
+own — the runaway thinking pass *was* the slow part.
+
+`DEFAULT_PRIMARY_MODEL` moved with the config. It is only read when
+`config.json` is missing, but leaving it on M2.7 would have quietly reinstated
+the defect on any host without one (a fresh install, the nanoclaw container).
+
+---
+
 ## cds-con: the spread renderer, retired (2026-08-13)
 
 cds-con is the daily push for attribute 2 of the `~/b/finance-engineering`
