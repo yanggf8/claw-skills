@@ -88,6 +88,47 @@ ticker, which `answered` alone would report as a clean run.
 
 ---
 
+## cct: the eod read that raced the worker write (2026-08-27)
+
+A `[cron] skill 'cct' degraded: failure=contract_degraded` alert carried
+`[WARN: CCT eod carries no analysis] the worker has no eod content for
+2026-08-26`. The WARN comes from `crates/cct/src/main.rs:119` and fires only
+when `report.has_content == Some(false)`. That value is the worker's own
+answer from the envelope's `metadata.has_content`, not a reader-side
+heuristic — the skill did not misjudge.
+
+The cct eod job `skill-a9cb5ac0` was scheduled at `10 23 * * 1-5` with
+`tz_offset_s=0` (23:10 UTC). That run started `2026-08-26 23:10:14Z` and
+finished in 4 s. The worker's row for business_date `2026-08-26` has
+`_d1_created_at = 2026-08-26T23:20:26.502Z` — 10 m 12 s after the read.
+Querying the worker now returns `metadata.has_content: true` for the same
+day, so no data was lost.
+
+Behaviour on this path is by design: `SkillStatus::Degraded` still delivers
+(the stale-but-real report is footed `EOD analysis not yet available`),
+`repair_policy=none` so there is no retry and no duplicate message, and
+`cron_runs.output` keeps the body (cct has no `--deliver-to`, so stdout is
+the record). Over the last 30 days cct had 12 degraded runs out of 66
+spread across all four modes — not one cause — with three distinguishable
+bodies in `cron_runs` (`EOD analysis not yet available`, `尚未產生或暫時
+無法存取`, `No intraday data available`). The fix here addresses only the
+first kind. The 2026-07-28 cluster (all three modes) was the day the
+upstream pipeline was re-enabled after being auto-disabled for ~50 days.
+
+**Fix: move the eod read from `10 23` to `45 23` UTC** via
+`nullclaw cron update <id> --expression '45 23 * * 1-5'` — in-place, so the
+job id and its `cron_runs` history survive. `23:45Z = 19:45 EDT (18:45 EST)`
+is still the same UTC day and the same ET trading day, well clear of both
+midnights, so `freshness.rs::comparison_today` is unaffected. The margin
+rests on one observed worker completion time: the worker ignores `?date=` and
+always serves the latest row, so no distribution of past completion times
+could be obtained, and `2026-08-25` was `ok` at `23:10Z` — completion time
+drifts and cct sits on the edge. A fixed time is a buffer, not a bound;
+a durable fix would be the worker notifying or the skill retrying on
+`has_content == false`, but that is a different kind of change.
+
+---
+
 ## cds-con: the spread renderer, retired (2026-08-13)
 
 cds-con is the daily push for attribute 2 of the `~/b/finance-engineering`
