@@ -124,12 +124,12 @@ pair survives the `--et-hour` gate in either half of the year.
 
 ```
 # pre-market — ET 08:30, one hour before the open
-nullclaw cron add-skill "30 12 * * 1-5" cct2 --tz +00:00 --verify skill_contract --repair retry_once --skill-args "--mode pre-market --et-hour 8" --deliver-to 7972814626
-nullclaw cron add-skill "30 13 * * 1-5" cct2 --tz +00:00 --verify skill_contract --repair retry_once --skill-args "--mode pre-market --et-hour 8" --deliver-to 7972814626
+nullclaw cron add-skill "30 12 * * 1-5" cct2 --tz +00:00 --verify skill_contract --repair retry_once --timeout 300 --skill-args "--mode pre-market --et-hour 8" --deliver-to 7972814626
+nullclaw cron add-skill "30 13 * * 1-5" cct2 --tz +00:00 --verify skill_contract --repair retry_once --timeout 300 --skill-args "--mode pre-market --et-hour 8" --deliver-to 7972814626
 
 # eod — ET 16:10, forty minutes after the close
-nullclaw cron add-skill "10 20 * * 1-5" cct2 --tz +00:00 --verify skill_contract --repair retry_once --skill-args "--mode eod --et-hour 16" --deliver-to 7972814626
-nullclaw cron add-skill "10 21 * * 1-5" cct2 --tz +00:00 --verify skill_contract --repair retry_once --skill-args "--mode eod --et-hour 16" --deliver-to 7972814626
+nullclaw cron add-skill "10 20 * * 1-5" cct2 --tz +00:00 --verify skill_contract --repair retry_once --timeout 300 --skill-args "--mode eod --et-hour 16" --deliver-to 7972814626
+nullclaw cron add-skill "10 21 * * 1-5" cct2 --tz +00:00 --verify skill_contract --repair retry_once --timeout 300 --skill-args "--mode eod --et-hour 16" --deliver-to 7972814626
 ```
 
 Before 2026-08-13 the two jobs ran at Taipei 13:35 and 21:10, which is **ET

@@ -44,8 +44,8 @@ nullclaw cron add-skill "35 13 * * 1-5" cct --deliver-to 7972814626 --skill-args
 # Intraday: 12:05 PM EST = 17:05 UTC weekdays
 nullclaw cron add-skill "5 17 * * 1-5" cct --deliver-to 7972814626 --skill-args "--mode intraday"
 
-# EOD: 4:10 PM EST = 21:10 UTC weekdays
-nullclaw cron add-skill "10 21 * * 1-5" cct --deliver-to 7972814626 --skill-args "--mode eod"
+# EOD: 7:45 PM EDT (6:45 PM EST) = 23:45 UTC weekdays
+nullclaw cron add-skill "45 23 * * 1-5" cct --deliver-to 7972814626 --skill-args "--mode eod"
 
 # Weekly: Sunday 10:05 AM EST = 15:05 UTC
 nullclaw cron add-skill "5 15 * * 0" cct --deliver-to 7972814626 --skill-args "--mode weekly"
