@@ -6,6 +6,10 @@ Two cron jobs: pre-market and end-of-day.
 The port found four defects that had been hiding one another. They are the
 substance of this document; the translation itself was routine.
 
+> **The primary model is `MiniMax-M3` since 2026-08-27.** Every `MiniMax-M2.7`
+> below is the model as measured at port time, not the one in `config.json` —
+> see [`HISTORY.md`](../../HISTORY.md) for why it moved.
+
 ## The primary model had never once answered
 
 `run.py` called it as
