@@ -71,7 +71,26 @@ fn main() {
     let utc_today = now.date();
     let et_today = now_et.date();
 
-    let (body, status) = match api::get(endpoint(args.mode)) {
+    // For eod (and any mode) the worker may not have written the day's
+    // content yet — observed 10m12s late on 2026-08-26. A single poll
+    // inside the run is cheaper than a scheduler retry (which would
+    // duplicate Telegram on degraded) and keeps repair_policy=none.
+    // Keep total added time budget-friendly: one retry after 60s covers
+    // the observed drift and fits inside a 300s job timeout.
+    let report_opt = {
+        let mut r = api::get(endpoint(args.mode));
+        if let Some(ref rep) = r {
+            if rep.has_content == Some(false) {
+                let _ = writeln!(err, "[cct] has_content==false, retrying once after 60s...");
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                if let Some(r2) = api::get(endpoint(args.mode)) {
+                    r = Some(r2);
+                }
+            }
+        }
+        r
+    };
+    let (body, status) = match report_opt {
         None => (
             format!("📭 CCT {}尚未產生或暫時無法存取", label(args.mode)),
             SkillStatus::Degraded,
