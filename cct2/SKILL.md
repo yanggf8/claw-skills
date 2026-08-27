@@ -114,6 +114,12 @@ counts reach `requested`.
 grep -c '"answered":false' ~/.nullclaw/skills/cct2/journal/models.jsonl
 ```
 
+A durable recurring shell job `30 0 * * *` UTC (`job-fcd2b92d`) re-checks this
+daily and exits non-zero when the latest `business_date` is missing either
+mode or a model went quiet, so a silent half-outage surfaces as a cron alert
+rather than a `grep` you have to remember to run. Script:
+`tools/check-cct2-models.py`.
+
 Appended, never rewritten: a retry is a second fact, not a correction of the
 first, and the day's prediction file is left alone.
 

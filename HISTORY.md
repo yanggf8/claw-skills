@@ -86,6 +86,12 @@ trades a real prediction for "no review available". `answered` and per-model
 `tickers` are separate fields because a model can reply and still omit a
 ticker, which `answered` alone would report as a clean run.
 
+**The record is now checked daily, not just written.** A durable shell job
+`30 0 * * *` UTC (`job-fcd2b92d`, `tools/check-cct2-models.py`) exits non-zero
+when the latest business day is missing either mode or a model went quiet, so
+the silent half-outage this whole feature grew out of now surfaces as a cron
+alert instead of a `grep` someone has to remember to run.
+
 ---
 
 ## cct: the eod read that raced the worker write (2026-08-27)
