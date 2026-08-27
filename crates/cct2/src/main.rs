@@ -203,6 +203,29 @@ fn main() {
 
     let rows = merge(&tickers, primary.as_ref(), backup.as_ref());
 
+    // Both modes, and before the empty-rows branch below: a run where neither
+    // model answered is exactly the one worth having on record.
+    let models = journal::RunModels {
+        business_date: date.clone(),
+        mode: args.mode.as_str().to_string(),
+        made_at: market_time.clone(),
+        primary: journal::ModelUse {
+            model: primary_model.clone(),
+            answered: primary.is_some(),
+            tickers: rows.iter().filter(|r| r.primary.is_present()).count(),
+        },
+        backup: journal::ModelUse {
+            model: backup_model.clone(),
+            answered: backup.is_some(),
+            tickers: rows.iter().filter(|r| r.backup.is_present()).count(),
+        },
+        requested: tickers.len(),
+    };
+    // A failed append costs the record, never the report.
+    if let Err(e) = journal::append_models(&home, &models) {
+        let _ = writeln!(err, "[cct2] WARN model record append failed: {e}");
+    }
+
     // Record before rendering, and only when there is something to record: the
     // journal is what tonight's review reads, and a run that produced no rows
     // must not overwrite a good morning record with an empty one.

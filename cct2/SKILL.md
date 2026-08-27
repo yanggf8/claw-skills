@@ -87,6 +87,36 @@ failed — and renders no review section at all, which is a different statement
 from an empty one. The journal is written only when the run produced rows, so
 a failed run never overwrites a good record.
 
+## Which models answered
+
+**Every** run — both modes, whether or not it produced rows — appends one JSON
+line to `~/.nullclaw/skills/cct2/journal/models.jsonl`:
+
+```json
+{"business_date":"2026-08-27","mode":"eod","made_at":"16:10 EDT","requested":5,
+ "primary":{"model":"MiniMax-M3","answered":true,"tickers":5},
+ "backup":{"model":"GLM-5.1","answered":true,"tickers":5}}
+```
+
+A model can fail without the run failing: when one returns nothing the report
+ships on the other, foots itself `單一模型回應` instead of `雙模型對照`, and
+still exits `[skill-status:ok]`. That is the intended behaviour, but the only
+live trace is a `WARN` on stderr and nothing keeps stderr — `cron_runs.output`
+holds the marker lines and no more. This file is the record, so "how often did
+the primary go quiet" is a `grep`, not an inference.
+
+`answered` and `tickers` are separate on purpose: a model can reply and still
+omit a ticker, so the report is a true two-model comparison only when both
+counts reach `requested`.
+
+```bash
+# runs where a model went quiet
+grep -c '"answered":false' ~/.nullclaw/skills/cct2/journal/models.jsonl
+```
+
+Appended, never rewritten: a retry is a second fact, not a correction of the
+first, and the day's prediction file is left alone.
+
 ## Cron jobs
 
 Scheduled in **UTC** (`--tz +00:00`), paired per report so exactly one of each

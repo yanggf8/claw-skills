@@ -1,7 +1,10 @@
 //! Market time, the prediction journal, and the close-vs-morning review.
 
 use cct2::clock::{business_date, gate, market_stamp, Gate, MARKET_TZ};
-use cct2::journal::{from_json, journal_path, load, save, to_json, Journal, Prediction};
+use cct2::journal::{
+    append_models, from_json, journal_path, load, models_path, models_to_json, save, to_json,
+    Journal, ModelUse, Prediction, RunModels,
+};
 use cct2::merge::{Agreement, Opinion, Row};
 use cct2::render::{format_report, format_review, ReportContext};
 use cct2::review::{pct_change, review, score, tally, Outcome, Reviewed};
@@ -285,4 +288,82 @@ fn a_report_with_no_market_time_still_renders_its_date() {
     );
     assert!(out.starts_with("📊 CCT2 盤前報告｜2026-08-12\n"), "{out}");
     assert!(!out.contains("🔁"), "{out}");
+}
+
+// ── which models actually answered ───────────────────────────────────────────
+
+fn run_models(mode: &str, primary_answered: bool, primary_tickers: usize) -> RunModels {
+    RunModels {
+        business_date: "2026-08-27".into(),
+        mode: mode.into(),
+        made_at: "08:30 EDT".into(),
+        primary: ModelUse {
+            model: "MiniMax-M3".into(),
+            answered: primary_answered,
+            tickers: primary_tickers,
+        },
+        backup: ModelUse {
+            model: "GLM-5.1".into(),
+            answered: true,
+            tickers: 5,
+        },
+        requested: 5,
+    }
+}
+
+#[test]
+fn each_run_appends_a_line_rather_than_replacing_the_last() {
+    // The scheduler re-execs a retry with an identical environment, and the two
+    // runs of a day are two separate facts. Overwriting would keep whichever
+    // ran last and quietly answer "how often" with "once".
+    let home = tmp_home();
+    let path = append_models(&home, &run_models("pre-market", true, 5)).expect("append");
+    append_models(&home, &run_models("eod", false, 0)).expect("append");
+    assert_eq!(path, models_path(&home));
+
+    let lines: Vec<_> = std::fs::read_to_string(&path)
+        .expect("read")
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("one json object per line"))
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["mode"], "pre-market");
+    assert_eq!(lines[1]["mode"], "eod");
+}
+
+#[test]
+fn a_silent_half_outage_is_readable_without_the_stderr_that_reported_it() {
+    // The case the record exists for: the primary answered nothing, the backup
+    // carried the report, and the run still exited ok.
+    let v = models_to_json(&run_models("eod", false, 0));
+    assert_eq!(v["primary"]["model"], "MiniMax-M3");
+    assert_eq!(v["primary"]["answered"], false);
+    assert_eq!(v["primary"]["tickers"], 0);
+    assert_eq!(v["backup"]["answered"], true);
+    assert_eq!(v["backup"]["tickers"], 5);
+    assert_eq!(v["requested"], 5);
+}
+
+#[test]
+fn answering_is_recorded_separately_from_covering_every_ticker() {
+    // A model can reply and still skip a ticker, so the report is only a true
+    // two-model comparison when the counts agree. `answered` alone would read
+    // as a clean run.
+    let v = models_to_json(&run_models("pre-market", true, 3));
+    assert_eq!(v["primary"]["answered"], true);
+    assert_eq!(v["primary"]["tickers"], 3);
+    assert_ne!(v["primary"]["tickers"], v["requested"]);
+}
+
+#[test]
+fn the_record_lands_beside_the_predictions_without_being_one() {
+    // It shares the journal directory, but `load` keys on `<date>.json` and
+    // must not mistake the log for a day's record.
+    let home = tmp_home();
+    append_models(&home, &run_models("pre-market", true, 5)).expect("append");
+    assert!(load(&home, "2026-08-27").is_none());
+    assert_eq!(
+        models_path(&home).parent(),
+        journal_path(&home, "2026-08-27").parent()
+    );
 }

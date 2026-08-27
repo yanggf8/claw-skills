@@ -75,6 +75,17 @@ own — the runaway thinking pass *was* the slow part.
 `config.json` is missing, but leaving it on M2.7 would have quietly reinstated
 the defect on any host without one (a fresh install, the nanoclaw container).
 
+**The measurement problem is fixed too, which matters more than the model.**
+Every run now appends a line to `journal/models.jsonl` naming each model and
+whether it answered, so the next silent half-outage is a `grep` rather than the
+`.xx5` inference above — that trick reads a past day at zero cost, but it can
+only ever prove dual-voice, never its absence. The record went in the journal
+directory and not in the day's prediction file: the close would have had to
+read-modify-write that file to add its own line, and a crash in that window
+trades a real prediction for "no review available". `answered` and per-model
+`tickers` are separate fields because a model can reply and still omit a
+ticker, which `answered` alone would report as a clean run.
+
 ---
 
 ## cds-con: the spread renderer, retired (2026-08-13)
