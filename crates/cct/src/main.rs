@@ -71,21 +71,29 @@ fn main() {
     let utc_today = now.date();
     let et_today = now_et.date();
 
-    // For eod (and any mode) the worker may not have written the day's
-    // content yet — observed 10m12s late on 2026-08-26. A single poll
-    // inside the run is cheaper than a scheduler retry (which would
-    // duplicate Telegram on degraded) and keeps repair_policy=none.
-    // Keep total added time budget-friendly: one retry after 60s covers
-    // the observed drift and fits inside a 300s job timeout.
+    // A single inside-run retry is cheaper than a scheduler retry (which
+    // would duplicate Telegram on degraded) and keeps repair_policy=none.
+    // Retry when the first fetch is unusable, not only when the worker says
+    // content is not ready. `has_content == Some(false)` is the "not written
+    // yet" case — 3 of the 12 degraded cct runs on record (the EOD_NOT_READY
+    // shape, observed 10m12s late on 2026-08-26). `None` is a transport or
+    // envelope failure — 5 of the 12 (the "尚未產生或暫時無法存取"
+    // placeholder) — and most are transient: a dropped connection or a 500
+    // recovers within a minute. One 60s wait covers both. A retry run
+    // typically takes ~65s against the 120s job timeout (eod allows 300s);
+    // only the theoretical worst — both fetches burning the full 30s read
+    // budget (~130s) — would be killed at 120s, an accepted edge.
     let report_opt = {
         let mut r = api::get(endpoint(args.mode));
-        if let Some(ref rep) = r {
-            if rep.has_content == Some(false) {
-                let _ = writeln!(err, "[cct] has_content==false, retrying once after 60s...");
-                std::thread::sleep(std::time::Duration::from_secs(60));
-                if let Some(r2) = api::get(endpoint(args.mode)) {
-                    r = Some(r2);
-                }
+        let degraded_now = match &r {
+            None => true,
+            Some(rep) => rep.has_content == Some(false),
+        };
+        if degraded_now {
+            let _ = writeln!(err, "[cct] first fetch unusable, retrying once after 60s...");
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            if let Some(r2) = api::get(endpoint(args.mode)) {
+                r = Some(r2);
             }
         }
         r
