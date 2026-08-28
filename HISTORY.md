@@ -135,6 +135,82 @@ a durable fix would be the worker notifying or the skill retrying on
 
 ---
 
+## cct: the degradations nobody saw pile up, and the alert that was never configured (2026-08-28)
+
+The eod post-mortem above closed with "a durable fix would be the worker
+notifying or the skill retrying on `has_content == false`". Both halves of
+that sentence happened, and the road between them surfaced a fault that had
+been silent for as long as nullclaw has had an alert config.
+
+**The durable fix arrived first.** `84aba5f` gave cct an in-run retry on
+`has_content == Some(false)` — one 60 s wait, one refetch, `repair_policy=none`
+so no scheduler retry can pair with it into a duplicate. Checking that against
+the degraded history showed the retry was aimed at the rarer of two shapes: of
+the 12 degraded runs on record, 3 were the not-written-yet shape but 5 were
+`None` — transport/envelope failures landing on the "尚未產生或暫時無法存取"
+placeholder, mostly a dropped connection or a 500 that recovers inside a
+minute. `4cecb4b` extended the same retry to that case. A retry run typically
+takes ~65 s against the 120 s job timeout (eod holds 300 s); only both fetches
+burning the full 30 s read budget (~130 s) would be killed at 120 s, an
+accepted edge. The 60 s sleep holds the sequential run queue — the price of
+not using a scheduler retry, which would duplicate Telegram on degraded.
+
+**The second half started with a wrong premise of mine.** The streak question
+("cct keeps degrading — why does nobody see it pile up?") began with my claim
+that skill degraded runs had no alert at all. Reading gateway.zig corrected
+that: per-run degraded alerts exist, job-first. The corrected question — why
+cct's repeated degradations never escalate to the operator — went to Codex,
+and the root cause was not in any alerting logic: `config_parse.zig` never
+parsed `scheduler.alert_channel` / `alert_to` / `alert_account`. The struct
+fields existed, two read sites existed, tests set the fields by hand — but
+nothing filled them from the file, so `state.alert_delivery` was permanently
+null and every operator-fallback alert was silently dropped by
+`deliverResult`. "The operator channel is configured" was true of the config
+file and false of the binary. (`delivery.mode=always` jobs like cct still
+alerted job-first, which is why cct's own chat kept receiving reports
+throughout.)
+
+**Fix: `2ae675fe` in nullclaw** — parse the three fields (non-empty gated,
+the `claim_secret` precedent) plus a new `scheduler.alert_streak` (default 3,
+0 disables); `detectRunStreak` counts consecutive non-ok scheduled runs over
+`cron_runs`, edge-triggered (trigger exactly at `streak == N`, an ok run
+re-arms); `maybeAlertSkillStreak` fires from all seven non-ok completion
+paths, including the six pre-exec early exits that previously ended in
+`complete(execErrorRunResult())` with no escalation. Operator chat: 8768462400
+via account `nunu`; per-run alerts stay job-first. Reviews (Grok, then Codex
+in four one-question delegations) earned their keep: the six early-exit
+invokes, an id-anchored window replacing a wall-clock one, empty-string
+gates, `.always` forced on the job-derived fallback — and, worst, that
+`retry_once` writes two rows sharing a byte-identical trace id, so naive row
+counting walks 2, 4, 6 and never hits 3; adjacent same-trace rows now collapse
+into one logical run. My own first collapse implementation held a
+`sqlite3_column_text` slice across steps — the row buffer is reused, so every
+row compared equal to its neighbour and the streak was always 1. The tests
+caught that one; the reviews did not.
+
+**Acceptance found a second latent bug.** The procedure Codex drafted claimed
+`NULLCLAW_HOME` isolates both config.json and cron.db. It isolates only
+config.json: `cronDbPath()` composed `$HOME/.nullclaw/cron.db` while
+`ensureCronDir()` created `defaultConfigDir()` — with `NULLCLAW_HOME` set
+elsewhere the DB's parent was never created and every open failed with
+`SqliteOpenFailed`, silently falling back to cron.json. The scratch daemon
+read the real cron.db (43 jobs) for two minutes before the sha256 fingerprint
+check proved it had written nothing. `f5641c9e` resolves both through the
+same directory; production (`NULLCLAW_HOME` unset) is unaffected. The
+acceptance itself — a HOME-isolated scratch daemon, a missing-skill job, and
+per-run delivery pointed at a nonexistent account so only the operator-first
+path could reach nunu — fired exactly one alert on the third consecutive
+non-ok run, stayed quiet on the fourth, and left production cron.db
+byte-identical.
+
+Two habits this arc reinforced. `zig build test` alone silently skips every
+sqlite test — `-Dengines=base,sqlite` is load-bearing, not optional. And a
+delegated *procedure* is a draft until every command is verified against the
+binary it will run: Codex's had one wrong premise and would have tripped its
+own `test -f "$SCRATCH/cron.db"` step.
+
+---
+
 ## cds-con: the spread renderer, retired (2026-08-13)
 
 cds-con is the daily push for attribute 2 of the `~/b/finance-engineering`
