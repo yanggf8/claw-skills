@@ -9,6 +9,41 @@ this file is only the record of what changed and why.
 
 ---
 
+## news: by-topic theming graduated from shadow to render (2026-09-01)
+
+The AI-section theming experiment (layer 6, `crates/news/src/theme.rs`) shipped
+on 2026-07-23 with its own exit clause: run in `shadow` — classify, trace,
+deliver byte-flat — and revisit the `ai_theme` trace once a few days of data
+existed. The decision rule was written down then, before the data existed:
+`其他` share median ≲ 25–30%; on days with ≥8 AI blocks, ≥1 theme with ≥2
+stories at least ~half the time; shadow never perturbing delivery. Met →
+`render`; not met → `off` and conclude.
+
+Shadow ran 2026-07-23 .. 2026-08-31 and produced 44 `ai_theme` events:
+28 classified, 10 `invalid_labels`, 4 `bad_result`, 2 `too_few_blocks`.
+
+**Verdict: go.** `其他` share median **22.3%** (range 6–54%; the high tail is
+real — six days sat at 38%+ — but the gate is on the median). Every classified
+day carried 8–17 blocks, and **28 of 28** had at least one theme with ≥2
+stories — the gate asked for half. The shape of the data also matches the
+design's bet: 政策監管 is the workhorse (2–7 stories most days), while
+研究突破 and 產品發表 arrive in bursts, exactly the kind of grouping a flat
+digest cannot show. `NEWS_AI_THEME=render` was set on 2026-09-01 (host
+`~/.nullclaw/.env`), effective from the next cron run; the binary is unchanged
+and no redeploy was needed.
+
+**The caveat that survived into render:** the classifier failed on 14 of the
+44 events (10 `invalid_labels`, 4 `bad_result` ≈ 32%). Render fails open —
+those days deliver the flat digest, unthemed but complete — so roughly a third
+of days should be expected without `▸` headings. If `invalid_labels` clusters
+after the flip, the classifier prompt or `parse_theme_response` is the place
+to look, not the layout guards: the layout already proved itself on every
+successful day.
+
+The deferred optimization stays deferred: folding the classifier into the
+existing half-select LLM calls (Codex's "Approach B", needing an
+`AI_SUBSTAGE_CACHE_VARIANT` bump) is only worth doing if render sticks.
+
 ## news: the model's "nothing relevant today" answer was treated as a protocol violation (2026-09-01)
 
 Six alerting runs between 2026-08-07 and 2026-08-31 — every one on 頂端客戶群
