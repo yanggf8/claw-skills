@@ -7,6 +7,14 @@
 
 use std::collections::HashSet;
 
+/// The "nothing relevant today" sentinel, and its body without the bullet dash.
+///
+/// One definition, because three gates key off it: [`news_bullet_lines`] and
+/// [`content_lines`] filter it out, and [`is_no_news_answer`] recognises it as
+/// a deliberate answer rather than a malformed one.
+pub const NO_NEWS_BODY: &str = "今日無相關新聞";
+pub const NO_NEWS: &str = "- 今日無相關新聞";
+
 fn is_cjk_common(c: char) -> bool {
     ('\u{4e00}'..='\u{9fff}').contains(&c)
 }
@@ -97,7 +105,7 @@ pub fn news_bullet_lines(summary: &str) -> Vec<&str> {
                 return false;
             }
             let body = s.strip_prefix('-').map(str::trim).unwrap_or(s);
-            !body.is_empty() && !body.starts_with("...") && !body.contains("今日無相關新聞")
+            !body.is_empty() && !body.starts_with("...") && !body.contains(NO_NEWS_BODY)
         })
         .collect()
 }
@@ -139,9 +147,53 @@ pub fn content_lines(summary: &str) -> Vec<&str> {
                 return false;
             }
             let body = s.strip_prefix('-').map(str::trim).unwrap_or(s);
-            !body.contains("今日無相關新聞") && !body.starts_with("...")
+            !body.contains(NO_NEWS_BODY) && !body.starts_with("...")
         })
         .collect()
+}
+
+/// Decoration a model wraps the sentinel in — quotes, bullets, a full stop.
+///
+/// The prompt names the sentinel as 「- 今日無相關新聞」, quoting the bullet dash
+/// along with the body, so a model copying the instruction verbatim emits both
+/// the quotes and the dash. Stripping is iterative for that reason: one pass
+/// removes the quotes, the next the dash it was hiding.
+const SENTINEL_DECORATION: &str = "「」『』｢｣＂＇\"'。．.*＊-—–";
+
+/// A line reduced to its text, with any bullet and quoting peeled away.
+fn undecorated(line: &str) -> &str {
+    let mut s = line.trim();
+    loop {
+        let peeled = s.trim_matches(|c: char| SENTINEL_DECORATION.contains(c)).trim();
+        if peeled == s {
+            return s;
+        }
+        s = peeled;
+    }
+}
+
+/// True when the model took the prompt's explicit "nothing relevant today"
+/// option instead of failing to follow the format.
+///
+/// Only the custom-topic prompt offers that option, and it names exactly
+/// [`NO_NEWS`]. Without this gate the sentinel reaches [`marker_stats`], which
+/// counts zero news bullets — [`news_bullet_lines`] filters the sentinel out —
+/// reports `total == 0`, and the caller treats a correct answer as a protocol
+/// violation: it falls back to the raw listing and alerts the operator, which
+/// is the opposite of what the model said.
+///
+/// Both halves are load-bearing:
+///
+/// * [`content_lines`] must find nothing, so a reply that answers *and then
+///   argues* still falls back — it has not answered the question. This reuses
+///   the pipeline's own notion of framing, so markdown rules and bold headings
+///   around the sentinel do not count against it.
+/// * Some line must reduce to exactly the sentinel. `content_lines` drops every
+///   line merely *containing* it, so without this half
+///   「今日無相關新聞，但有一則值得一提」 would sail through as "no content".
+pub fn is_no_news_answer(summary: &str) -> bool {
+    content_lines(summary).is_empty()
+        && summary.lines().any(|l| undecorated(l) == NO_NEWS_BODY)
 }
 
 /// Every content line must carry a marker naming an item we offered.

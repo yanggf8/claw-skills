@@ -28,13 +28,15 @@ use crate::select::{
 use crate::text::{title_without_source, Item};
 use crate::trace::{clip_subprocess_text, log_trace, sample_nonempty_lines};
 use crate::validate::{
-    count_cjk, language_ok, language_stats, leading_marker_ids, marker_stats, neutralize_markdown,
-    news_bullet_lines, shape_ok,
+    count_cjk, is_no_news_answer, language_ok, language_stats, leading_marker_ids, marker_stats,
+    neutralize_markdown, news_bullet_lines, shape_ok,
 };
 use serde_json::json;
 use std::collections::HashSet;
 
-pub const NO_NEWS: &str = "- 今日無相關新聞";
+/// Re-exported so the existing `summarize::NO_NEWS` call sites keep working;
+/// the definition lives beside the gates that filter it.
+pub use crate::validate::NO_NEWS;
 
 /// The AI section could not be produced even after subdividing.
 ///
@@ -983,13 +985,46 @@ pub fn run_custom_topic(
         return Err("empty_stdout".to_string());
     }
 
+    // This prompt — alone among the four — offers an explicit "nothing relevant
+    // today" answer, so honour it before the marker gate sees it. The sentinel
+    // carries no `#N`, so the gate reads `total == 0` and the caller falls back
+    // to the raw listing and alerts the operator, publishing every candidate the
+    // model just rejected. The trace holds 18 such `marked=0/0` events since
+    // 2026-05-11 (頂端客戶群 ×9, 財富傳承管理 ×3, 新品牌發表 ×2 …); the six
+    // since 2026-08-07 were all single-candidate (`items_numbered=1`), which is
+    // where the sentinel is the only sensible reply.
+    if is_no_news_answer(&summary) {
+        log_trace(
+            "custom_topic_no_news",
+            json!({"topic": topic, "items_offered": numbered.len()}),
+        );
+        return Ok(vec![NO_NEWS.to_string()]);
+    }
+
     let known = known_ids(&numbered);
     let (marked, total) = marker_stats(&summary, &known);
+    let reject = |reason: &str| -> String {
+        // Without this the reply never reaches the trace at all: the fallback
+        // event carries only the topic and the error string, so diagnosing the
+        // sentinel events above meant inferring the reply from the offered item
+        // count instead of reading it.
+        log_validation_failed(Rejected {
+            variant: &format!("{variant}_{safe_topic}"),
+            result: &result,
+            summary: &summary,
+            marked,
+            total,
+            numbered: &numbered,
+            reason,
+            extra: Some(json!({"topic": topic})),
+        });
+        reason.to_string()
+    };
     if total == 0 || marked != total {
-        return Err(format!("marker_validation marked={marked}/{total}"));
+        return Err(reject(&format!("marker_validation marked={marked}/{total}")));
     }
     if !shape_ok(&summary, &known) {
-        return Err("shape_validation".to_string());
+        return Err(reject("shape_validation"));
     }
 
     let summary = post_dedup_selected_summary(

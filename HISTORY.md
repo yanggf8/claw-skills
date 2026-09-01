@@ -9,6 +9,55 @@ this file is only the record of what changed and why.
 
 ---
 
+## news: the model's "nothing relevant today" answer was treated as a protocol violation (2026-09-01)
+
+Six alerting runs between 2026-08-07 and 2026-08-31 — every one on 頂端客戶群
+or 新品牌發表 — had the same shape, and the model had done nothing wrong.
+
+The custom-topic prompt is alone among the four in offering an explicit escape
+hatch: reply exactly 「- 今日無相關新聞」 when nothing qualifies. A model that
+takes it emits zero news bullets, so `marker_stats` read `total == 0`, and
+`run_custom_topic` returned that as a protocol violation. The caller
+(`digest.rs`) then fell back to a raw listing of every candidate and alerted
+the operator — publishing the very items the model had just rejected. Nothing
+repairs it, either: the digest still shipped `ok`, so no scheduler retry ever
+fired, and the same correct answer kept falling on the next thin day.
+
+Counting honestly, because the first read was an undercount: the trace holds
+79 `custom_topic_fell_back` events since it begins (2026-05-11) — 24 timeouts,
+12 shape failures, 4 language failures, 38 marker failures. Only the marker
+failures include the sentinel shape: 18 of them carry `marked=0/0` (頂端客戶群
+×9, 財富傳承管理 ×3, 新品牌發表 ×2, 非營利組織/節稅/港股 ×1 each). The six
+since 2026-08-07 were verified single-candidate (`items_numbered=1`), where
+the sentinel is the only sensible reply; the earlier twelve — including 港股
+on 2026-07-25 with eight candidates — share the shape in the trace but their
+reply text was never recorded, so they cannot be classified retroactively.
+The fix does not need the classification: a sentinel reply is honoured, and
+anything else keeps falling back.
+
+Two defects stacked. The first was the gate; the second was invisibility —
+the custom-topic path returned its `Err` without ever calling
+`log_validation_failed`, so the fallback event carried only the topic and the
+error string. Diagnosing meant inferring the reply from the offered item
+count instead of reading it.
+
+**Fix, in `crates/news`:**
+
+- `is_no_news_answer()` (`validate.rs`) recognises the sentinel and
+  `run_custom_topic` honours it *before* the marker gate. The gate is
+  deliberately narrow: every content line must be gone — a reply that answers
+  and then argues has not answered the question and still falls back — and
+  one line must reduce to exactly the sentinel body after peeling quotes,
+  bullets and full stops, iteratively, because the prompt quotes the dash
+  along with the body and one pass only removes the outer layer.
+- A rejected reply is now logged verbatim (`llm_validation_failed` carries
+  `stdout_sample`), so the next diagnosis reads the reply instead of
+  inferring it.
+- `NO_NEWS` moved beside the gates that filter it: `news_bullet_lines`,
+  `content_lines` and `is_no_news_answer` all key off one definition, so the
+  gate cannot drift from the filters — the failure mode where one counted the
+  sentinel as content and the other dropped it is closed by construction.
+
 ## cct2: the timeout, and the primary model that was answering only sometimes (2026-08-27)
 
 A `[cron] skill 'cct2' degraded: failure=timeout repair=retried_failed` alert on

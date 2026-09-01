@@ -316,3 +316,45 @@ fn the_prompt_quotes_the_list_the_check_enforces() {
         assert!(rules.contains(name), "prompt does not mention {name}");
     }
 }
+
+// ── the no-news sentinel ─────────────────────────────────────────────────────
+
+#[test]
+fn the_placeholder_is_recognised_as_a_deliberate_answer() {
+    for reply in [
+        NO_NEWS,
+        "今日無相關新聞",
+        "「今日無相關新聞」",
+        "  - 今日無相關新聞  ",
+        "\n\n- 今日無相關新聞\n\n",
+        "- 今日無相關新聞。",
+    ] {
+        assert!(is_no_news_answer(reply), "not recognised: {reply:?}");
+    }
+}
+
+#[test]
+fn anything_more_than_the_placeholder_is_not_that_answer() {
+    for reply in [
+        "",
+        "   ",
+        "- #1 台積電法說會",
+        // The model answered and then explained; that is not the sentinel, and
+        // accepting it would skip the raw-listing fallback the caller needs.
+        "- 今日無相關新聞\n- #1 台積電法說會",
+        "這批新聞我看過了\n- 今日無相關新聞",
+        "今日無相關新聞，但有一則值得一提",
+    ] {
+        assert!(!is_no_news_answer(reply), "wrongly accepted: {reply:?}");
+    }
+}
+
+/// The gate and the filters must agree on one string, or a model that answers
+/// correctly gets counted as having produced zero bullets by one and a valid
+/// answer by the other.
+#[test]
+fn the_sentinel_the_gate_accepts_is_the_one_the_filters_drop() {
+    assert!(news_bullet_lines(NO_NEWS).is_empty());
+    assert!(content_lines(NO_NEWS).is_empty());
+    assert!(NO_NEWS.contains(NO_NEWS_BODY));
+}

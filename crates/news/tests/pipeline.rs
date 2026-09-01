@@ -534,6 +534,73 @@ fn a_custom_topic_reports_a_hard_failure_to_its_caller() {
     assert_eq!(err, "exit_code=3");
 }
 
+#[test]
+fn a_custom_topic_that_answers_the_placeholder_is_not_a_failure() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::new();
+    // The regression: the prompt tells the model to answer exactly this when
+    // nothing is worth reporting, and the marker gate then counted zero
+    // bullets and called it a protocol violation. The caller turns an Err into
+    // a raw listing of every candidate plus a Telegram alert — publishing the
+    // items the model just rejected. 18 such `marked=0/0` events sit in the
+    // trace since 2026-05-11; the six since 2026-08-07 are the ones verified
+    // as single-candidate sentinel replies.
+    env.reply_default("- 今日無相關新聞");
+    let out = run_custom_topic("頂端客戶群", &items(&TECH_FIXTURE[..1]), DATE, &new_cache())
+        .expect("the placeholder is an answer, not a failure");
+    assert_eq!(out, vec!["- 今日無相關新聞"]);
+    assert!(
+        env.first("custom_topic_no_news").is_some(),
+        "the deliberate no-news answer should be visible in the trace"
+    );
+}
+
+#[test]
+fn a_custom_topic_placeholder_is_accepted_however_the_model_dresses_it() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for reply in ["今日無相關新聞", "「今日無相關新聞」", "  - 今日無相關新聞  \n\n"] {
+        let env = Env::new();
+        env.reply_default(reply);
+        let out = run_custom_topic("頂端客戶群", &items(&TECH_FIXTURE[..1]), DATE, &new_cache())
+            .unwrap_or_else(|e| panic!("{reply:?} rejected: {e}"));
+        assert_eq!(out, vec!["- 今日無相關新聞"]);
+    }
+}
+
+#[test]
+fn a_custom_topic_placeholder_buried_in_prose_still_falls_back() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::new();
+    // The narrow gate earns its keep here: a model that explains itself has
+    // not answered the question, so the raw-listing fallback must still fire.
+    env.reply_default("我看過了，這則新聞太瑣碎。\n- 今日無相關新聞");
+    let err = run_custom_topic("頂端客戶群", &items(&TECH_FIXTURE[..1]), DATE, &new_cache())
+        .expect_err("prose plus the placeholder is not an answer");
+    assert!(err.starts_with("marker_validation"), "{err}");
+}
+
+#[test]
+fn a_rejected_custom_topic_reply_is_recorded_verbatim() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::new();
+    // Until this landed the trace kept only `stdout_len`, so diagnosing a
+    // fallback meant guessing the reply from its character count.
+    env.reply_default("這批新聞我覺得都不重要");
+    let _ = run_custom_topic("頂端客戶群", &items(&TECH_FIXTURE[..1]), DATE, &new_cache())
+        .expect_err("unmarked prose is a fallback");
+    let logged = env
+        .first("llm_validation_failed")
+        .expect("the rejected reply must reach the trace");
+    assert_eq!(logged["topic"], "頂端客戶群");
+    assert!(
+        logged["stdout_sample"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("我覺得都不重要"),
+        "{logged}"
+    );
+}
+
 // ── the alert context ────────────────────────────────────────────────────────
 
 #[test]
