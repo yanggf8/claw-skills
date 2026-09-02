@@ -189,6 +189,28 @@ count instead of reading it.
   gate cannot drift from the filters — the failure mode where one counted the
   sentinel as content and the other dropped it is closed by construction.
 
+**Follow-up (2026-09-02): the verbatim log paid for itself on its first day, and
+the alert was still mute.** The 09-01 16:37 alert for 富人 was *not* the sentinel
+class. `shape_validation`, with the reply now in the trace: `讓我分析這些候選新聞：`
+followed by thirteen `- #N` lines that are editorial reasoning ("#1 和 #6 是同一
+事件（同一篇「成功人士、富人有6個共同點」文章的不同來源）"), not the
+`- #N 新聞標題` the prompt asks for. Every one of those bullets carries a legal
+marker, so the marker gate passed and only the shape gate — the one pinned by
+`reasoning_prose_is_invisible_to_the_bullet_list_but_visible_to_the_shape_gate` —
+caught it. Right verdict, undiagnosable alert.
+
+Counting the class turns one sentence into four diseases: 81
+`custom_topics_fell_back` events since 2026-05-06 are 39 `marker_validation`,
+24 `timeout`, 13 `shape_validation`, 4 `language_validation`, and the operator
+has read all of them as "(LLM failed)" behind a single 30-day cluster counter.
+The alert detail is now `富人=shape_validation; 節稅=timeout after 60s` (`98b5f08`).
+
+Two things remain open on purpose. Only `timeout` is retried
+(`NEWS_LLM_RETRY_TIMEOUT_SECS`), so a shape rejection falls back on the first
+try even though it is a one-line reformat away from working — and a fallback is
+not neutral: it publishes *every* candidate the model was asked to exclude, so a
+rejected reply costs the reader more than no reply at all.
+
 ## cct2: the timeout, and the primary model that was answering only sometimes (2026-08-27)
 
 A `[cron] skill 'cct2' degraded: failure=timeout repair=retried_failed` alert on
