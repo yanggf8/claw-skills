@@ -81,18 +81,27 @@ already dispatches on the *scheduled time* (`utcHour`/`utcMinute`/`utcDay`) and 
 five modes — it does not read `event.cron`. `wrangler.toml:100-105` carries `crons = []`
 with the comment "Cloudflare cron had 3-schedule limit and $0.20/month DO cost".
 
-- **A1 (paid plan):** restore the four expressions verbatim. 5 cron triggers are allowed
-  above the free tier — re-verify the current limit before committing.
-- **A2 (free tier, 3 triggers):** three weekday triggers fit, but the weekly is the fourth
-  one over. Folding the weekly onto the eod line (`5 20 * * 0-6`) requires the matching
-  one-line branch in `scheduler.ts`, because the handler returns
-  `Unrecognized cron schedule` (400) for anything it does not map — a fold without that
-  change makes the weekly silently never run.
-- **What it costs:** the reason it was removed — Durable Object write cost, and the loss of
-  the Teams notification + `health-check` job that the workflow wraps around the run.
-- **Risk to check before choosing:** if GHA stays on as a backstop, two triggers can create
-  two runs for the same `(date, type)`. Whether `startJobRun`/`job_run_results` tolerates
-  or dedups that has not been verified here.
+- **A1 (what the comment in `wrangler.toml` assumes, checked 2026-09-02):** Cloudflare's
+  current limits page puts **cron triggers at 5 per *account* on Workers Free and 250 on
+  Paid** — not three per worker. The four modes fit on the free plan as four verbatim
+  expressions, so no folding and no plan change. The "3-schedule limit" note that motivated
+  the 2025 migration to Actions is out of date and is the reason this option was written off.
+- **The limit that actually binds A: wall-clock per Cron Trigger invocation is 15 minutes**
+  (HTTP invocations have no wall-clock limit — that is what the Actions path uses today via
+  `--max-time 600`). Observed worker-side job times from the run rows are 6 s (`eod`) to
+  3 m 40 s (`pre-market` on 08-31), so roughly 4x headroom; the 10-minute outlier in the
+  Actions list is the *workflow* (checkout + `npm ci` + curl), not the job.
+- **CPU is not a reason to stay.** Per invocation the cron budget equals the HTTP budget on
+  Free (10 ms) and *exceeds* it on Paid (15 min CPU for triggers spaced >= 1 h apart, versus
+  the 30 s HTTP default). This pipeline is I/O-bound on provider and LLM calls, which do not
+  count as CPU.
+- **What it still costs:** the Durable Object write cost named in the same comment — worth
+  re-reading, because the scheduled path may not touch a DO at all now; and the loss of the
+  Teams notification plus the `health-check` job that the workflow wraps around the run,
+  which is the observability the migration bought.
+- **Which plan the account is on was not verified** — `GET /accounts/{id}/subscriptions`
+  with the stored wrangler OAuth token returned `10000 Authentication error`, so it needs a
+  fresh `wrangler login`. It changes the CPU margin, not the shape of the choice.
 
 ### B. Trigger from the box that already keeps the reads honest
 
@@ -101,9 +110,18 @@ weekdays and 14:00 Sunday. Evidence for this scheduler: 44 jobs, 40 enabled, all
 reads fired **at their scheduled minute** on 09-01. No CF cost, keeps the existing
 observability, and the producer lands on the same clock as the consumer.
 
-- **Risk:** the box reboots (the daemon's current process started 08-28 21:33), and a
-  down machine at 12:30Z is a missing pre-market — mitigated by leaving GHA in place as a
-  redundant trigger, which then makes the double-run question above the one thing to verify.
+- **Risk:** the box reboots (the daemon's current process started 08-28 21:33), and a down
+  machine at 12:30Z is a missing pre-market. Leaving Actions on as a redundant trigger is
+  survivable but not free, and the mechanics are now checked rather than assumed:
+  `generateRunId` mints `${date}_${type}_${uuid4}` and `job_run_results.run_id` is the
+  primary key, so two triggers for one day write **two run rows** (the history stops being
+  one row per day, which is what `check-cct-generator.py` reads). `job_date_results` is
+  upserted on `(scheduled_date, report_type)` with `executed_at = NULL` and
+  `errors_json = NULL`, so the later trigger **rewinds the day's status to `running`** and
+  repoints `latest_run_id`. The report routes only read `job_date_results` when no snapshot
+  exists (`report-routes.ts:1226-1265`), so an existing report keeps being served — what
+  changes is the empty-state message, from "Run POST /api/v1/jobs/intraday to generate" to
+  "job is running … retry in a moment", and the duplicated provider/LLM spend.
 
 ### C. Move the reads later to absorb the drift
 
@@ -152,5 +170,9 @@ of the ET day, before the first of the next — the same shape as cct2's durable
   `~/a/cct/.github/workflows/trading-system.yml:9-17`
 - Evidence endpoints: `GET /api/v1/jobs/runs`, `GET /api/v1/jobs/schedule-check`;
   Actions history via `GET /repos/yanggf8/cct/actions/runs`
+- Trigger limits: `developers.cloudflare.com/workers/platform/limits/` (read 2026-09-02) —
+  "Number of Cron Triggers per account: 5 Free / 250 Paid", "Cron Trigger duration 15 min"
+- Duplicate-run mechanics: `src/modules/d1-job-storage.ts:940-987` (`generateRunId`,
+  `startJobRun`), `src/routes/report-routes.ts:1226-1265` (when `job_date_results` is read)
 - Skill behaviour: `crates/cct/src/main.rs` (in-run retry), `crates/cct/src/freshness.rs`,
   `crates/cct/src/content.rs`
