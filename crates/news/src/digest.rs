@@ -167,6 +167,31 @@ pub fn summarize_llm(
     Ok(digest)
 }
 
+/// `topic=reason`, capped so a broad failure stays inside one readable line.
+///
+/// The reason travels because "(LLM failed)" has been covering four different
+/// diseases: the trace holds 81 `custom_topic_fell_back` events since 2026-05-06
+/// — 39 `marker_validation`, 24 `timeout`, 13 `shape_validation`, 4
+/// `language_validation` — and each wants a different next step. A timeout is a
+/// budget problem and is already retried; a `shape_validation` is the model
+/// returning its analysis instead of the `- #N 標題` lines (the gate is
+/// deliberate: `tests/validate.rs::reasoning_prose_is_invisible_to_the_bullet_list_but_visible_to_the_shape_gate`);
+/// `marker_validation marked=0/0` was the NO_NEWS sentinel case fixed 2026-09-01.
+/// Without the reason the operator cannot tell a recurring prompt problem from a
+/// flaky provider, and the cluster counter mixes them into one number.
+fn degraded_detail(degraded: &[(String, String)]) -> String {
+    const CAP: usize = 5;
+    let mut parts: Vec<String> = degraded
+        .iter()
+        .take(CAP)
+        .map(|(topic, reason)| format!("{topic}={reason}"))
+        .collect();
+    if degraded.len() > CAP {
+        parts.push(format!("…+{} more", degraded.len() - CAP));
+    }
+    parts.join("; ")
+}
+
 /// The per-topic digest, one model call per topic.
 ///
 /// A topic whose call fails is replaced by a raw listing — still useful — and
@@ -187,7 +212,9 @@ pub fn summarize_llm_custom(
     );
 
     let mut sections: Vec<(String, Vec<String>)> = Vec::new();
-    let mut degraded: Vec<String> = Vec::new();
+    // (topic, why the call was rejected) — the reason is what makes the alert
+    // actionable, see `degraded_detail`.
+    let mut degraded: Vec<(String, String)> = Vec::new();
 
     for topic in topics {
         let items = items_for(all_items, topic);
@@ -199,25 +226,26 @@ pub fn summarize_llm_custom(
                     json!({"topic": topic, "error": err}),
                 );
                 sections.push((topic.clone(), custom_topic_raw_listing(items, &link_map)));
-                degraded.push(topic.clone());
+                degraded.push((topic.clone(), err));
             }
         }
     }
 
     if !degraded.is_empty() {
+        let detail = degraded_detail(&degraded);
         if degraded.len() == topics.len() {
             alert_failure(
                 ctx,
                 "all_custom_topics_failed",
                 &format!(
-                    "every custom topic LLM call failed; full digest is raw-listing only. topics={degraded:?}"
+                    "every custom topic LLM call failed; full digest is raw-listing only. topics={detail}"
                 ),
             );
         } else {
             alert_failure(
                 ctx,
                 "custom_topics_fell_back",
-                &format!("these topics delivered as raw listings (LLM failed): {degraded:?}"),
+                &format!("these topics delivered as raw listings: {detail}"),
             );
         }
     }
@@ -264,4 +292,51 @@ pub fn raw_digest(all_items: &[(String, Vec<Item>)], date_str: &str) -> String {
         })
         .collect();
     assemble_digest(date_str, &SECTION_KEYS, &results).0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::degraded_detail;
+
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter()
+            .map(|(t, r)| (t.to_string(), r.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn the_reason_rides_with_the_topic() {
+        // "(LLM failed)" covered timeout, shape, marker and language rejections
+        // alike; the alert has to name which one happened, because the next
+        // step differs per reason.
+        assert_eq!(
+            degraded_detail(&pairs(&[("富人", "shape_validation")])),
+            "富人=shape_validation"
+        );
+        assert_eq!(
+            degraded_detail(&pairs(&[
+                ("節稅", "timeout after 60s"),
+                ("富人", "marker_validation marked=3/7")
+            ])),
+            "節稅=timeout after 60s; 富人=marker_validation marked=3/7"
+        );
+    }
+
+    #[test]
+    fn a_broad_failure_caps_the_list_and_says_how_much_it_dropped() {
+        let many = pairs(&[
+            ("a", "timeout after 60s"),
+            ("b", "timeout after 60s"),
+            ("c", "timeout after 60s"),
+            ("d", "timeout after 60s"),
+            ("e", "timeout after 60s"),
+            ("f", "timeout after 60s"),
+            ("g", "timeout after 60s"),
+        ]);
+        let detail = degraded_detail(&many);
+        assert!(detail.starts_with("a=timeout after 60s"), "{detail}");
+        assert!(detail.ends_with("…+2 more"), "{detail}");
+        // five entries kept plus the tail note, so five separators
+        assert_eq!(detail.matches("; ").count(), 5, "{detail}");
+    }
 }

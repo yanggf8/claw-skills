@@ -177,7 +177,7 @@ Coverage matrix (every path that ends without the full intended news):
 | All RSS feeds returned 0 items | Alert + exit 1, no digest sent. |
 | AI Level 3 quarter still fails | Alert + exit 1, no digest sent. |
 | Tech / general fell back to non-LLM bullets | Alert; digest still ships with degraded section. |
-| Custom-topic fell back to raw listing | Alert (`custom_topics_fell_back` or `all_custom_topics_failed`); digest still ships. |
+| Custom-topic fell back to raw listing | Alert (`custom_topics_fell_back` or `all_custom_topics_failed`); digest still ships. 細節帶 `topic=reason`（例：`富人=shape_validation`、`節稅=timeout after 60s`），最多 5 個主題——這幾種 reason 的下一步不同，混成「LLM failed」就看不出來。 |
 | 任一分塊 Markdown 不安全 | 整份降級為純文字送出，正常交付（`digest_markdown_unsafe_fallback` trace）。 |
 | Telegram send failed | Alert via the on-disk log (Telegram itself is down); exit 1. |
 | Uncaught exception in main() | Alert with truncated traceback; exit 1. |
