@@ -9,6 +9,102 @@ this file is only the record of what changed and why.
 
 ---
 
+## cct: the producer moved eight hours and the reader had no idea (2026-09-02)
+
+Two alerts, four mornings apart from the same cause:
+
+```
+9/1 15:35Z  pre-market  [WARN: CCT pre-market carries no analysis] stale: payload date=2026-08-31 today=2026-09-01 age=1d
+9/1 19:05Z  intraday    [cct] first fetch unusable, retrying once after 60s...
+                         [WARN: CCT intraday carries no analysis] the worker has no intraday content for 2026-09-01
+```
+
+**The skill was right and nothing in it needed changing.** From 2026-08-27
+through 09-01 cct degraded on every pre-market and intraday read — four
+consecutive non-ok scheduled runs each — while `eod` went green on 08-31 and
+09-01. Over the same days cct2, same box, same network, same Telegram route but
+a generator it runs itself, recorded both modes answered by both models. The
+fault is in neither the skill, the scheduler, nor the host.
+
+**The producer started late.** Joining the worker's own `job_run_results`
+(`GET /api/v1/jobs/runs`) against the four `schedule:` crons in
+`~/a/cct/.github/workflows/trading-system.yml` (12:30 / 16:00 / 20:05 UTC
+weekdays, 14:00 Sunday) gives each trigger's drift, in hours:
+
+| UTC date | pre-market | intraday | end-of-day |
+|---|---|---|---|
+| 08-24 … 08-26 | +0.9 … +1.1 | +0.6 … +0.9 | +0.6 (08-26: **+3.3**) |
+| 08-27 | **+10.0** | +8.8 | +8.3 (failed) |
+| 08-28 | **+10.1** | +8.5 (partial) | +6.7 (failed) |
+| 08-31 | **+6.7** | +5.4 | +3.7 |
+| 09-01 | **+4.3** | +3.3 | +2.5 |
+
+GitHub created each late run at its own start time (`created_at ==
+run_started_at`, `run_attempt: 1`, no queueing; jobs lasted 0.4–10 min, so they
+were not waiting on one another), and the repo is public, so Actions minutes are
+not involved. This is `schedule:` behaving as documented — best effort, delayed
+during high load, community reports of 8–14 hour delays, one GitHub staff reply
+confirming a multi-hour backlog — decaying back toward its ~1 h baseline over
+the week.
+
+**Why the reads then fail.** The pre-market read sits 3 h 05 m after the
+generator's cron, so it absorbs drift up to about 3 h; 09-01 needed 4 h 20 m.
+The intraday read absorbs 3 h and 09-01 needed 3 h 19 m. `eod` reads 3 h 40 m
+after its cron and that drift had already decayed under the margin — which is
+exactly why `eod` looked healthy while its two siblings degraded: one incident,
+three different buffers. The 60 s in-run retry is sized for the 10-minute race
+it was written for (08-26: `eod` written 10 m 12 s after the read) and cannot
+cross a gap measured in hours, nor was it meant to.
+
+**The rule, third time.** `2026-08-27` ended with "a fixed time is a buffer, not
+a bound". This is that sentence's full invoice: **a time-bounded consumer cannot
+be paired with a best-effort producer.** The pre-market briefing has to be in
+the reader's hands before 13:30Z (09:30 ET open); delivered at 16:52Z it is a
+mid-session report wearing a 盤前 header, and the freshness contract — which is
+what caught this — is the only reason four days of it did not read as silence.
+
+**What changed here: `tools/check-cct-generator.py`.** Every number above came
+from a hand-join across three sources, and the skill can only report what it saw
+at read time — it cannot know that the row it wanted is being written right now.
+The watchdog reports the drift itself and exits non-zero when a trigger is
+missing, its status is not `success`, it lands later than `--grace` (2 h
+default, against a ~1 h baseline), or it lands after the read that needed it.
+The read times come out of `cron.db`, not a copy in the script: the cct schedule
+has already drifted out of `SKILL.md` once, and a second place to keep current
+is a second place to be wrong. Verified against a live capture — 2026-09-01
+returns three findings naming both missed reads, 2026-08-25 returns green.
+
+Two things it had to learn. The WAF in front of the worker answers **403** to
+urllib's default `Python-urllib/3.x` and 200 to the skill's own
+`nullclaw-cct/1.0` — same URL, same key, same minute — so a watchdog has to
+carry a UA the path accepts. And when a trigger lands after midnight UTC the row
+is filed under the *next* day's `scheduled_date` (08-28's 00:49Z intraday row is
+08-27's 16:00Z trigger), so drift is measured against the nearest nominal
+trigger and the output says which one it picked; a `-15.2 h` drift would read
+like a clock bug instead of an eight-hour-late cron.
+
+**Not fixed, by decision rather than oversight.** The trigger still has no bound
+on its start time. Three ways to close it, all upstream or operator-side, none
+of them a skill change:
+
+1. Move generation off `schedule:` onto a Cloudflare cron trigger. `src/index.ts`
+   already implements `scheduled()` → `handleScheduledEvent`, and `wrangler.toml`
+   carries `crons = []` with a "3-schedule limit" comment that is still true on
+   the free tier — so it fits as one folded trigger with hour-matching, or as a
+   separate ticker worker.
+2. Trigger from this box, whose cron demonstrably fires on the minute: all four
+   cct reads ran at their scheduled minute on 09-01 (44 jobs, 40 enabled).
+3. Move the reads later to absorb the drift — cheap, and it spends the one thing
+   the report exists to provide. Not recommended.
+
+**Open question worth a look.** `scheduler.alert_streak` is configured (3 →
+`8768462400` via `nunu`) and the running binary postdates `2ae675fe`, so 08-31 —
+the third consecutive non-ok scheduled pre-market run — should have escalated to
+the operator chat independently of the job-first alerts. If it did not, the
+streak path has a gap the scratch-daemon acceptance would not have caught: that
+run exercised one synthetic missing-skill job, not four real sessions of a skill
+that degrades *and* still delivers.
+
 ## news: by-topic theming graduated from shadow to render (2026-09-01)
 
 The AI-section theming experiment (layer 6, `crates/news/src/theme.rs`) shipped

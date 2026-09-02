@@ -32,24 +32,75 @@ Fetch CCT (Capital Cloudflare Trading) 4-moment market intelligence and deliver 
 
 ## Cron Schedule
 
-The cron expressions are fixed UTC, so the ET time each one lands at **moves
-with daylight saving**: the comments below are the EST (winter) reading, and
-every one of them is an hour later in ET from March to November. Check against
-the market clock before treating any of them as "shortly after the close".
+The four expressions below are **the live jobs**, read out of `~/.nullclaw/cron.db`
+on 2026-09-02 (`select expression, skill_args from cron_jobs where
+skill_name='cct'`). They are fixed UTC, so the ET time each one lands at **moves
+with daylight saving** — but so does the generator's cron, so the *buffer*
+between the two is DST-stable even though the wall-clock reading is not.
 
 ```bash
-# Pre-market: 8:35 AM EST = 13:35 UTC weekdays
-nullclaw cron add-skill "35 13 * * 1-5" cct --deliver-to 7972814626 --skill-args "--mode pre-market"
+# Pre-market: generator cron is 12:30 UTC (08:30 ET); read 3 h 05 m later.
+nullclaw cron add-skill "35 15 * * 1-5" cct --deliver-to 7972814626 --skill-args "--mode pre-market"
 
-# Intraday: 12:05 PM EST = 17:05 UTC weekdays
-nullclaw cron add-skill "5 17 * * 1-5" cct --deliver-to 7972814626 --skill-args "--mode intraday"
+# Intraday: generator cron 16:00 UTC; read 3 h 05 m later.
+nullclaw cron add-skill "5 19 * * 1-5" cct --deliver-to 7972814626 --skill-args "--mode intraday"
 
-# EOD: 7:45 PM EDT (6:45 PM EST) = 23:45 UTC weekdays
+# EOD: generator cron 20:05 UTC; read 3 h 40 m later, 300 s timeout for the in-run retry.
 nullclaw cron add-skill "45 23 * * 1-5" cct --timeout 300 --deliver-to 7972814626 --skill-args "--mode eod"
 
-# Weekly: Sunday 10:05 AM EST = 15:05 UTC
-nullclaw cron add-skill "5 15 * * 0" cct --deliver-to 7972814626 --skill-args "--mode weekly"
+# Weekly: generator cron 14:00 UTC Sunday; read 3 h 05 m later.
+nullclaw cron add-skill "5 17 * * 0" cct --deliver-to 7972814626 --skill-args "--mode weekly"
 ```
+
+### Why the reads carry a 3-hour buffer
+
+The reports are **produced** by GitHub Actions (`yanggf8/cct`,
+`.github/workflows/trading-system.yml`, four `schedule:` crons at 12:30 / 16:00 /
+20:05 UTC weekdays and 14:00 Sunday) which POSTs `/api/v1/jobs/trigger`, and
+**consumed** by the UTC reads above. Actions `schedule:` is documented best
+effort — it delays during high load — and the delay is measured, not theorised:
+
+| window | drift of each trigger from its cron time |
+|---|---|
+| baseline (through 2026-08-26) | **+0.6 … +1.1 h**, steady |
+| 2026-08-27 / 08-28 | **+8.3 … +10.1 h** |
+| 2026-08-31 | +3.7 … +6.7 h |
+| 2026-09-01 | +2.5 … +4.3 h |
+
+A read buffer of 3 h absorbs everything up to 3 h of drift and nothing beyond it:
+on 2026-09-01 pre-market needed 4 h 20 m and intraday 3 h 19 m, so both
+degraded, while `eod` (3 h 40 m of buffer, 2 h 27 m of drift) delivered. That
+asymmetry is the whole design: the buffer is sized for the baseline plus a
+margin, and a producer that drifts further than the margin is an *upstream*
+incident, correctly reported as `degraded` with a reason rather than retried
+into the void.
+
+Two consequences worth stating plainly:
+
+- The 15:35Z pre-market read lands **after** the 09:30 ET open in either half of
+  the year (11:35 EDT / 10:35 EST). It is today's outlook, not a pre-bell edge.
+  The 13:35Z reading this file used to document sat 5 minutes behind the
+  generator's *nominal* time and inside its *actual* arrival distribution — the
+  buffer was bought by moving the read, and that trade is the operator's.
+- **A fixed read time is a buffer, not a bound.** Nothing here makes the
+  generator arrive; `tools/check-cct-generator.py` exists so the drift itself is
+  visible on the morning it happens instead of being inferred from four
+  unexplained degradations. It reads `/api/v1/jobs/runs`, measures each trigger
+  against its nominal time and against the live read time from `cron.db`, and
+  exits non-zero on a missing run, a non-`success` status, drift over `--grace`
+  (2 h default), or a run that landed after the read that needed it.
+
+  ```bash
+  tools/check-cct-generator.py                      # the current ET trading day
+  tools/check-cct-generator.py --date 2026-09-01    # or any day already measured
+  ```
+
+  It sends the skill's own `User-Agent: nullclaw-cct/1.0`, because the WAF in
+  front of the worker 403s urllib's default UA and 200s that one. A recurring
+  shell job at `5 0 * * *` UTC — after the last read of the ET day, before the
+  next one — turns "the trigger is drifting again" into a single alert instead
+  of three degradations with no shared explanation.
+
 
 ## Output Format
 
