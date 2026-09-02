@@ -97,6 +97,21 @@ of them a skill change:
 3. Move the reads later to absorb the drift — cheap, and it spends the one thing
    the report exists to provide. Not recommended.
 
+**Follow-up (same day, evening): option B is the pick and it is in.** The box's
+nullclaw cron now fires the four `/api/v1/jobs/trigger` POSTs at the same times
+the Actions `schedule:` used — `tools/trigger-cct-job.py`, four shell jobs
+(`job-6e97b576` / `job-c46b1ed4` / `job-d44da309` / `job-6236fec4`), verified
+`exit_only` against the same pattern as the cct2 durable-check job, with the
+trigger source header set to `nullclaw-cron`. `yanggf8/cct@c663fa8` removed the
+`schedule:` block from `trading-system.yml` and kept `workflow_dispatch`, so a
+day cannot get two trigger rows; the removal rationale lives in the workflow's
+own header comment, and re-integration requires turning the box triggers off
+first. The drift watchdog is scheduled as `job-e05f83c8`
+(`5 0 * * *` UTC). Separately, the six `news` jobs disagreed on `tz_offset_s`:
+the four `--account-topics` jobs stored Taipei hours as UTC and shipped at
+16:33/16:36 Taipei; `nullclaw cron update --tz +08:00` makes it 08:33/08:36
+(weekend 13:03), matching the two already-correct jobs.
+
 **Open question worth a look.** `scheduler.alert_streak` is configured (3 →
 `8768462400` via `nunu`) and the running binary postdates `2ae675fe`, so 08-31 —
 the third consecutive non-ok scheduled pre-market run — should have escalated to

@@ -5,8 +5,13 @@
 > 本文件把證據、三個修法與驗收條件寫下來，**請 owner 選一個**——尚未動任何生產端。
 
 - **Filed:** 2026-09-02
-- **Owner decision needed:** yes (A / B / C below)
-- **Repo to change:** `yanggf8/cct` (producer). The consumer, skill `cct` in `yanggf8/claw-skills`, needs no change.
+- **Decision (2026-09-02): option B — trigger from the box that reads the reports.**
+  Four nullclaw shell jobs (`tools/trigger-cct-job.py`) at the same cron times;
+  the Actions `schedule:` block was removed from `trading-system.yml`
+  (`yanggf8/cct@c663fa8`), keeping `workflow_dispatch`. Watchdog scheduled as
+  `job-e05f83c8` (`5 0 * * *` UTC). Full rationale: comment on this issue.
+- **Repo changed:** both — `yanggf8/cct` (producer trigger, workflow) and
+  `yanggf8/claw-skills` (trigger tool, watchdog, docs).
 - **Severity:** product degraded, no data lost — four consecutive trading mornings of stale/empty pushes (2026-08-27 → 09-01).
 
 ## 1. Symptom
@@ -138,9 +143,9 @@ run that landed after the read that needed it; the read times come from `cron.db
 check cannot drift out of sync with the schedule. Verified on the live capture:
 09-01 → three findings naming both missed reads; 08-25 → green.
 
-It is **not yet scheduled**. Proposal: a shell job at `5 0 * * *` UTC — after the last read
-of the ET day, before the first of the next — the same shape as cct2's durable check
-(`30 0 * * *`, `tools/check-cct2-models.py`).
+It is scheduled as `job-e05f83c8` at `5 0 * * *` UTC — after the last read of the ET day,
+before the first of the next — the same shape as cct2's durable check (`30 0 * * *`,
+`tools/check-cct2-models.py`).
 
 ## 6. Acceptance criteria (for A or B)
 
