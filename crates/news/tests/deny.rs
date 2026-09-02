@@ -10,15 +10,28 @@ use news::precheck::new_cache;
 use news::summarize::run_ai_substage;
 use news::text::Item;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 const DATE: &str = "2026/07/13 (Mon)";
 
+// The stub and the config live under `$HOME`, and `crate::config::home()` reads
+// the process-wide `HOME` env var on every call. Two tests in one binary that
+// each set `HOME` interleave under the default parallel runner — test A's
+// substage can read test B's HOME and find a half-cleaned stub. The temp dir
+// was also named by PID alone, so both tests clobbered the same path. Serialize
+// both through one guard; there are two tests, both take microseconds.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
 struct Env {
     home: PathBuf,
+    _guard: MutexGuard<'static, ()>,
 }
 
 impl Env {
     fn new(deny: &str) -> Env {
+        // Held for the whole Env lifetime: HOME is process-global, so the lock
+        // must cover the test body, not just the setup.
+        let guard = ENV_LOCK.lock().unwrap();
         let home = std::env::temp_dir().join(format!("news-deny-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join(".nullclaw")).unwrap();
@@ -46,7 +59,7 @@ impl Env {
         std::env::set_var("NEWS_PAYWALL_REPLACE", "0");
         std::env::set_var("NEWS_CROSS_DEDUP", "0");
         std::env::remove_var("NULLCLAW_JOB_ID");
-        Env { home }
+        Env { home, _guard: guard }
     }
 
     fn reply(&self, stdout: &str) -> &Env {
