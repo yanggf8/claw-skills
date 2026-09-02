@@ -220,11 +220,18 @@ Counting the class turns one sentence into four diseases: 81
 has read all of them as "(LLM failed)" behind a single 30-day cluster counter.
 The alert detail is now `富人=shape_validation; 節稅=timeout after 60s` (`98b5f08`).
 
-Two things remain open on purpose. Only `timeout` is retried
-(`NEWS_LLM_RETRY_TIMEOUT_SECS`), so a shape rejection falls back on the first
-try even though it is a one-line reformat away from working — and a fallback is
-not neutral: it publishes *every* candidate the model was asked to exclude, so a
-rejected reply costs the reader more than no reply at all.
+Closed the same session, because the 09-01 alert proved it was a wrong shape,
+not a non-answer: a `shape_validation` rejection (every bullet carrying a legal
+marker) is retried once with a **rewritten** prompt — "你上次輸出的是分析與
+評論，而不是選取結果；只輸出 - #N 標題" — under the same wall-clock budget
+guard as the timeout retry (`crates/news/src/agent.rs::try_reformat_retry`;
+traces `llm_agent_reformat_retry`, `custom_topic_reformat_retry_ok`). A second
+bad answer still falls through to the same raw-listing fallback with the
+original reply logged, so the gate's verdict is unchanged; the retry only
+rescues the case the model can actually produce. `marker_validation
+marked=N<M` (partial selections) and `language_validation` remain deterministic
+same-prompt failures and are still not retried. The fallback's cost — it
+publishes every candidate the model was asked to exclude — is unchanged.
 
 ## cct2: the timeout, and the primary model that was answering only sometimes (2026-08-27)
 

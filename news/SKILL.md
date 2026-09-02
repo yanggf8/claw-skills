@@ -85,6 +85,7 @@ Summarize in Traditional Chinese. Output is validated to ensure ≥80% CJK chara
 - **預設新聞模式（`summarize_llm`）**：AI 區塊先做確定性的事件群集去重，再切成兩半（Level 2）。每半是一個 LLM 呼叫（約 14-30 秒）。若某半失敗（逾時、非 0 exit、空 stdout），只把失敗的半段再切成兩個 quarter（Level 3）。若 quarter 仍失敗，整次執行會告警並中止（不再遞迴）。科技與一般新聞維持單次 LLM 呼叫。
 - **自訂主題模式（`summarize_llm_custom`，由 `--account-topics` 使用）**：每個主題各跑一次 LLM，依序執行。單一主題失敗時，該主題退回原始標題列表並告警；其他主題繼續送出。
 - **逾時自動重試（一次）**：任何 LLM 呼叫若是 *逾時*（rc=124，供應商在 stream 開始後卡住、無輸出）會自動重試一次，再退回降級。只重試逾時——驗證失敗、空 stdout、其他非 0 exit 屬確定性失敗，不重試。重試使用較短的 `LLM_RETRY_TIMEOUT_SECS`（預設 30 秒，可用 `NEWS_LLM_RETRY_TIMEOUT` 覆寫），且當 cron 剩餘 wall-clock（`NULLCLAW_SKILL_TIMEOUT` / `NULLCLAW_SKILL_STARTED`）不足以容納重試時直接跳過，避免拖過 cron kill window。trace：`llm_agent_retry`、`llm_agent_retry_skipped_budget`。
+- **形狀不合格重試（一次，`--account-topics` 專用）**：當模型交回「- #N 分析／評論」而不是「- #N 標題」時，marker 閘會過、只有 shape 閘擋得住——同一問題重問只會拿到同一篇分析，所以重試改用**改寫過的 prompt**（明說「你上次輸出的是分析與評論；只輸出 - #N 標題」），預算管制與 timeout 重試相同。第二次仍不合格就照舊退回原始列表並告警。trace：`llm_agent_reformat_retry`、`llm_agent_reformat_skipped_budget`、`custom_topic_reformat_retry_ok`、`custom_topic_reformat_retry_failed`。
 
 AI 預設新聞去重：
 

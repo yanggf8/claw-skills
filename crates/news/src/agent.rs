@@ -147,6 +147,42 @@ pub fn run_agent(
     run_agent_once(prompt, retry_timeout, variant, counts, numbered)
 }
 
+/// A budget-guarded second call with a *rewritten* prompt, for the one case
+/// a same-prompt retry cannot fix. `shape_validation` means the model answered
+/// with reasoning whose bullets each carry a legal `#N` — the marker gate
+/// passes and only the shape gate catches it, and re-asking the same question
+/// returns the same essay. A rewritten prompt is a different question, so the
+/// timeout-only contract of `run_agent` stays intact and this sits beside it.
+///
+/// The budget guard is identical to `run_agent`'s: a manual run (no
+/// `NULLCLAW_SKILL_*` env) may always retry; a cron run skips when what
+/// remains of the kill window cannot fit the call. `None` is returned only on
+/// the skip, so a re-arm stays visible in the trace.
+pub fn try_reformat_retry(
+    prompt2: &str,
+    timeout_secs: u64,
+    variant: &str,
+    counts: &[(String, usize)],
+    numbered: &NumberedMap,
+) -> Option<AgentResult> {
+    if let Some(budget) = llm_retry_budget_secs() {
+        if budget < timeout_secs as f64 {
+            log_trace(
+                "llm_agent_reformat_skipped_budget",
+                json!({"variant": variant,
+                       "budget_secs": (budget * 10.0).round() / 10.0,
+                       "retry_timeout": timeout_secs}),
+            );
+            return None;
+        }
+    }
+    log_trace(
+        "llm_agent_reformat_retry",
+        json!({"variant": variant, "attempt": 2, "retry_timeout": timeout_secs}),
+    );
+    Some(run_agent_once(prompt2, timeout_secs, variant, counts, numbered))
+}
+
 /// The single-shot call, for the one caller that must not retry.
 pub fn run_agent_once_public(
     prompt: &str,

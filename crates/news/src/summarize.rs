@@ -5,7 +5,7 @@
 //! replacement, language gate, link attachment. The order matters — dedup and
 //! precheck both key on `#N`, which stops existing once links are attached.
 
-use crate::agent::{run_agent, AgentResult};
+use crate::agent::{run_agent, try_reformat_retry, AgentResult};
 use crate::alert::{alert_failure, AlertContext};
 use crate::cache;
 use crate::config::{
@@ -1023,12 +1023,73 @@ pub fn run_custom_topic(
     if total == 0 || marked != total {
         return Err(reject(&format!("marker_validation marked={marked}/{total}")));
     }
-    if !shape_ok(&summary, &known) {
+    // A shape rejection with every bullet marked is the model answering the
+    // wrong shape, not failing to answer: 2026-09-01's 富人 reply was
+    // "讓我分析這些候選新聞：" plus thirteen "- #N 分析" lines, each carrying a
+    // legal marker, so only the shape gate caught it. Re-asking the same
+    // prompt returns the same essay, so one bounded retry rewrites the
+    // question instead: state what was wrong and demand bare "- #N 標題"
+    // lines. The budget guard is `run_agent`'s own. A retried reply must pass
+    // both gates by itself; a bad second answer falls through to the same
+    // shape_validation error and raw-listing fallback, with the original
+    // logged.
+    let mut chosen = summary.clone();
+    if total != 0 && marked == total && !shape_ok(&summary, &known) {
+        let retry_prompt = format!(
+            "你是新聞編輯。你上一次針對「{topic}」的輸出不合格：你交回的是分析與評論，而不是選取結果。\n\
+請重新輸出，嚴格遵守以下格式，逐行：\n\
+- #N 新聞標題\n\
+- #N ...\n\n\
+規則：\n\
+- #N 必須是下面候選新聞的原始編號，標題必須原樣照抄候選標題\n\
+- 只輸出選取結果；不要輸出任何分析、評論、開場白、標題、結語或說明\n\
+- {translation_rules}\n\
+{DEDUP_RULES}\n\n\
+候選新聞（編號不變）：\n\
+{raw}",
+            translation_rules = &*TRANSLATION_RULES_STRICT,
+        );
+        if let Some(r2) = try_reformat_retry(
+            &retry_prompt,
+            AI_SUBSTAGE_TIMEOUT_SECS,
+            &format!("{variant}_{safe_topic}_reformat"),
+            &counts,
+            &numbered,
+        ) {
+            let s2 = r2.stdout.trim().to_string();
+            let (m2, t2) = marker_stats(&s2, &known);
+            if !r2.timed_out()
+                && r2.returncode == 0
+                && t2 != 0
+                && m2 == t2
+                && shape_ok(&s2, &known)
+            {
+                log_trace(
+                    "custom_topic_reformat_retry_ok",
+                    json!({"topic": topic, "attempt": 2}),
+                );
+                chosen = s2;
+            } else {
+                log_trace(
+                    "custom_topic_reformat_retry_failed",
+                    json!({"topic": topic, "attempt": 2,
+                           "error": if r2.timed_out() { "timeout" } else { "second validation failed" }}),
+                );
+            }
+        }
+    }
+
+    // The shape gate below checks what will actually be published (`chosen` —
+    // the retried reply when it passed validation, the original otherwise).
+    if total == 0 || marked != total {
+        return Err(reject(&format!("marker_validation marked={marked}/{total}")));
+    }
+    if !shape_ok(&chosen, &known) {
         return Err(reject("shape_validation"));
     }
 
     let summary = post_dedup_selected_summary(
-        &summary,
+        &chosen,
         &numbered,
         &section_key,
         config::LLM_POST_DEDUP_OVERLAP,
