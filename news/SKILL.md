@@ -298,6 +298,27 @@ Env knobs: `NEWS_PRECHECK=0` disables both tiers; `NEWS_PRECHECK_DECODE_TIMEOUT`
 (the deadline force-cancels stragglers so wall-clock is capped). Trace events
 `quality_tier1` / `quality_tier2` record counts, drops, and title_only conversions.
 
+## Cron jobs
+
+All six jobs are Taipei time (`tz_offset_s = 28800`). Recorded from cron.db on
+2026-09-02 — the four `--account-topics` jobs used to store the same Taipei
+hours as UTC (`tz_offset_s = 0`) and shipped at 16:33 / 16:36 Taipei; fixed with
+`nullclaw cron update <id> --tz +08:00`. Cron expressions are NOT UTC by
+default in nullclaw, so verify before copying any of these:
+
+| job | expression (with `--tz +08:00`) | deliver |
+|---|---|---|
+| `skill-75e98cbb` | `30 8 * * 1-5` | plain → `7972814626` |
+| `skill-563f90ef` | `33 8 * * 1-5` | `--account ping --account-topics` |
+| `skill-d9040340` | `36 8 * * 1-5` | `--account nunu --account-topics` |
+| `skill-bdac50a8` | `0 13 * * 6,0` | plain weekend → `7972814626` |
+| `skill-c42671e3` | `3 13 * * 6,0` | ping weekend `--account-topics` |
+| `skill-d0c4924c` | `3 13 * * 6,0` | nunu weekend `--account-topics` |
+
+Effective Taipei times: weekdays 08:30 / 08:33 / 08:36; weekends 13:00 / 13:03
+(two accounts). Authoritative check:
+`SELECT expression, tz_offset_s FROM cron_jobs WHERE skill_name='news'`.
+
 ## Notes
 
 - Delivery: Telegram `7972814626`
