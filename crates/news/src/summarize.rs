@@ -555,7 +555,7 @@ pub fn summarize_default_section(
         });
     }
 
-    let (summary, mut paywall) = precheck_apply(&summary, &numbered, key, cache_handle);
+    let (summary, mut paywall, _bodies) = precheck_apply(&summary, &numbered, key, cache_handle);
     if news_bullet_lines(&summary).is_empty() {
         // Every pick was denied or promotional. That is the filter working, not
         // the model failing, so `used_fallback` stays false and no alert fires.
@@ -700,7 +700,7 @@ pub fn run_ai_substage(
         return Ok(Vec::new());
     }
 
-    let (summary, mut paywall) = precheck_apply(&summary, &numbered, "ai", cache_handle);
+    let (summary, mut paywall, _bodies) = precheck_apply(&summary, &numbered, "ai", cache_handle);
     if news_bullet_lines(&summary).is_empty() {
         // A filter success, not a model failure — the driver must not escalate.
         log_trace("ai_substage_all_dropped", json!({"range": [start, end]}));
@@ -1103,7 +1103,8 @@ pub fn run_custom_topic(
         return Ok(vec![NO_NEWS.to_string()]);
     }
 
-    let (summary, mut paywall) = precheck_apply(&summary, &numbered, &section_key, cache_handle);
+    let (summary, mut paywall, _bodies) =
+        precheck_apply(&summary, &numbered, &section_key, cache_handle);
     if news_bullet_lines(&summary).is_empty() {
         // Returns before the cache write below, so an empty result is never
         // persisted and cannot suppress the topic for the rest of the day.

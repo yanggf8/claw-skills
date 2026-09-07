@@ -111,6 +111,19 @@ pub struct PaywallEntry {
 
 pub type PaywallMap = BTreeMap<u32, PaywallEntry>;
 
+/// `num -> excerpt` for the picks whose body survived the excerpt gate.
+///
+/// Keyed by the post-dedup marker id, scoped to this one call — never by
+/// link: a replacement candidate can share a link with a main-precheck item
+/// while carrying different title and source metadata.
+fn collect_bodies(verdicts: &BTreeMap<u32, Verdict>) -> BTreeMap<u32, String> {
+    verdicts
+        .iter()
+        .filter(|(_, v)| v.action == Action::Keep)
+        .filter_map(|(num, v)| v.body_excerpt.clone().map(|ex| (*num, ex)))
+        .collect()
+}
+
 /// Tier 2: body-precheck the selected items before links are attached.
 ///
 /// `drop` removes the bullet. `title_only` keeps the model's bullet **exactly
@@ -118,20 +131,21 @@ pub type PaywallMap = BTreeMap<u32, PaywallEntry>;
 /// replacement and a 付費牆 note — the digest is Traditional Chinese and a
 /// language gate enforces that, so rewriting a bullet back to the raw RSS
 /// headline would inject English or Japanese past the gate. `keep` does
-/// nothing.
+/// nothing. Its gated body excerpts ride out in the third element
+/// (`num -> excerpt`) for the headline-enrichment pass.
 pub fn precheck_apply(
     summary: &str,
     numbered: &NumberedMap,
     section: &str,
     cache: &SharedCache,
-) -> (String, PaywallMap) {
+) -> (String, PaywallMap, BTreeMap<u32, String>) {
     if !precheck_enabled() || summary.trim().is_empty() {
-        return (summary.to_string(), PaywallMap::new());
+        return (summary.to_string(), PaywallMap::new(), BTreeMap::new());
     }
     let known: HashSet<u32> = numbered.keys().copied().collect();
     let selected = leading_marker_ids(summary, &known);
     if selected.is_empty() {
-        return (summary.to_string(), PaywallMap::new());
+        return (summary.to_string(), PaywallMap::new(), BTreeMap::new());
     }
 
     let (tx, rx) = mpsc::channel::<(u32, Verdict)>();
@@ -217,8 +231,9 @@ pub fn precheck_apply(
         );
     }
 
+    let bodies = collect_bodies(&verdicts);
     if n_drop == 0 {
-        return (summary.to_string(), paywall);
+        return (summary.to_string(), paywall, bodies);
     }
 
     let out: Vec<&str> = summary
@@ -228,7 +243,7 @@ pub fn precheck_apply(
             None => true,
         })
         .collect();
-    (out.join("\n"), paywall)
+    (out.join("\n"), paywall, bodies)
 }
 
 /// Two hosts sharing a registrable domain, taken as the last two labels.
@@ -578,4 +593,36 @@ pub fn render_replacements(paywall: &PaywallMap) -> HashMap<u32, Replacement> {
             (*k, r)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::quality::{Action, Verdict};
+
+    fn verdict(action: Action, excerpt: Option<&str>) -> Verdict {
+        Verdict {
+            action,
+            reason: None,
+            decoded_url: None,
+            body_excerpt: excerpt.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn collect_bodies_keeps_only_keep_verdicts_with_excerpts() {
+        let mut verdicts = BTreeMap::new();
+        verdicts.insert(1u32, verdict(Action::Keep, Some("Meta launched Muse Glimmer")));
+        verdicts.insert(2, verdict(Action::Keep, None));
+        verdicts.insert(3, verdict(Action::TitleOnly, Some("paywalled stub")));
+        verdicts.insert(4, verdict(Action::Drop, Some("denied body")));
+        let bodies = collect_bodies(&verdicts);
+        assert_eq!(
+            bodies.get(&1).map(String::as_str),
+            Some("Meta launched Muse Glimmer")
+        );
+        assert!(!bodies.contains_key(&2));
+        assert!(!bodies.contains_key(&3));
+        assert!(!bodies.contains_key(&4));
+    }
 }
