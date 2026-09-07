@@ -36,7 +36,7 @@ pub const TELEGRAM_RAW_CHUNK_LIMIT: usize = 3800;
 
 /// Bumped when the AI substage prompt or its cached-output semantics change;
 /// day-caches written under an older variant are simply never looked up.
-pub const AI_SUBSTAGE_CACHE_VARIANT: &str = "default_ai_clustered_v5_post_dedup";
+pub const AI_SUBSTAGE_CACHE_VARIANT: &str = "default_ai_clustered_v6_post_dedup";
 
 /// Each Level-2 half (or Level-3 quarter) gets less than the 90s the monolithic
 /// call had — a half-size prompt should not need it.

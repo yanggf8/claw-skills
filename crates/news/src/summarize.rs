@@ -464,6 +464,7 @@ pub fn summarize_default_section(
 - {translation_rules}\n\
 - 每行必須以繁體中文新聞句子開始，不要輸出英文原標題或「英文（中文）」格式\n\
 - 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n\
+- 同一事件若有多則候選，優先挑選標題明確點出關鍵實體（公司、產品或型號名稱）的候選；若所有候選同樣籠統，仍照常挑選，不要因此跳過\n\
 {DEDUP_RULES}",
         header = spec.header,
         pick = spec.pick,
@@ -655,6 +656,7 @@ pub fn run_ai_substage(
 - 每則新聞前面必須保留原始編號 #N\n\
 - {translation_rules}\n\
 - 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n\
+- 同一事件若有多則候選，優先挑選標題明確點出關鍵實體（公司、產品或型號名稱）的候選；若所有候選同樣籠統，仍照常挑選，不要因此跳過\n\
 {DEDUP_RULES}",
         header = spec.header,
         translation_rules = &*TRANSLATION_RULES_STRICT,
@@ -924,7 +926,7 @@ pub fn run_custom_topic(
     date_str: &str,
     cache_handle: &SharedCache,
 ) -> Result<Vec<String>, String> {
-    let variant = "custom_topic_v3_dedup";
+    let variant = "custom_topic_v4_dedup";
     let path = custom_cache_path(date_str, variant, topic);
     match std::fs::read_to_string(&path) {
         Ok(cached) => {
@@ -957,7 +959,7 @@ pub fn run_custom_topic(
 
     let prompt = format!(
         "你是新聞編輯。以下是今天({date_str})關於「{topic}」的候選新聞標題（每則有編號 #N）。\n\n\
-{raw}\n\n{hint_block}請從中挑出 2-4 則真正有影響力、有意義的新聞，排除瑣碎、純行銷推廣、政治宣傳性質的新聞。\n\
+{raw}\n\n{hint_block}請從中挑出 2-4 則真正有影響力、有意義的新聞，排除瑣碎、純行銷推廣、政治宣傳性質的新聞。同一事件若有多則候選，優先挑選標題明確點出關鍵實體（公司、產品或型號名稱）的候選；若所有候選同樣籠統，仍照常挑選，不要因此跳過。\n\
 用繁體中文輸出，格式嚴格如下（不要輸出標題、開場白或結語）：\n\
 - #N 新聞標題\n\
 - #N ...\n\n\
