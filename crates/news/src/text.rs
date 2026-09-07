@@ -50,6 +50,33 @@ pub fn title_without_source(title: &str) -> &str {
     }
 }
 
+/// Latin tokens of a headline or body: lowercase `[a-z0-9]+` runs of two or
+/// more characters containing at least one letter. Pure digit runs ("1.2")
+/// carry no entity identity and are dropped. Unlike `topic_words` this keeps
+/// short tokens and has no stopword list — the enrichment validator needs
+/// every Latin token accounted for, not just the distinctive ones.
+pub fn latin_tokens(s: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut cur = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            cur.push(ch.to_ascii_lowercase());
+        } else if latin_token_ok(&cur) {
+            out.insert(std::mem::take(&mut cur));
+        } else {
+            cur.clear();
+        }
+    }
+    if latin_token_ok(&cur) {
+        out.insert(cur);
+    }
+    out
+}
+
+fn latin_token_ok(t: &str) -> bool {
+    t.len() >= 2 && t.chars().any(|c| c.is_ascii_alphabetic())
+}
+
 /// Significant headline tokens, used for deterministic event clustering.
 ///
 /// Latin runs of three or more characters, plus every CJK *bigram* — Chinese

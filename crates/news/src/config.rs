@@ -134,6 +134,18 @@ pub fn paywall_summary_body_chars() -> usize {
     env_usize("NEWS_PAYWALL_SUMMARY_BODY_CHARS", 8000)
 }
 
+/// Reusing a fetched body to top up a vague headline. The word floor sits far
+/// below `paywall_summary_min_words` on purpose: an excerpt only ever adds a
+/// named entity, so a short article that names the model is already useful
+/// where a full three-line summary would not be.
+pub fn excerpt_min_words() -> usize {
+    env_usize("NEWS_EXCERPT_MIN_WORDS", 40)
+}
+/// How much of the body the enrich prompt sees; the lede carries the names.
+pub fn excerpt_max_chars() -> usize {
+    env_usize("NEWS_EXCERPT_MAX_CHARS", 600)
+}
+
 /// Settling an English-original/Chinese-candidate pair by asking the model,
 /// which the deterministic token gate structurally cannot do. Turning this off
 /// restores the pre-2026-08-13 behaviour: every cross-language candidate is

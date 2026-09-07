@@ -440,6 +440,55 @@ pub fn fetch_article_text(url: &str, timeout: Duration) -> Article {
     }
 }
 
+/// Could this fetched body top up this headline with a named entity?
+///
+/// Three rejection layers in order: no body; chrome or stub (word floor and
+/// challenge markers — a Cloudflare interstitial strips to plausible prose
+/// and passes the word floor alone); pairing (some significant Latin token of
+/// the title must appear in the body). A title with no Latin token has no
+/// pairing evidence, so it never gets an excerpt: enrichment only ever tops
+/// up Latin entity names, and a CJK-bigram overlap would attach excerpts that
+/// can never trigger a revision.
+pub fn usable_excerpt(title: &str, article: &Article) -> Option<String> {
+    if article.error.is_some() {
+        return None;
+    }
+    let text = article.text.trim();
+    if text.split_whitespace().count() < crate::config::excerpt_min_words() {
+        return None;
+    }
+    let lower = text.to_lowercase();
+    if CHALLENGE_MARKERS.iter().any(|m| lower.contains(m)) {
+        return None;
+    }
+    let significant: HashSet<String> = crate::text::latin_tokens(title)
+        .into_iter()
+        .filter(|t| t.len() >= 4)
+        .collect();
+    if significant.is_empty() || !significant.iter().any(|t| lower.contains(t.as_str())) {
+        return None;
+    }
+    let max = crate::config::excerpt_max_chars();
+    let mut cut = text.len();
+    for (i, ch) in text.char_indices() {
+        if i + ch.len_utf8() > max {
+            cut = i;
+            break;
+        }
+    }
+    Some(text[..cut].to_string())
+}
+
+/// Signatures a bot interstitial leaves in the stripped text.
+const CHALLENGE_MARKERS: &[&str] = &[
+    "just a moment",
+    "enable javascript",
+    "checking your browser",
+    "attention required",
+    "cf-chl",
+    "verify you are a human",
+];
+
 // ── the verdict ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -454,14 +503,24 @@ pub struct Verdict {
     pub action: Action,
     pub reason: Option<&'static str>,
     pub decoded_url: Option<String>,
+    /// Leading window of the fetched body, gated by `usable_excerpt`,
+    /// present only on `Keep`. Feeds the headline-enrichment prompt;
+    /// classification itself never reads it.
+    pub body_excerpt: Option<String>,
 }
 
 impl Verdict {
-    fn new(action: Action, reason: Option<&'static str>, decoded_url: Option<String>) -> Self {
+    fn new(
+        action: Action,
+        reason: Option<&'static str>,
+        decoded_url: Option<String>,
+        body_excerpt: Option<String>,
+    ) -> Self {
         Self {
             action,
             reason,
             decoded_url,
+            body_excerpt,
         }
     }
 }
@@ -531,7 +590,7 @@ pub fn precheck_action(
         return finish(
             &mut cache,
             link,
-            Verdict::new(Action::Drop, Some("deny"), None),
+            Verdict::new(Action::Drop, Some("deny"), None, None),
         );
     }
 
@@ -546,7 +605,7 @@ pub fn precheck_action(
         return finish(
             &mut cache,
             link,
-            Verdict::new(Action::Keep, Some("unresolved"), None),
+            Verdict::new(Action::Keep, Some("unresolved"), None, None),
         );
     };
 
@@ -557,14 +616,14 @@ pub fn precheck_action(
         return finish(
             &mut cache,
             link,
-            Verdict::new(Action::Drop, Some("deny"), Some(decoded_url)),
+            Verdict::new(Action::Drop, Some("deny"), Some(decoded_url), None),
         );
     }
     if host_is_paywall(&host) {
         return finish(
             &mut cache,
             link,
-            Verdict::new(Action::TitleOnly, Some("paywalled"), Some(decoded_url)),
+            Verdict::new(Action::TitleOnly, Some("paywalled"), Some(decoded_url), None),
         );
     }
 
@@ -573,17 +632,22 @@ pub fn precheck_action(
         // No body for a host that is neither denied nor paywalled. The body
         // promo check cannot run, so fall back to the title one.
         let v = if matches_promo_title(title) {
-            Verdict::new(Action::Drop, Some("promo"), Some(decoded_url))
+            Verdict::new(Action::Drop, Some("promo"), Some(decoded_url), None)
         } else {
-            Verdict::new(Action::Keep, Some("fetch_error"), Some(decoded_url))
+            Verdict::new(Action::Keep, Some("fetch_error"), Some(decoded_url), None)
         };
         return finish(&mut cache, link, v);
     }
 
     let (action, reason) = classify_quality(source_name, title, Some(&article));
+    let body_excerpt = if action == Action::Keep {
+        usable_excerpt(title, &article)
+    } else {
+        None
+    };
     finish(
         &mut cache,
         link,
-        Verdict::new(action, reason, Some(decoded_url)),
+        Verdict::new(action, reason, Some(decoded_url), body_excerpt),
     )
 }
