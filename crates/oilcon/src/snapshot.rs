@@ -86,6 +86,9 @@ async fn write_history(conn: &Connection, ticker: &str, rows: &[Row]) -> Result<
             ticker: ticker.to_string(),
             date: r.day.clone(),
             close: r.close,
+            // oilcon's chart rows carry no adjusted series; None is ABSENT by
+            // price-store's contract, never "same as close".
+            adj_close: None,
             source: YAHOO_SOURCE.to_string(),
         })
         .collect();
