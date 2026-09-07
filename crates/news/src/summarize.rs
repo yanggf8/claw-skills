@@ -28,11 +28,12 @@ use crate::select::{
 use crate::text::{title_without_source, Item};
 use crate::trace::{clip_subprocess_text, log_trace, sample_nonempty_lines};
 use crate::validate::{
-    count_cjk, is_no_news_answer, language_ok, language_stats, leading_marker_ids, marker_stats,
-    neutralize_markdown, news_bullet_lines, shape_ok,
+    count_cjk, has_cjk_2_in_head, is_no_news_answer, language_ok, language_stats, leading_marker,
+    leading_marker_ids, line_tokens_covered, marker_stats, neutralize_markdown, news_bullet_lines,
+    shape_ok,
 };
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// Re-exported so the existing `summarize::NO_NEWS` call sites keep working;
 /// the definition lives beside the gates that filter it.
@@ -555,7 +556,7 @@ pub fn summarize_default_section(
         });
     }
 
-    let (summary, mut paywall, _bodies) = precheck_apply(&summary, &numbered, key, cache_handle);
+    let (summary, mut paywall, bodies) = precheck_apply(&summary, &numbered, key, cache_handle);
     if news_bullet_lines(&summary).is_empty() {
         // Every pick was denied or promotional. That is the filter working, not
         // the model failing, so `used_fallback` stays false and no alert fires.
@@ -578,6 +579,10 @@ pub fn summarize_default_section(
             return (translated, false);
         }
     } else {
+        let summary = match enrich_selected_section(key, &summary, &numbered, &bodies) {
+            Some(enriched) => enriched.join("\n"),
+            None => summary,
+        };
         let (with_links, attached) = attach_numbered_links(
             &summary,
             &numbered.iter().map(|(k, v)| (*k, v.clone())).collect(),
@@ -700,7 +705,7 @@ pub fn run_ai_substage(
         return Ok(Vec::new());
     }
 
-    let (summary, mut paywall, _bodies) = precheck_apply(&summary, &numbered, "ai", cache_handle);
+    let (summary, mut paywall, bodies) = precheck_apply(&summary, &numbered, "ai", cache_handle);
     if news_bullet_lines(&summary).is_empty() {
         // A filter success, not a model failure — the driver must not escalate.
         log_trace("ai_substage_all_dropped", json!({"range": [start, end]}));
@@ -725,6 +730,10 @@ pub fn run_ai_substage(
         return Ok(translated);
     }
 
+    let summary = match enrich_selected_section("ai", &summary, &numbered, &bodies) {
+        Some(enriched) => enriched.join("\n"),
+        None => summary,
+    };
     let (with_links, attached) = attach_numbered_links(
         &summary,
         &numbered.iter().map(|(k, v)| (*k, v.clone())).collect(),
@@ -1189,4 +1198,311 @@ pub fn custom_topic_raw_listing(items: &[Item], link_map: &LinkMap) -> Vec<Strin
 /// non-default section is chosen.
 pub fn custom_pair_hints(numbered: &NumberedMap) -> Vec<(u32, u32, usize)> {
     dedup_pair_hints(numbered, LLM_DEDUP_HINT_OVERLAP)
+}
+
+// ── headline enrichment ──────────────────────────────────────────────────────
+
+const ENRICH_PREAMBLE: &str = "以下是已選定新聞的編號清單，部分項目附有該則的文章內文摘錄。規則：\n\
+1) 逐條輸出完整編號清單，格式與輸入完全一致（`- #N 標題`），一條都不能少。\n\
+2) 僅當摘錄明確寫出該條標題缺少的關鍵實體（如模型型號、產品名、機構名）時，才把該實體補進該條標題；沒有摘錄、或摘錄沒有點出標題缺少的實體的項目，必須逐字保留，一個字都不改。\n\
+3) 只能使用原標題與摘錄中明確出現的事實與名稱，嚴禁推測、換名或補充兩者都沒有的內容。\n\
+4) 維持繁體中文，風格與原標題一致。";
+
+/// Words that capitalise mid-sentence in any article yet never name an
+/// entity worth adding to a headline.
+const ENRICH_NON_ENTITY: &[&str] = &[
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+    "february", "march", "april", "june", "july", "august", "september", "october", "november",
+    "december",
+];
+
+/// The deterministic trigger: markers whose excerpt names — mid-sentence
+/// capitalised Latin word of four or more characters, i.e. a proper noun —
+/// something the delivered line does not already carry. Weekdays and months
+/// capitalise everywhere and name nothing; lowercase words are prose. An
+/// empty result means no model call is made at all — the common section must
+/// not pay for the feature.
+fn enrich_trigger_set(lines: &[&str], bodies: &BTreeMap<u32, String>) -> Vec<u32> {
+    bodies
+        .iter()
+        .filter_map(|(num, excerpt)| {
+            let line = lines.iter().find(|l| leading_marker(l) == Some(*num))?;
+            let have = crate::text::latin_tokens(line);
+            crate::text::latin_tokens(excerpt)
+                .into_iter()
+                .filter(|t| t.len() >= 4 && !ENRICH_NON_ENTITY.contains(&t.as_str()))
+                .any(|t| !have.contains(&t) && capitalised_mid_sentence(excerpt, &t))
+                .then_some(*num)
+        })
+        .collect()
+}
+
+/// Does `tok` occur in `text` capitalised somewhere that is not the start of
+/// a sentence? Mid-sentence capitalisation is the cheapest proper-noun
+/// signal a stripped HTML body carries.
+fn capitalised_mid_sentence(text: &str, tok: &str) -> bool {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static WORD: OnceLock<Regex> = OnceLock::new();
+    let word = WORD.get_or_init(|| Regex::new(r"[A-Za-z0-9]+").expect("literal"));
+    word.find_iter(text).any(|m| {
+        m.as_str().eq_ignore_ascii_case(tok)
+            && m.as_str().chars().next().is_some_and(char::is_uppercase)
+            && !at_sentence_start(text, m.start())
+    })
+}
+
+/// True when the byte offset opens a sentence: the nearest non-space,
+/// non-quote character before it is a sentence terminator (or there is none).
+fn at_sentence_start(text: &str, pos: usize) -> bool {
+    let mut boundary = true;
+    for c in text[..pos].chars().rev() {
+        if c.is_whitespace() || matches!(c, '"' | '”' | '\'' | '(' | ')') {
+            continue;
+        }
+        boundary = matches!(c, '.' | '!' | '?' | '…' | '。');
+        break;
+    }
+    boundary
+}
+
+fn build_enrich_prompt(pairs: &[(u32, &str)], bodies: &BTreeMap<u32, String>) -> String {
+    let mut p = String::from(ENRICH_PREAMBLE);
+    for (num, line) in pairs {
+        p.push('\n');
+        p.push_str(line);
+        if let Some(ex) = bodies.get(num) {
+            p.push_str("\n【內文摘錄】");
+            p.push_str(ex);
+        }
+    }
+    p
+}
+
+/// Replace triggered lines with the model's rewrite only where the rewrite
+/// survives the deterministic validator; everything else — including any
+/// line the reply dropped — stays exactly as it was. Returns
+/// `(lines, reverted, reasons)`; a reply identical to the input reverts
+/// nothing and counts as no change.
+fn sanitize_enriched(
+    orig_lines: &[&str],
+    fresh: &str,
+    triggered: &[u32],
+    numbered: &NumberedMap,
+    bodies: &BTreeMap<u32, String>,
+) -> (Vec<String>, usize, Vec<String>) {
+    let mut fresh_by_num: BTreeMap<u32, &str> = BTreeMap::new();
+    for line in fresh.lines() {
+        if let Some(n) = leading_marker(line) {
+            fresh_by_num.entry(n).or_insert(line);
+        }
+    }
+    let mut out = Vec::with_capacity(orig_lines.len());
+    let mut reverted = 0usize;
+    let mut reasons = Vec::new();
+    for orig in orig_lines {
+        let num = match leading_marker(orig) {
+            Some(n) if triggered.contains(&n) => n,
+            _ => {
+                out.push((*orig).to_string());
+                continue;
+            }
+        };
+        let Some(cand) = fresh_by_num.get(&num).copied() else {
+            reverted += 1;
+            reasons.push(format!("#{num} missing_from_reply"));
+            out.push((*orig).to_string());
+            continue;
+        };
+        if cand.trim_end() == orig.trim_end() {
+            out.push((*orig).to_string());
+            continue;
+        }
+        let title = numbered.get(&num).map(|n| n.title.as_str()).unwrap_or("");
+        let excerpt = bodies.get(&num).map(String::as_str).unwrap_or("");
+        let reason = if leading_marker(cand) != Some(num) || !cand.trim_start().starts_with('-') {
+            "shape"
+        } else if !line_tokens_covered(cand, title, excerpt) {
+            "uncovered_token"
+        } else if !has_cjk_2_in_head(cand) {
+            "language"
+        } else {
+            ""
+        };
+        if reason.is_empty() {
+            out.push(cand.trim_end().to_string());
+        } else {
+            reverted += 1;
+            reasons.push(format!("#{num} {reason}"));
+            out.push((*orig).to_string());
+        }
+    }
+    (out, reverted, reasons)
+}
+
+/// One revision call over the triggered picks, validated line-by-line.
+///
+/// `None` means the input must be used unchanged: nothing triggered, the
+/// runner produced nothing usable, or the reply improved nothing. The caller
+/// swaps in the returned lines only when at least one line actually changed —
+/// a zero-change swap would still flow into the section cache and look like
+/// a real result.
+fn enrich_selected_section(
+    section_key: &str,
+    summary: &str,
+    numbered: &NumberedMap,
+    bodies: &BTreeMap<u32, String>,
+) -> Option<Vec<String>> {
+    let orig: Vec<&str> = summary.lines().collect();
+    let triggered = enrich_trigger_set(&orig, bodies);
+    if triggered.is_empty() {
+        log_trace("enrich_noop", json!({"section": section_key}));
+        return None;
+    }
+    let pairs: Vec<(u32, &str)> = triggered
+        .iter()
+        .filter_map(|n| orig.iter().find(|l| leading_marker(l) == Some(*n)).map(|l| (*n, *l)))
+        .collect();
+    log_trace("enrich_trigger", json!({"section": section_key, "n": pairs.len()}));
+    let prompt = build_enrich_prompt(&pairs, bodies);
+    let sub: NumberedMap = pairs
+        .iter()
+        .filter_map(|(n, _)| numbered.get(n).map(|v| (*n, v.clone())))
+        .collect();
+    let counts = vec![(section_key.to_string(), sub.len())];
+    let result = run_agent(
+        &prompt,
+        LLM_TRANSLATION_TIMEOUT_SECS,
+        &format!("{section_key}_enrich"),
+        &counts,
+        &sub,
+    );
+    let (lines, reverted, reasons) =
+        sanitize_enriched(&orig, &result.stdout, &triggered, numbered, bodies);
+    let changed = lines
+        .iter()
+        .zip(orig.iter())
+        .filter(|(a, b)| a.trim_end() != b.trim_end())
+        .count();
+    if changed == 0 {
+        log_trace(
+            "enrich_failed",
+            json!({"section": section_key, "reason": "no_valid_rewrite",
+                   "reverted": reverted, "reasons": reasons}),
+        );
+        return None;
+    }
+    log_trace(
+        "enrich_applied",
+        json!({"section": section_key, "changed": changed, "reverted": reverted,
+               "reasons": reasons}),
+    );
+    Some(lines)
+}
+
+#[cfg(test)]
+mod enrich_tests {
+    use super::*;
+    use crate::render::Numbered;
+
+    fn numbered(pairs: &[(u32, &str)]) -> NumberedMap {
+        pairs
+            .iter()
+            .map(|(n, t)| (*n, Numbered { title: t.to_string(), ..Default::default() }))
+            .collect()
+    }
+
+    fn bodies(pairs: &[(u32, &str)]) -> BTreeMap<u32, String> {
+        pairs.iter().map(|(n, e)| (*n, e.to_string())).collect()
+    }
+
+    #[test]
+    fn trigger_fires_for_a_line_missing_the_entity_the_body_names() {
+        let lines = ["- #3 Meta 發布開放權重模型", "- #4 輝達財報優於預期"];
+        let b = bodies(&[(3, "Meta launched Muse Glimmer, a 30-billion-parameter model")]);
+        assert_eq!(enrich_trigger_set(&lines, &b), vec![3]);
+    }
+
+    #[test]
+    fn trigger_stays_silent_when_the_line_already_carries_every_proper_name() {
+        let lines = ["- #3 Meta 發布 Muse Glimmer 開放權重模型"];
+        let b = bodies(&[(3, "Meta launched Muse Glimmer, a 30-billion-parameter model")]);
+        assert!(enrich_trigger_set(&lines, &b).is_empty());
+    }
+
+    #[test]
+    fn lowercase_and_sentence_initial_words_never_trigger() {
+        let lines = ["- #3 輝達財報優於預期"];
+        let b = bodies(&[(3,
+            "On Monday the chipmaker reported stronger sales, and shares rallied \
+             on Tuesday as analysts raised their targets for the coming year.")]);
+        assert!(enrich_trigger_set(&lines, &b).is_empty());
+        let b2 = bodies(&[(3, "Sales rose. Reuters contributed reporting from tokyo.")]);
+        assert!(enrich_trigger_set(&lines, &b2).is_empty());
+    }
+
+    #[test]
+    fn a_mid_sentence_capitalised_name_triggers() {
+        let lines = ["- #3 輝達財報優於預期"];
+        let b = bodies(&[(3, "Analysts noted that Musk personally attended the briefing.")]);
+        assert_eq!(enrich_trigger_set(&lines, &b), vec![3]);
+    }
+
+    #[test]
+    fn prompt_carries_the_rules_and_only_body_items_get_excerpts() {
+        let pairs = [(3u32, "- #3 Meta 發布開放權重模型"), (4, "- #4 輝達財報優於預期")];
+        let b = bodies(&[(3, "Meta launched Muse Glimmer")]);
+        let p = build_enrich_prompt(&pairs, &b);
+        assert!(p.contains("嚴禁推測"), "{p}");
+        assert!(p.contains("逐字保留"), "{p}");
+        assert_eq!(p.matches("【內文摘錄】").count(), 1, "{p}");
+        assert!(p.contains("【內文摘錄】Meta launched Muse Glimmer"), "{p}");
+    }
+
+    #[test]
+    fn sanitizer_keeps_a_faithful_rewrite() {
+        let orig = ["- #3 Meta 發布開放權重模型", "- #4 輝達財報優於預期"];
+        let nm = numbered(&[(3, "Meta unveils Muse Glimmer open-weight model")]);
+        let b = bodies(&[(3, "Meta launched Muse Glimmer")]);
+        let (out, reverted, reasons) =
+            sanitize_enriched(&orig, "- #3 Meta 發布 Muse Glimmer 開放權重模型", &[3], &nm, &b);
+        assert_eq!(out[0], "- #3 Meta 發布 Muse Glimmer 開放權重模型");
+        assert_eq!(out[1], "- #4 輝達財報優於預期");
+        assert_eq!(reverted, 0, "{reasons:?}");
+    }
+
+    #[test]
+    fn sanitizer_reverts_a_hallucinated_token_to_the_original_line() {
+        let orig = ["- #3 Meta 發布開放權重模型"];
+        let nm = numbered(&[(3, "Meta unveils Muse Glimmer open-weight model")]);
+        let b = bodies(&[(3, "Meta launched Muse Glimmer")]);
+        let (out, reverted, reasons) =
+            sanitize_enriched(&orig, "- #3 Meta 發布 Llama 5 模型", &[3], &nm, &b);
+        assert_eq!(out[0], "- #3 Meta 發布開放權重模型");
+        assert_eq!(reverted, 1);
+        assert!(reasons[0].contains("uncovered_token"), "{reasons:?}");
+    }
+
+    #[test]
+    fn sanitizer_reverts_a_marker_the_reply_dropped() {
+        let orig = ["- #3 Meta 發布開放權重模型", "- #5 台積電法說會釋利多"];
+        let nm = numbered(&[(3, "Meta unveils Muse Glimmer"), (5, "台積電第四季法說")]);
+        let b = bodies(&[(3, "Meta launched Muse Glimmer")]);
+        let (out, reverted, reasons) =
+            sanitize_enriched(&orig, "- #5 台積電法說會釋利多", &[3], &nm, &b);
+        assert_eq!(out, vec!["- #3 Meta 發布開放權重模型", "- #5 台積電法說會釋利多"]);
+        assert_eq!(reverted, 1);
+        assert!(reasons[0].contains("missing_from_reply"), "{reasons:?}");
+    }
+
+    #[test]
+    fn an_identical_reply_counts_as_no_change() {
+        let orig = ["- #3 Meta 發布開放權重模型"];
+        let nm = numbered(&[(3, "Meta unveils Muse Glimmer")]);
+        let b = bodies(&[(3, "Meta launched Muse Glimmer")]);
+        let (out, reverted, _) =
+            sanitize_enriched(&orig, "- #3 Meta 發布開放權重模型", &[3], &nm, &b);
+        assert_eq!(out[0], "- #3 Meta 發布開放權重模型");
+        assert_eq!(reverted, 0);
+    }
 }
