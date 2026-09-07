@@ -358,3 +358,44 @@ fn the_sentinel_the_gate_accepts_is_the_one_the_filters_drop() {
     assert!(content_lines(NO_NEWS).is_empty());
     assert!(NO_NEWS.contains(NO_NEWS_BODY));
 }
+
+// ── enrichment validator ─────────────────────────────────────────────────────
+
+#[test]
+fn uncovered_latin_token_fails_the_coverage_check() {
+    let title = "Meta 發布開放權重模型";
+    let excerpt = "Meta launched Muse Glimmer, a 30-billion-parameter model";
+    // The rewrite may only use names the title or the excerpt carries.
+    assert!(line_tokens_covered(
+        "- #3 Meta 發布 Muse Glimmer 開放權重模型",
+        title,
+        excerpt
+    ));
+    // A fluent hallucination — the model everyone else launched, not the one
+    // in this story — is exactly what this gate exists to catch.
+    assert!(!line_tokens_covered(
+        "- #3 Meta 發布 Llama 5 開放權重模型",
+        title,
+        excerpt
+    ));
+}
+
+#[test]
+fn a_rewrite_needing_no_new_names_passes_without_an_excerpt() {
+    assert!(line_tokens_covered(
+        "- #3 Meta 發布新模型",
+        "Meta 發布開放權重模型",
+        ""
+    ));
+}
+
+#[test]
+fn cjk_head_check_mirrors_the_language_gate() {
+    assert!(has_cjk_2_in_head("- #3 Meta 發布開放權重模型"));
+    assert!(!has_cjk_2_in_head("- #3 Meta launches new AI model"));
+    // Starts English, turns Chinese halfway: the language gate rejects it and
+    // so must this, or a rewrite could sneak past with a different shape.
+    assert!(!has_cjk_2_in_head(
+        "- #3 The Verge reported this story with plenty of details 報導"
+    ));
+}

@@ -242,22 +242,32 @@ const FORBIDDEN_ENGLISH: &[&str] = &[
     "potentially",
 ];
 
+/// One bullet "looks Chinese": two or more CJK characters with the first
+/// appearing within the opening 18 — a bullet that starts in English and
+/// turns Chinese halfway does not count, which is the failure this measures.
+pub fn has_cjk_2_in_head(line: &str) -> bool {
+    let body = strip_marker_prefix(line);
+    let first = body.chars().position(is_cjk_common);
+    count_cjk(&body) >= 2 && matches!(first, Some(i) if i <= 18)
+}
+
 /// (bullets that look Chinese, total news bullets).
-///
-/// "Looks Chinese" is two or more CJK characters with the first appearing
-/// within the opening 18 — a bullet that starts in English and turns Chinese
-/// halfway does not count, which is the failure this measures.
 pub fn language_stats(summary: &str) -> (usize, usize) {
     let bullets = news_bullet_lines(summary);
-    let chinese = bullets
-        .iter()
-        .filter(|l| {
-            let body = strip_marker_prefix(l);
-            let first = body.chars().position(is_cjk_common);
-            count_cjk(&body) >= 2 && matches!(first, Some(i) if i <= 18)
-        })
-        .count();
+    let chinese = bullets.iter().filter(|l| has_cjk_2_in_head(l)).count();
     (chinese, bullets.len())
+}
+
+/// Every Latin token in a rewritten line must come from that item's source
+/// title or body excerpt. This is the deterministic half of the enrichment
+/// no-invention rule: a fluent hallucinated name ("Llama 5" for a story
+/// about Muse Glimmer) would otherwise pass every shape and language gate.
+pub fn line_tokens_covered(line: &str, allowed_a: &str, allowed_b: &str) -> bool {
+    let mut allowed = crate::text::latin_tokens(allowed_a);
+    allowed.extend(crate::text::latin_tokens(allowed_b));
+    crate::text::latin_tokens(line)
+        .iter()
+        .all(|t| allowed.contains(t))
 }
 
 /// Four fifths of bullets must read as Chinese, and none may carry an English

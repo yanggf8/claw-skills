@@ -1,8 +1,8 @@
 //! Tests for the deterministic text layer, written against the Python's
 //! observable behaviour and the reasons behind it.
 
-use news::text::{cluster, dedup, extract_source_name, pick_representatives, title_without_source,
-                 topic_words, Item};
+use news::text::{cluster, dedup, extract_source_name, latin_tokens, pick_representatives,
+                 title_without_source, topic_words, Item};
 
 fn it(title: &str) -> Item {
     Item { title: title.into(), link: "http://x".into(), source: String::new(), ..Default::default() }
@@ -84,6 +84,18 @@ fn a_version_number_survives_as_one_token() {
     // than fragmenting the version.
     let w = topic_words("OpenAI ships GPT 4.5 today");
     assert!(w.contains("4.5"), "{w:?}");
+}
+
+#[test]
+fn latin_tokens_keep_every_alnum_run_but_pure_digits() {
+    // Unlike topic_words: no stopword list and no three-char minimum — the
+    // enrichment validator must account for every Latin token a rewrite
+    // introduces, so even short tokens are tracked.
+    let t = latin_tokens("Meta 發布 Muse Spark 1.2 開放權重");
+    assert!(t.contains("meta") && t.contains("muse") && t.contains("spark"));
+    assert!(!t.contains("1"));
+    assert!(!t.contains("2"));
+    assert!(latin_tokens("GPT-5").contains("gpt"));
 }
 
 // ── dedup ────────────────────────────────────────────────────────────────────
