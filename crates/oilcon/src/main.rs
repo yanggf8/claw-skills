@@ -13,7 +13,7 @@ use std::time::Duration;
 use claw_core::delivery::{deliver, DeliveryOutcome};
 use market_fetch::yahoo::{chart_url, parse_yahoo_chart, FetchError};
 use oilcon::analysis::Row;
-use oilcon::run::{deliver_options, run, Clock, Env, Upstream};
+use oilcon::run::{deliver_options, parse_args, run, Clock, Env, Upstream};
 use turso_util::{connect, RegistryConfig, TokenEnvPolicy, TokenTier};
 
 const YAHOO_CHART_BASE: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
@@ -191,6 +191,16 @@ async fn main() {
     let mut err = std::io::stderr();
 
     let argv: Vec<String> = std::env::args().collect();
+
+    // Refuse before anything else — including the registry connect below. The
+    // no-registry path (dispatch_warning) re-parses argv leniently, so without
+    // this gate a typo'd flag exits 0 and runs the body whenever credentials
+    // are absent: precisely the install probe's environment.
+    if let Err(msg) = parse_args(&argv) {
+        let _ = writeln!(err, "{msg}");
+        let _ = err.flush();
+        std::process::exit(2);
+    }
     let env = Env {
         job_id: std::env::var("NULLCLAW_JOB_ID")
             .ok()

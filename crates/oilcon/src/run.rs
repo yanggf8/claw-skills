@@ -29,7 +29,9 @@ pub struct Env {
     pub home: PathBuf,
 }
 
-struct Args {
+/// Parsed argv. Public only so main() can call `parse_args` and match on its
+/// `Err`; the fields stay module-private and are read inside `run`.
+pub struct Args {
     mode: String,
     deliver_to: Option<String>,
     account: String,
@@ -54,7 +56,11 @@ fn history_log_path(home: &Path) -> PathBuf {
 /// The exit code is the contract. The message text is not byte-comparable with
 /// `argparse`'s usage block and is not attempted — same class as the io::Error
 /// versus OSError difference in the history-log line.
-fn parse_args(argv: &[String]) -> Result<Args, String> {
+/// Strict argv gate. `pub` because main() must refuse BEFORE connecting to the
+/// price registry — the no-registry path re-parses leniently, so an unknown
+/// flag would otherwise exit 0 instead of 2 whenever credentials are absent
+/// (which is exactly the environment the install probe runs in).
+pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     const MODES: [&str; 2] = ["deliver", "record"];
 
     let mut mode = "deliver".to_string();
