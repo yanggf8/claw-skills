@@ -9,6 +9,83 @@ this file is only the record of what changed and why.
 
 ---
 
+## oilcon: the defect rode in with a rebuild, and the probe caught a second one (2026-09-11)
+
+Four identical alerts, four trading nights:
+
+```
+thread 'main' panicked at ~/.cargo/registry/.../libsql-0.6.0/src/hrana/mod.rs:307:55:
+called `Option::unwrap()` on a `None` value
+```
+
+`exec_error` at 22:00 on 09-07, 09-08, 09-09 and 09-10, each run dead about two
+seconds in, `repair=none` so the alert was the only noise. The last ok run was
+09-04 22:00. The first failure came hours after the day's `oilcon` redeploy.
+
+**The bug was never in this repo's diff.** gwebcdb's `f2c29ab` (08-25) taught
+every price-store reader to fetch `adj_close` at column index 4 while leaving
+five SELECTs naming four columns — `SELECT ticker, date, close, source`. libsql
+diverges by transport on that mistake:
+
+- **local** (`Builder::new_local`, every test): an out-of-range index reads as
+  NULL, `FromValue for Option<f64>` turns it into `Ok(None)` — adj_close
+  silently `None`, suite green. (The `Err(InvalidColumnIndex)` path exists only
+  in `BatchedRow`, which serves `execute_batch`, not `conn.query`.)
+- **hrana** (the remote Turso path the cron actually speaks): `Row::column_value`
+  does `self.inner.get(idx).cloned().unwrap()` — panic, exit 101.
+
+The suite stayed green for a specific reason worth naming:
+`adj_close_round_trips` verified writes with its own raw `SELECT adj_close`
+and only ever asserted `close` through the readers — the readers' adj_close
+field was never asserted by anything. The red-then-green test that shipped with
+the fix (`readers_surface_the_stored_adjustment_instead_of_a_silent_none`)
+round-trips a stored adjustment through all five readers.
+
+**Why 09-07 and not 08-26.** The 09-07 rebuild existed for this repo's own
+one-line fix `5a954da` (adj_close: None at the StoredPrice initializer), but a
+path dependency is a snapshot of the *dependency repo's* working tree at build
+time: the rebuild pulled in every gwebcdb change since the previous binary,
+defective readers included. A claw-skills commit is not the only thing that
+changes a deployed skill — any rebuild ships the current gwebcdb tree with it.
+The old binary ran clean through 09-04 because it predated f2c29ab entirely.
+
+Fixed in gwebcdb `0557b56`: name `adj_close` fifth in every price SELECT (the
+column list is the real guard), propagate get failures instead of swallowing
+them, pin the round trip through every reader. The live registry was never at
+risk of the missing-column error — the 09-07 runs died *after* `ensure_schema`
+had already migrated it.
+
+**Act two: the install probe refused the publish, and it was right twice.**
+`tools/install-skill.sh` smoke-probes the staged binary with an unknown flag
+and demands exit 2. From this session's shell it got exit 0 and the skill body
+instead. Cause: `main()` connected to the price registry *before* `run()`'s
+strict `parse_args` could refuse, and the no-registry path
+(`dispatch_warning`) re-parses argv with a lenient `_ => {}` loop. No
+credentials in the environment → connect fails → lenient parse → unknown flag
+ignored → the body runs and exits 0. The 07-31 probe catch ("parser silently
+ignored unknown flags") had only ever been fixed on the credentialed path —
+the 09-07 install passed the probe because that shell held Turso tokens, not
+because the contract held. The probe's verdict was environment-dependent all
+along, which is itself the defect: the exit-2 contract must not depend on the
+operator's shell. Fixed in `6884336`: strict argv validation before the
+connect, and `tests/cli.rs` pins it offline by running the binary with the
+credential env stripped — the probe can no longer pass for the wrong reason.
+
+**The rules.** First: when a scheduled skill starts failing right after a
+rebuild, diff the dependency repo's log against the old binary's mtime —
+`git -C ~/b/gwebcdb log` explains failures no claw-skills diff can. Second: a
+test gate over local connections cannot see hrana-only behavior; a reader
+indexing past its SELECT is green offline and fatal on Turso, so round-trip
+assertions must go through the readers, not around them. Third: a probe that
+can pass for an environmental reason is not yet a probe — make the contract
+hold with the environment stripped.
+
+Verification 2026-09-11 10:15: deployed binary over real Turso + Yahoo, full
+report, `rc=0` — first complete run since 09-04. `price` rebuilt from the same
+fix (its `latest/at/history` carried the same mine). Declined for scope: Grok's
+suggestion to read columns by name instead of index (the structural cure for
+this drift class — worth its own task), and gwebcdb's pre-existing clippy debt.
+
 ## cct: the producer moved eight hours and the reader had no idea (2026-09-02)
 
 Two alerts, four mornings apart from the same cause:
