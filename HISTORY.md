@@ -109,6 +109,34 @@ that would prove the new producer.
 
 ---
 
+## The two side alerts, closed while the producer moved (2026-09-14)
+
+Both fired alongside the cct incident; neither was caused by it.
+
+- **`price cds fetch`: exit 127 for eight scheduled nights (09-02…09-12).**
+  `/bin/sh: …/gwebcdb/target/release/price: not found` — the gwebcdb binary
+  was gone, not the data path. It is back (rebuilt 2026-09-14), `price
+  doctor` is green, and a manual `cds fetch` pulled every series current:
+  the daily OAS/yield series to 2026-09-10, the monthly Moody's `baa`/`aaa`
+  to 2026-08-01, which is that series' normal lag, not staleness. No code
+  changed for this in any repo. The standing hazard is the job command
+  itself: a cron entry pointing into another repo's `target/` dies the day
+  that tree is cleaned, and the alert — perfectly truthful — repeated the
+  same two lines for eight nights before anyone opened the file system.
+- **`check-cct2-models.py` became `crates/cct2`'s `cct2-check`.** The Python
+  violated the standing all-Rust instruction, and it shared the generator
+  watchdog's blind spot: it re-evaluated the journal's last business date
+  forever, so 09-10's genuine "primary went quiet" kept re-alerting after
+  the outage stopped the journal. The port names staleness explicitly
+  (`journal is stale: last entry X, expected Y`; expected = last ET weekday
+  from jiff's bundled tzdb, with no holiday table because cct2's own
+  weekday schedule fires on holidays and writes the row). The 09-10 primary
+  miss itself is the known MiniMax thinking-exhaustion class and stays a
+  finding until a clean day lands — that is the check working, not a bug
+  in it.
+
+---
+
 ## oilcon: the defect rode in with a rebuild, and the probe caught a second one (2026-09-11)
 
 Four identical alerts, four trading nights:

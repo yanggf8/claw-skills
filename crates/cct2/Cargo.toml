@@ -7,6 +7,10 @@ edition.workspace = true
 name = "cct2"
 path = "src/main.rs"
 
+[[bin]]
+name = "cct2-check"
+path = "src/bin/cct2-check.rs"
+
 [lib]
 name = "cct2"
 path = "src/lib.rs"

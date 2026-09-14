@@ -7,5 +7,6 @@ pub mod json;
 pub mod llm;
 pub mod market;
 pub mod merge;
+pub mod models_check;
 pub mod render;
 pub mod review;
