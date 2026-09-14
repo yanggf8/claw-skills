@@ -212,19 +212,23 @@ degraded pre-market while `eod`, reading 3 h 40 m later, delivered. Moving a rea
 later buys buffer and spends the report's timeliness — the fix is a producer that
 arrives.
 
-**`cct` generation moved onto this box's cron on 2026-09-02 for that reason.**
-The four reports are triggered by `tools/trigger-cct-job.py` (shell jobs
-`job-6e97b576` pre-market · `job-c46b1ed4` intraday · `job-d44da309` eod ·
-`job-6236fec4` weekly, all `--tz +00:00 --verify exit_only`), and
-`yanggf8/cct/trading-system.yml` now keeps only `workflow_dispatch`. **Do NOT
-re-add the Actions `schedule:` while the box triggers are on** — one day would
-get two trigger rows (`job_run_results.run_id` embeds a uuid4;
-`job_date_results` rewinds the day to `running` on the second writer). Drift is
-watched by `job-e05f83c8` (`5 0 * * *` UTC, `tools/check-cct-generator.py`).
-Post-mortems: [`HISTORY.md`](HISTORY.md) (2026-09-02); decision thread:
-`yanggf8/cct#1`. Fallback if this box ever misses its minutes: Cloudflare cron
-triggers on the worker — config-only, `scheduler.ts` dispatches on UTC time,
-and the per-account limit is 5 on the free plan.
+**`cct` generation moved onto the worker's own Cloudflare cron triggers on
+2026-09-14** (before that: this box's nullclaw cron 2026-09-02…09-14; GH
+Actions `schedule:` until then). `yanggf8/cct` `wrangler.toml [triggers]`
+carries the four UTC crons, dispatched by `scheduler.ts` on exact (hour,
+minute, weekday) tuples — and CF's parser wants `SUN`, not `0`, in the
+day-of-week field (error 10100, and a failed trigger change half-applies:
+check the deploy output's `schedule:` lines, not its exit). **Do NOT add a
+second writer** — no Actions `schedule:`, no box-side trigger job; one day
+would get two trigger rows (`job_run_results.run_id` embeds a uuid4;
+`job_date_results` rewinds the day to `running` on the second writer). The
+box keeps the reads, the watchdog (`job-e05f83c8`, `5 0 * * *` UTC,
+`~/.nullclaw/skills/cct/bin/cct-check` — it also checks the previous trading
+day, so a missed hole is flagged on the next run), and the manual fallback
+(`~/.nullclaw/skills/cct/bin/cct-trigger`, weekend/holiday-gated; the
+Saturday drain of 09-12 is why the gate exists). Post-mortems:
+[`HISTORY.md`](HISTORY.md) (2026-09-14, 2026-09-02); decision thread:
+`yanggf8/cct#1`.
 
 **Cron expressions are NOT UTC by default — pass `--tz`.** `cron_jobs` carries a `tz_offset_s` per job and most of them are Taipei (`--tz +08:00`), not UTC; scheduling a new job as if the field were UTC puts it 8 hours out. Taiwan (CST) = UTC+8, EST = UTC-5. Check what a job actually uses before copying its expression (`SELECT skill_name, expression, tz_offset_s FROM cron_jobs`).
 

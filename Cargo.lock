@@ -256,7 +256,9 @@ version = "0.1.0"
 dependencies = [
  "claw-core",
  "jiff",
+ "libsql",
  "serde_json",
+ "tokio",
  "ureq",
 ]
 

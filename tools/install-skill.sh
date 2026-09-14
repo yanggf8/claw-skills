@@ -52,6 +52,32 @@ fi
 echo "==> publishing atomically"
 mv -f "$stage" "$dest"
 
+# Helper binaries a crate may build beside the skill (cct-check, cct-trigger):
+# the cron shell jobs run them by the same published path, which the skill
+# symlink already resolves. Same rule as the main artifact, nothing by hand:
+# probed, then published.
+for extra_src in "$ROOT"/target/release/"$skill"-*; do
+  [ -x "$extra_src" ] || continue
+  extra_name=$(basename "$extra_src")
+  case "$extra_name" in
+    *.d|*.dwp|*.rlib|*.rmeta) continue ;;
+  esac
+  if "$extra_src" --__install_smoke_probe__ >/dev/null 2>&1; then
+    extra_rc=0
+  else
+    extra_rc=$?
+  fi
+  if [ "$extra_rc" -ne 2 ]; then
+    echo "FAIL: $extra_name did not reject an unknown flag with exit 2 (got $extra_rc)" >&2
+    exit 1
+  fi
+  extra_stage="$dest_dir/$extra_name.staging.$$"
+  cp "$extra_src" "$extra_stage"
+  chmod +x "$extra_stage"
+  mv -f "$extra_stage" "$dest_dir/$extra_name"
+  echo "==> published $dest_dir/$extra_name"
+done
+
 echo "==> verifying the path nullclaw will resolve"
 resolved="$HOME/.nullclaw/skills/$skill/bin/$skill"
 [ -x "$resolved" ] || {

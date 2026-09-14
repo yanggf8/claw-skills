@@ -9,6 +9,106 @@ this file is only the record of what changed and why.
 
 ---
 
+## cct: the box died with the watchdog in its lap, and the producer moved home again (2026-09-14)
+
+Three Telegram degradations on a Saturday morning, about the previous day:
+
+```
+[cron] skill 'cct' degraded: failure=contract_degraded repair=none trace=…:4633
+[WARN: CCT pre-market carries no analysis] stale: payload date=2026-09-10 today=2026-09-12 age=2d
+```
+
+**What happened.** The box crashed around 2026-09-11 01:00 UTC — wtmp ends in
+`crash` after the morning's login activity — and came back through 57
+one-minute reboot loops, stable at 09-12 06:23 UTC. The 29.4 h window
+covered all three of Friday's generation slots (12:30 / 16:00 / 20:05 UTC),
+all three Friday reads, *and* the Sat 00:05Z watchdog run that was the only
+scheduled check able to see Friday's hole. On recovery nullclaw drained the
+missed slots: the readers ran first — that is where the three degradations
+came from — and the triggers then POSTed at 06:28–06:32Z, generating content
+stamped **2026-09-12, a Saturday**, which the pre-market route then served
+as its latest snapshot. The W37 weekly's daily ledger lists 09-12 and skips
+09-11. The worker's own status endpoint had marked 09-11 `missed` from the
+start; nothing read it.
+
+**Three defects, not one.**
+1. *Producer and watchdog shared one reliability domain.* The 09-02 migration
+   put generation on the box that reads the reports (an explicit trade —
+   "producer and consumer share one clock"), and the watchdog moved with it.
+   One box death took out the producer *and* the only witness.
+2. *The watchdog only ever asked about its own day.* Once the calendar rolled
+   past 09-11, every later run said green
+   (`no scheduled reports for 2026-09-12 (Sat)`). A hole behind a missed
+   check stayed a hole forever.
+3. *The catch-up drain had no trading-day gate.* The trigger POSTed whatever
+   day it woke up on, the worker generated a Saturday report, and the
+   reader's freshness rules — built for exactly this shape — correctly called
+   it stale. The pipeline converted a dead day into noise plus a ghost
+   report.
+
+**The strategy change (owner's ruling): stop post-mortem handling; when the
+cause is knowable, act immediately.** The producer moved to the worker
+itself: `yanggf8/cct` `wrangler.toml [triggers]` now carries the four UTC
+crons that `scheduler.ts` had kept matching since the CF era — the fallback
+CLAUDE.md had pre-approved for "this box ever misses its minutes", enabled
+the day that case actually happened (the 08-31 decision to tolerate GH drift
+predated the box era and did not cover it). Two deployment facts worth
+keeping: Cloudflare's cron parser wants `SUN`, not `0` (error 10100,
+"invalid cron string"), and a failed trigger change **half-applies** rather
+than rolling back — verify the deploy output's `schedule:` lines, not its
+exit code.
+
+The box kept the reads and gained a rebuilt watchdog. `crates/cct` ships
+three binaries: `cct` (reader, contract unchanged), `cct-check` (the
+watchdog), `cct-trigger` (the manual fallback). The Python originals
+(`tools/check-cct-generator.py`, `tools/trigger-cct-job.py`, and the
+`cct_calendar.py` helper) were deleted at the port: they were twelve days
+old, and the standing instruction is that the whole stack is Rust — the
+09-02 pair had been written in Python inside that instruction's shadow. The
+port upgraded two things structurally rather than mechanically: the HTTP
+calls went through `claw_core::http::agent`, so `tools/lint-http.sh` now
+actually reaches the watchdog; and ET dates come from jiff's bundled tzdb,
+so the checker's `UTC − 4h` fallback — off by an hour in EST, a variant of
+the ET rule this repo already holds — is gone because no such fallback
+exists to port.
+
+**The watchdog looks backward now.** The backward check covers the previous
+trading day's dailies, plus the Sunday weekly from a Monday/Tuesday vantage
+(weekly's only other witness was the Monday 00:05Z run — the same
+single-witness shape that hid 09-11). It reports the two hard verdicts only:
+never ran, ended non-success. Rows are attributed by nearest nominal
+trigger, not by the `scheduled_date` stamp — the worker stamps by fire time
+and a late trigger crosses the boundary (adversarial-review finding;
+`evaluate` had already learned this). An unresolved miss alerts on
+consecutive runs until the calendar carries it out of range — deliberate;
+the repeat is the recovery net. The reader grew the weekend gate
+(`freshness::is_weekend`): a drained slot landing on an ET Saturday now
+answers `市場休市` with `ok` markers, no fetch, no Telegram. The gate needed a
+frozen clock for tests, so `CCT_TEST_NOW` exists — honored only when
+`NULLCLAW_JOB_ID` is absent or the tests' `test-trace:1`, because dotenv
+fills absent keys and a stray paste into `~/.nullclaw/.env` must not freeze
+production's clock.
+
+**The replay is the oracle.** Against the live runs history captured on
+09-14: `cct-check --date 2026-09-12` flags the hole, `--date 2026-09-10`
+stays green. One differential against the retired Python is recorded rather
+than hidden: strict-stamp found three findings for 09-11, nearest-nominal
+finds two — the Sat 06:32Z catch-up eod sits 10.5 h from Friday's nominal
+and 13.5 h from Saturday's, so it attributes to Friday and the verdict
+becomes "the slot got a run, 10.5 h late" where the Python's stamp reading
+said "never ran". That semantics change is deliberate and the ghost content
+it looked past is exactly what the trigger gate now prevents.
+
+**Single-writer discipline.** The four box shell jobs were deleted, not
+paused — a paused job is one cron.db restore away from a second trigger row
+and a rewound day. Re-adding them is two commands in `cct/SKILL.md` if the
+worker ever loses the schedule. The adversarial review also ordered the
+cutover: deploy → verify the four `schedule:` lines → then delete the box
+jobs, leaving no zero-writer window and no overlap before the 12:30Z slot
+that would prove the new producer.
+
+---
+
 ## oilcon: the defect rode in with a rebuild, and the probe caught a second one (2026-09-11)
 
 Four identical alerts, four trading nights:
