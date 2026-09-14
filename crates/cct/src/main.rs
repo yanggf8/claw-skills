@@ -17,7 +17,7 @@ use std::io::Write;
 use cct::api;
 use cct::cli::{self, Mode};
 use cct::content::content_gap;
-use cct::freshness::comparison_today;
+use cct::freshness::{comparison_today, is_weekend};
 use cct::render::{format_eod, format_intraday, format_pre_market, format_weekly};
 use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
 use claw_core::env::load_env;
@@ -65,11 +65,49 @@ fn main() {
     // also what the reports are stamped with. jiff is built with
     // `tzdb-bundle-always`, so the zone needs nothing from the host and this
     // works inside the nanoclaw container too.
-    let instant = jiff::Timestamp::now();
+    // Test seam: a frozen `now` for the binary tests, which stub the route
+    // but cannot stub the wall clock — the weekend gate below would
+    // otherwise flip nine of their verdicts every ET Saturday and Sunday
+    // (observed 2026-09-13). Honored only outside the scheduler: a cron run
+    // carries a real NULLCLAW_JOB_ID, and dotenv only fills keys that are
+    // absent, so a stray CCT_TEST_NOW pasted into ~/.nullclaw/.env would
+    // otherwise freeze production's clock with nothing to stop it. A
+    // malformed value warns and falls back to the wall clock — a panic here
+    // would take down all four reads with an alert that carries no reason.
+    let job_id = std::env::var("NULLCLAW_JOB_ID").ok();
+    let test_seam_armed = job_id.is_none() || job_id.as_deref() == Some("test-trace:1");
+    let instant = match std::env::var("CCT_TEST_NOW") {
+        Ok(s) if test_seam_armed => match s.parse() {
+            Ok(t) => t,
+            Err(_) => {
+                let _ = writeln!(
+                    err,
+                    "[WARN: CCT_TEST_NOW is not an RFC3339 instant - ignoring] {s}"
+                );
+                jiff::Timestamp::now()
+            }
+        },
+        _ => jiff::Timestamp::now(),
+    };
     let now = instant.in_tz("UTC").expect("UTC");
     let now_et = instant.in_tz("America/New_York").expect("tzdb is bundled");
     let utc_today = now.date();
     let et_today = now_et.date();
+
+    // Weekend catch-up gate (2026-09-12). A slot drained long after its
+    // minute can land on a Saturday: the three daily reads then asked for
+    // Saturday content, slept through the 60s retry, and shipped three
+    // degradations. No same-day payload can exist (freshness::is_weekend),
+    // so say so once and stop before the fetch. Weekly is exempt: Sunday is
+    // its scheduled day and it looks back over the completed week. No
+    // Telegram delivery — the note echoes to stdout, which the cron capture
+    // keeps, and the Sunday weekly is the heartbeat that proves the chain.
+    if args.mode != Mode::Weekly && is_weekend(et_today) {
+        let body = format!("📊 CCT {}:{et_today} 市場休市,補跑略過", label(args.mode));
+        let opts = DeliverOptions::default();
+        let _ = deliver(None, &body, &opts, &mut out, &mut err);
+        std::process::exit(finish(Finish::Marked { status: SkillStatus::Ok, exit: 0 }, &mut out));
+    }
 
     // A single inside-run retry is cheaper than a scheduler retry (which
     // would duplicate Telegram on degraded) and keeps repair_policy=none.

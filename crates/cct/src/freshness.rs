@@ -76,3 +76,20 @@ pub fn comparison_today(business_date: Option<&str>, et_today: Date, utc_today: 
         utc_today
     }
 }
+
+/// Whether a Saturday/Sunday ET date can carry same-day daily reports.
+///
+/// ET is the market's own time, so a weekend ET date is a weekend market:
+/// the worker generates Mon-Fri only, and no same-day payload can arrive.
+/// This is the reader's half of the 2026-09-12 lesson — a catch-up run
+/// drained onto that Saturday asked for Saturday content, slept through its
+/// retry, and shipped three degradations upstream of a Saturday ghost
+/// report. Deliberately narrow: NYSE holidays are NOT covered (this side
+/// carries no holiday table — the `calendar` module owns that knowledge for
+/// the trigger gate and the watchdog), so a holiday keeps today's behavior,
+/// and weekly is exempt at the call site because Sunday is its scheduled
+/// day.
+pub fn is_weekend(today: Date) -> bool {
+    use jiff::civil::Weekday;
+    matches!(today.weekday(), Weekday::Saturday | Weekday::Sunday)
+}

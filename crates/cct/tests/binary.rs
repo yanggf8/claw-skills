@@ -20,6 +20,14 @@ use std::thread;
 const EOD_PLACEHOLDER: &str = include_str!("eod_placeholder.json");
 const EOD_SCORECARD: &str = include_str!("eod_scorecard.json");
 
+/// The frozen `now` every stubbed run executes under: a Friday ET morning,
+/// so the weekend catch-up gate is out of the way and each verdict below
+/// belongs to the payload, not to the calendar. The binary reads
+/// CCT_TEST_NOW (its only test seam) precisely because a wall-clock branch
+/// in main would otherwise flip nine of these verdicts every ET Saturday
+/// and Sunday — as it did on 2026-09-13.
+const FROZEN_NOW: &str = "2026-09-11T12:00:00Z";
+
 struct Stub {
     port: u16,
     handle: Option<thread::JoinHandle<()>>,
@@ -94,6 +102,7 @@ fn run(data: &str, mode: &str) -> (String, String, i32) {
         .env("CLAW_CONFIG", "/dev/null")
         // Markers are gated on this, and the status line is half the assertion.
         .env("NULLCLAW_JOB_ID", "test-trace:1")
+        .env("CCT_TEST_NOW", FROZEN_NOW)
         .output()
         .expect("run cct");
     (
@@ -217,6 +226,7 @@ fn run_envelope(envelope: String, mode: &str) -> (String, String, i32) {
         .env("CLAW_ENV", "/dev/null")
         .env("CLAW_CONFIG", "/dev/null")
         .env("NULLCLAW_JOB_ID", "test-trace:1")
+        .env("CCT_TEST_NOW", FROZEN_NOW)
         .output()
         .expect("run cct");
     (
@@ -327,7 +337,9 @@ fn the_intraday_header_is_stamped_in_market_time() {
     assert!(header.ends_with(" ET"), "header must be stamped ET: {header}");
     assert!(!header.contains("UTC"), "and no longer UTC: {header}");
 
-    let utc_hour = jiff::Timestamp::now()
+    let utc_hour = FROZEN_NOW
+        .parse::<jiff::Timestamp>()
+        .expect("frozen now")
         .in_tz("UTC")
         .expect("UTC")
         .strftime("%H")
@@ -342,4 +354,54 @@ fn the_intraday_header_is_stamped_in_market_time() {
         rendered_hour, utc_hour,
         "an ET stamp can never show the UTC hour: {header}"
     );
+}
+
+// ── the weekend catch-up gate ────────────────────────────────────────────────
+
+#[test]
+fn a_weekend_catchup_stops_before_the_fetch_and_delivers_nothing() {
+    // 2026-09-12, from the reader side: Friday's reads drained onto an ET
+    // Saturday and shipped three degradations for content that could not
+    // exist. The gate answers once, marks ok, and never touches the route —
+    // if it did, this empty payload would come back degraded instead of ok.
+    let stub = Stub::serving(envelope("{}"));
+    let out = Command::new(env!("CARGO_BIN_EXE_cct"))
+        .args(["--mode", "pre-market", "--deliver-to", "7972814626"])
+        .env("CCT_BASE", stub.base())
+        .env("CCT_TEST_NOW", "2026-09-12T06:25:00Z") // ET Saturday 02:25
+        .env("CLAW_ENV", "/dev/null")
+        .env("CLAW_CONFIG", "/dev/null")
+        .env("NULLCLAW_JOB_ID", "test-trace:1")
+        .output()
+        .expect("run cct");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("[skill-status:ok]"), "stdout: {stdout}");
+    assert!(stdout.contains("市場休市"), "stdout: {stdout}");
+    // No fetch happened: the 60s retry line only prints after an unusable
+    // first fetch, and this run must not have made one.
+    assert!(!stderr.contains("first fetch unusable"), "stderr: {stderr:?}");
+}
+
+#[test]
+fn the_weekly_reader_is_exempt_from_the_weekend_gate() {
+    // Sunday is the weekly's scheduled day; the gate must not swallow it.
+    // An empty payload therefore still degrades the ordinary way, and the
+    // closed-market note stays off the wire.
+    let stub = Stub::serving(envelope("{}"));
+    let out = Command::new(env!("CARGO_BIN_EXE_cct"))
+        .args(["--mode", "weekly"])
+        .env("CCT_BASE", stub.base())
+        .env("CCT_TEST_NOW", "2026-09-13T14:00:00Z") // ET Sunday 10:00
+        .env("CLAW_ENV", "/dev/null")
+        .env("CLAW_CONFIG", "/dev/null")
+        .env("NULLCLAW_JOB_ID", "test-trace:1")
+        .output()
+        .expect("run cct");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("[skill-status:degraded]"), "stdout: {stdout}");
+    assert!(!stdout.contains("市場休市"), "stdout: {stdout}");
 }

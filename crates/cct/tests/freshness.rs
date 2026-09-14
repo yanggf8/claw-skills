@@ -423,3 +423,26 @@ fn the_header_carries_the_stated_session_through_format_eod() {
     let out = format_eod(Some("2026-08-06"), &scorecard(), "2099-01-01");
     assert!(out.contains("收盤報告｜2026-08-06"), "got: {out}");
 }
+
+// ── is_weekend ───────────────────────────────────────────────────────────────
+
+#[test]
+fn a_saturday_cannot_have_daily_content() {
+    // 2026-09-12: the catch-up drained Friday's missed reads onto this ET
+    // Saturday and produced three degradations for content that could not
+    // exist. The predicate is what stops before the fetch now.
+    let sat: Date = "2026-09-12".parse().unwrap();
+    assert!(cct::freshness::is_weekend(sat));
+}
+
+#[test]
+fn a_sunday_cannot_have_daily_content() {
+    let sun: Date = "2026-09-13".parse().unwrap();
+    assert!(cct::freshness::is_weekend(sun));
+}
+
+#[test]
+fn a_trading_friday_is_not_a_weekend() {
+    let fri: Date = "2026-09-11".parse().unwrap();
+    assert!(!cct::freshness::is_weekend(fri));
+}
