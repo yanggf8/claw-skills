@@ -3,14 +3,15 @@
 //! All pure. This is the deterministic half of the skill — everything an LLM
 //! is later asked to judge is first narrowed by these rules.
 
+use crate::validate::count_cjk;
 use std::collections::HashSet;
 
 /// Tokens too common to distinguish one headline from another.
 const STOPWORDS: &[&str] = &[
-    "the", "a", "an", "and", "or", "to", "of", "for", "in", "on", "with", "new", "ai", "is",
-    "are", "be", "at", "from", "your", "you", "our", "its", "it", "more", "all", "how", "why",
-    "what", "as", "by", "this", "的", "是", "了", "在", "和", "與", "及", "也", "都", "就", "而",
-    "對", "為", "以", "從", "把", "被", "將", "這", "那", "有", "沒",
+    "the", "a", "an", "and", "or", "to", "of", "for", "in", "on", "with", "new", "ai", "is", "are",
+    "be", "at", "from", "your", "you", "our", "its", "it", "more", "all", "how", "why", "what",
+    "as", "by", "this", "的", "是", "了", "在", "和", "與", "及", "也", "都", "就", "而", "對",
+    "為", "以", "從", "把", "被", "將", "這", "那", "有", "沒",
 ];
 
 /// CJK bigrams that appear in almost every business headline.
@@ -48,6 +49,197 @@ pub fn title_without_source(title: &str) -> &str {
         Some(i) => &title[..i],
         None => title,
     }
+}
+
+/// Standing lead-ins a headline carries but the story does not: `獨家：`,
+/// `Exclusive |`, `【社論】`, `華爾街日報》`.
+///
+/// Google News splits a query on whitespace and on `：`/`|` and **ANDs** the
+/// fragments, so a lead-in stops being a label and becomes a *required term*
+/// that only the outlet which ran the exclusive ever uses. Measured 2026-09-16
+/// against Google News RSS, zh-TW edition unless noted:
+///
+/// | query | items |
+/// |---|---|
+/// | `獨家：台積電2奈米提前量產` | 0 |
+/// | `台積電2奈米提前量產` | 7 |
+/// | `【獨家】台積電2奈米提前量產` | 0 |
+/// | `獨家：美國施壓墨西哥阻擋中國` | 0 |
+/// | `美國施壓墨西哥阻擋中國` | 5 |
+/// | `Exclusive | U.S. Pressures Mexico to Box Out China's AI Hardware Exports` (en-US) | 1 |
+/// | `U.S. Pressures Mexico to Box Out China's AI Hardware Exports` (en-US) | 3 |
+const LEAD_IN_LABELS: &[&str] = &[
+    // Chinese news furniture.
+    "獨家",
+    "獨家報導",
+    "獨家專訪",
+    "快訊",
+    "快報",
+    "即時",
+    "即時新聞",
+    "最新",
+    "不斷更新",
+    "更新",
+    "重磅",
+    "焦點",
+    "影",
+    "影片",
+    "影音",
+    "影音報導",
+    "圖輯",
+    "照片",
+    "專訪",
+    "現場",
+    "直擊",
+    "深度",
+    "分析",
+    "評論",
+    "社論",
+    "風評",
+    "專欄",
+    "特別報導",
+    "懶人包",
+    "整理包",
+    "話題",
+    "熱門",
+    "早安世界",
+    "快報頭條",
+    // English news furniture.
+    "exclusive",
+    "breaking",
+    "video",
+    "watch",
+    "opinion",
+    "update",
+    "live",
+    "updates",
+    "analysis",
+    "interview",
+    "review",
+    "explainer",
+    "editorial",
+    "column",
+    "photos",
+    "recap",
+];
+
+/// Characters a bare lead-in label is followed by.
+const LEAD_IN_SEPARATORS: [char; 5] = ['：', ':', '｜', '|', '／'];
+
+/// Deliberately NOT here: `陸股`, `台股`, `美股`, `港股`, `盤中`, `收盤`. They
+/// read like furniture but they are also *terms the coverage uses*, so
+/// stripping them loses results rather than finding them — measured 2026-09-16,
+/// `台股：外資買超 台積電領漲` scored 37 items whole and 10 stripped, `盤中：…`
+/// 31 and 5. A label only belongs in this list when it reliably empties the
+/// query, which is what `獨家`/`快訊`/`Exclusive`/`Video` do.
+///
+/// How far into the headline a lead-in may start. Bounds the scan so a colon
+/// inside a long headline is never mistaken for a label separator.
+const LEAD_IN_MAX_CHARS: usize = 16;
+
+fn is_lead_in_label(head: &str) -> bool {
+    let head = head.trim();
+    !head.is_empty()
+        && head.chars().count() <= LEAD_IN_MAX_CHARS
+        && LEAD_IN_LABELS.iter().any(|l| head.eq_ignore_ascii_case(l))
+}
+
+/// Drop one leading label, or `None` when the headline opens with the story.
+///
+/// Three shapes, all seen in the live feeds:
+/// - bracketed label: `【社論】…`, `[Video] …`
+/// - bare label plus separator: `獨家：…`, `Exclusive | …`, `影／…`
+/// - dangling close, the opener having been dropped upstream: `華爾街日報》…`,
+///   `早安世界》…`, `MLB》…`
+///
+/// The first two are gated on the label being a *known* label, and the third on
+/// there being no opener in the prefix. Both gates exist for the same reason: a
+/// bracket is also how a headline names the work or product it is about, and
+/// `《Apex英雄》9/22聯動《快打旋風6》` stripped to `9/22聯動《快打旋風6》` — or
+/// `不只《蘭香如故》好看！` to `好看！` — loses the one token the search needs.
+fn strip_one_lead_in(s: &str) -> Option<&str> {
+    for (open, close) in [('【', '】'), ('[', ']')] {
+        if s.starts_with(open) {
+            if let Some((i, _)) = s
+                .char_indices()
+                .take(LEAD_IN_MAX_CHARS)
+                .find(|(_, c)| *c == close)
+            {
+                if !is_lead_in_label(&s[open.len_utf8()..i]) {
+                    break;
+                }
+                let rest = &s[i + close.len_utf8()..];
+                if !rest.trim().is_empty() {
+                    return Some(rest);
+                }
+            }
+            break;
+        }
+    }
+
+    if let Some((i, sep)) = s
+        .char_indices()
+        .take(LEAD_IN_MAX_CHARS)
+        .find(|(_, c)| LEAD_IN_SEPARATORS.contains(c))
+    {
+        if is_lead_in_label(&s[..i]) {
+            let rest = &s[i + sep.len_utf8()..];
+            if !rest.trim().is_empty() {
+                return Some(rest);
+            }
+        }
+    }
+
+    let close_at = s
+        .char_indices()
+        .take(LEAD_IN_MAX_CHARS)
+        .find(|(_, c)| matches!(c, '》' | '】' | ']'));
+    if let Some((i, close)) = close_at {
+        let prefix = &s[..i];
+        // An opener in the prefix means this close belongs to it — the headline
+        // is about the bracketed work, not labelled by the text before it.
+        if !prefix.contains(['《', '【', '[']) {
+            let rest = &s[i + close.len_utf8()..];
+            if !rest.trim().is_empty() {
+                return Some(rest);
+            }
+        }
+    }
+
+    None
+}
+
+/// The text to search for when hunting another outlet's coverage of a story.
+///
+/// The source suffix goes, as everywhere else; then any standing lead-in goes,
+/// repeatedly, because headlines stack them (`Video: Opinion | How China Sees
+/// the A.I. Race`). What is left is the part of the headline another outlet
+/// would also have used — which is the only part a full-text search can match.
+///
+/// Used for the paywall replacement lookup. Never for display: the digest shows
+/// the headline the model wrote, and this is only a query string.
+pub fn replacement_query(title: &str) -> String {
+    let mut s = title_without_source(title).trim();
+    while let Some(rest) = strip_one_lead_in(s) {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            break;
+        }
+        s = rest;
+    }
+    s.trim().to_string()
+}
+
+/// Whether a headline is written in Chinese, judged after the source suffix is
+/// removed.
+///
+/// One definition, because two callers key off it: the story gate decides
+/// `Undecidable` from it, and the search layer picks its edition and market from
+/// it. A suffix is not part of the headline — Google appends `" - 自由時報"` to
+/// an English headline carried by a Taiwanese outlet, and counting that would
+/// call the headline Chinese and send the search to the wrong edition.
+pub fn is_cjk_headline(title: &str) -> bool {
+    count_cjk(title_without_source(title)) >= 2
 }
 
 /// Latin tokens of a headline or body: lowercase `[a-z0-9]+` runs of two or

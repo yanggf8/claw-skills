@@ -111,8 +111,17 @@ pub fn paywall_replace_sources() -> Vec<String> {
         .filter(|s| !s.is_empty())
         .collect()
 }
-pub fn paywall_replace_bing_mkt() -> String {
-    env_str("NEWS_PAYWALL_REPLACE_BING_MKT", "en-US")
+/// Operator override for Bing's `mkt`, or `None` to pick it from the query.
+///
+/// The default is auto, not `en-US`: `mkt` filters the index by language, so a
+/// fixed market silently returns nothing for every query in the other script.
+/// Measured 2026-09-16 on the story that exposed this — a Chinese query scored
+/// 0 items under `en-US` and 9 under `zh-TW`; an English query scored 12 and 1.
+pub fn paywall_replace_bing_mkt() -> Option<String> {
+    std::env::var("NEWS_PAYWALL_REPLACE_BING_MKT")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 /// Summarising a paywalled article that has no free replacement.
 ///

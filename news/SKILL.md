@@ -256,7 +256,42 @@ contract. Trace: `paywall_replacement_found`, `paywall_replace_deadline`, `paywa
 Env knobs: `NEWS_PAYWALL_REPLACE=0` disables the lookup (note-only);
 `NEWS_PAYWALL_REPLACE_DEADLINE` (default 20s), `NEWS_PAYWALL_REPLACE_MAX` (default 4) bound it;
 `NEWS_PAYWALL_REPLACE_SOURCES` (default `google,bing`) selects which RSS indexes to query;
-`NEWS_PAYWALL_REPLACE_BING_MKT` (default `en-US`) sets Bing's market parameter.
+`NEWS_PAYWALL_REPLACE_BING_MKT` (default: unset — auto) pins Bing's market parameter.
+
+**The query is the searchable part of the headline, and the index is chosen by its
+script.** Both rules exist because the 2026-09-16 WSJ pick got a bare headline and nothing
+else — no replacement *and* no summary — for a story five Chinese outlets had covered.
+
+*Lead-ins are dropped.* Google News splits a query on `：`/`|` and whitespace and **ANDs**
+the fragments, so a standing label stops being a label and becomes a required term only the
+outlet that ran the exclusive uses. Measured the same day, zh-TW edition:
+
+| query | items |
+|---|---|
+| `獨家：台積電2奈米提前量產` | 0 |
+| `台積電2奈米提前量產` | 7 |
+| `【獨家】台積電2奈米提前量產` | 0 |
+| `獨家：美國施壓墨西哥阻擋中國` | 0 |
+| `美國施壓墨西哥阻擋中國` | 5 |
+| `Exclusive \| U.S. Pressures Mexico to Box Out China's AI Hardware Exports` (en-US) | 1 |
+| `U.S. Pressures Mexico to Box Out China's AI Hardware Exports` (en-US) | 3 |
+
+`text::replacement_query` strips the source suffix, then any standing lead-in, repeatedly
+(`Video: Opinion \| …` stacks two). Brackets are gated on the label being *known*: a
+bracket is also how a headline names the work it is about, and `《Apex英雄》9/22聯動…`
+stripped blindly becomes `9/22聯動…`. The bare-label and dangling-close forms
+(`華爾街日報》…`) have their own guards for the same reason. Search-only — the digest shows
+the headline the model wrote.
+
+*The edition follows the query's language.* An edition is a language filter, not a region
+preference, and the two are nearly disjoint: a Chinese query returned items in zh-TW and
+**0 in en-US in 8 of 8** cases, while 22 of 25 real English headlines from the day's feeds
+returned **0 in the zh-TW edition**. So a Chinese query goes to zh-TW only, and an English
+one goes to **both** — en-US for the English coverage and zh-TW for the *Chinese rewrite*
+of the same story, which is what the cross-language judge exists to accept. Dropping the
+second edition would silently retire that path. Bing's `mkt` follows the same rule (the
+exposed story: 0 items under `en-US`, 9 under `zh-TW`), unless
+`NEWS_PAYWALL_REPLACE_BING_MKT` pins it.
 
 **Cross-language replacement** — the same-story gate is three-valued, not a boolean.
 `topic_words` emits Latin runs for English and CJK *bigrams* for Chinese, and no Latin run

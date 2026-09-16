@@ -4,7 +4,7 @@
 //! Bing (only ever consulted for a free replacement of a paywalled pick).
 
 use crate::config::paywall_replace_bing_mkt;
-use crate::text::{extract_source_name, Item};
+use crate::text::{extract_source_name, is_cjk_headline, Item};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::time::Duration;
@@ -52,11 +52,70 @@ pub fn topic_feed_url(topic: &str) -> String {
     )
 }
 
-pub fn bing_news_feed_url(query: &str) -> String {
+/// Google News editions, as the query-string tail each needs.
+pub const GN_EDITION_TW: &str = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant";
+pub const GN_EDITION_US: &str = "hl=en-US&gl=US&ceid=US:en";
+
+/// Bing's market parameter, the same way.
+pub const BING_MKT_TW: &str = "zh-TW";
+pub const BING_MKT_US: &str = "en-US";
+
+/// The Google News editions worth asking for a headline.
+///
+/// An edition is a *language filter*, not a region preference, and the two are
+/// nearly disjoint result sets: measured 2026-09-16, a Chinese query returned
+/// items in the zh-TW edition and **0 in 8 of 8** cases in en-US, while an
+/// English query returned 0 in the zh-TW edition for **22 of 25** real English
+/// headlines from the day's feeds. So a query has to be sent to the edition
+/// whose language it is written in, or it comes back empty — which is what
+/// happened to the WSJ pick on 2026-09-16: `Exclusive | U.S. Pressures Mexico
+/// to Box Out China's AI Hardware Exports` scored 0 items in zh-TW and 12 in
+/// en-US.
+///
+/// An English query also gets the Taiwanese edition, because that is where a
+/// Chinese-language rewrite of the same story is indexed — the cross-language
+/// replacement that `judge_cross_language_candidate` exists to accept. Dropping
+/// it would silently retire that path. A Chinese query does not get the English
+/// edition: it returns nothing there, measured 8 of 8.
+pub fn search_editions(query: &str) -> Vec<&'static str> {
+    if is_cjk_headline(query) {
+        vec![GN_EDITION_TW]
+    } else {
+        vec![GN_EDITION_US, GN_EDITION_TW]
+    }
+}
+
+/// The Bing markets worth asking, by the same rule as [`search_editions`].
+///
+/// Measured 2026-09-16 on the story that exposed this: the stripped Chinese
+/// query scored 0 items under `mkt=en-US` and 9 under `mkt=zh-TW`; the English
+/// one scored 12 and 1.
+pub fn search_markets(query: &str) -> Vec<String> {
+    if is_cjk_headline(query) {
+        vec![BING_MKT_TW.to_string()]
+    } else {
+        vec![BING_MKT_US.to_string(), BING_MKT_TW.to_string()]
+    }
+}
+
+/// A one-day Google News search for a headline, in one named edition.
+///
+/// Separate from [`topic_feed_url`] on purpose: that one builds the *reader's*
+/// topic feeds, which are Chinese by construction and must stay on the
+/// Taiwanese edition.
+pub fn search_feed_url(query: &str, edition: &str) -> String {
+    format!(
+        "https://news.google.com/rss/search?q={}+when:1d&{}",
+        quote(query),
+        edition
+    )
+}
+
+pub fn bing_news_feed_url(query: &str, mkt: &str) -> String {
     format!(
         "https://www.bing.com/news/search?q={}&mkt={}&format=rss",
         quote(query),
-        paywall_replace_bing_mkt()
+        paywall_replace_bing_mkt().unwrap_or_else(|| mkt.to_string())
     )
 }
 

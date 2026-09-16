@@ -13,14 +13,15 @@ use crate::config::{
     precheck_fetch_timeout, precheck_max_workers, precheck_total_deadline,
 };
 use crate::feed::{
-    bing_news_feed_url, fetch_feed, normalize_replacement_candidate, split_url, topic_feed_url,
+    bing_news_feed_url, fetch_feed, normalize_replacement_candidate, search_editions,
+    search_feed_url, search_markets, split_url,
 };
 use crate::quality::{self, Action, Verdict};
 use crate::render::Replacement;
 use crate::select::NumberedMap;
-use crate::text::{dedup, title_without_source, topic_words, Item};
+use crate::text::{dedup, is_cjk_headline, replacement_query, topic_words, Item};
 use crate::trace::log_trace;
-use crate::validate::{count_cjk, leading_marker, leading_marker_ids};
+use crate::validate::{leading_marker, leading_marker_ids};
 use claw_core::budget::monotonic_secs;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -276,16 +277,6 @@ fn netloc_lower(url: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Whether a headline is written in CJK, judged after the source suffix is
-/// removed.
-///
-/// The suffix matters: Google appends `" - 自由時報"` to an English headline
-/// carried by a Taiwanese outlet, and counting that would call the headline
-/// Chinese when it is not.
-fn is_cjk_title(title: &str) -> bool {
-    count_cjk(title_without_source(title)) >= 2
-}
-
 /// The three answers the deterministic same-story check can give.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoryGate {
@@ -316,7 +307,7 @@ pub enum StoryGate {
 /// So a cross-script pair is reported as [`StoryGate::Undecidable`] rather than
 /// rejected, and the caller decides it by other means.
 pub fn same_story_gate(orig_title: &str, cand_title: &str) -> StoryGate {
-    if is_cjk_title(orig_title) != is_cjk_title(cand_title) {
+    if is_cjk_headline(orig_title) != is_cjk_headline(cand_title) {
         return StoryGate::Undecidable;
     }
     if topic_words(orig_title)
@@ -414,7 +405,10 @@ pub fn resolve_paywall_replacements(
         if orig_title.trim().is_empty() {
             continue;
         }
-        let query = title_without_source(&orig_title).trim().to_string();
+        // The searchable part only: a standing lead-in (`獨家：`, `Exclusive |`)
+        // is a required `AND` term to Google News, so leaving it in returns
+        // nothing for exactly the exclusives that need a stand-in.
+        let query = replacement_query(&orig_title);
         if query.is_empty() {
             continue;
         }
@@ -423,18 +417,40 @@ pub fn resolve_paywall_replacements(
         }
 
         let mut candidates: Vec<Item> = Vec::new();
+        // The URLs, not the editions: with `NEWS_PAYWALL_REPLACE_BING_MKT`
+        // pinned, both markets collapse to one URL and fetching it twice would
+        // spend two slots of a bounded budget on the same request.
+        let mut fetched: HashSet<String> = HashSet::new();
+
         if sources.iter().any(|s| s == "google") {
-            if let Some(t) = fetch_timeout() {
-                candidates.extend(fetch_feed(&topic_feed_url(&query), 8, t));
+            for edition in search_editions(&query) {
+                if !fetched.insert(search_feed_url(&query, edition)) {
+                    continue;
+                }
+                if let Some(t) = fetch_timeout() {
+                    candidates.extend(fetch_feed(&search_feed_url(&query, edition), 8, t));
+                }
+                if expired() {
+                    break;
+                }
             }
         }
         if sources.iter().any(|s| s == "bing") {
-            if let Some(t) = fetch_timeout() {
-                candidates.extend(
-                    fetch_feed(&bing_news_feed_url(&query), 8, t)
-                        .into_iter()
-                        .map(normalize_replacement_candidate),
-                );
+            for mkt in search_markets(&query) {
+                let url = bing_news_feed_url(&query, &mkt);
+                if !fetched.insert(url.clone()) {
+                    continue;
+                }
+                if let Some(t) = fetch_timeout() {
+                    candidates.extend(
+                        fetch_feed(&url, 8, t)
+                            .into_iter()
+                            .map(normalize_replacement_candidate),
+                    );
+                }
+                if expired() {
+                    break;
+                }
             }
         }
         let candidates = dedup(&candidates);
@@ -487,14 +503,9 @@ pub fn resolve_paywall_replacements(
                 log_trace("paywall_replace_deadline", json!({"resolved": processed}));
                 break;
             }
-            let Some(title_zh) = headline_for(
-                gate,
-                &orig_title,
-                &cand.title,
-                date_str,
-                translate,
-                judge,
-            ) else {
+            let Some(title_zh) =
+                headline_for(gate, &orig_title, &cand.title, date_str, translate, judge)
+            else {
                 continue;
             };
             if let Some(entry) = paywall.get_mut(&num) {
@@ -612,7 +623,10 @@ mod tests {
     #[test]
     fn collect_bodies_keeps_only_keep_verdicts_with_excerpts() {
         let mut verdicts = BTreeMap::new();
-        verdicts.insert(1u32, verdict(Action::Keep, Some("Meta launched Muse Glimmer")));
+        verdicts.insert(
+            1u32,
+            verdict(Action::Keep, Some("Meta launched Muse Glimmer")),
+        );
         verdicts.insert(2, verdict(Action::Keep, None));
         verdicts.insert(3, verdict(Action::TitleOnly, Some("paywalled stub")));
         verdicts.insert(4, verdict(Action::Drop, Some("denied body")));

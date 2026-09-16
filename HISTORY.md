@@ -9,6 +9,71 @@ this file is only the record of what changed and why.
 
 ---
 
+## news: the paywall fallback searched for a phrase nobody writes, in the wrong language (2026-09-16)
+
+The 00:30 run delivered this bullet and nothing under it:
+
+```
+- 獨家：美國施壓墨西哥阻擋中國 AI 硬體出口 [🔗](…)  ⚠️ 付費牆（原文需訂閱）
+```
+
+The story is the WSJ's *Exclusive | U.S. Pressures Mexico to Box Out China's AI Hardware
+Exports*. Two independent defects, both in the free-replacement search, and both silent —
+each one produces "no replacement found", which is a designed degradation with its own
+trace event, so neither raised an alert.
+
+**1. The query was the whole headline, and a lead-in is not a label to Google News — it is
+a required term.** Google splits a query on whitespace and on `：`/`|` and ANDs the pieces,
+so `獨家：美國施壓墨西哥阻擋中國 AI 硬體出口` asks for articles containing *獨家* **and**
+the rest. Only the outlet that ran the exclusive writes 獨家. Measured 2026-09-16, zh-TW
+edition, the same day:
+
+| query | items |
+|---|---|
+| `獨家：台積電2奈米提前量產` | 0 |
+| `台積電2奈米提前量產` | 7 |
+| `獨家：美國施壓墨西哥阻擋中國` | 0 |
+| `美國施壓墨西哥阻擋中國` | 5 |
+
+The first Bing attempt under `mkt=en-US` agreed: 0 items. `Exclusive |` behaves the same
+way in English.
+
+**2. The Google edition was hard-coded to zh-TW, which cannot answer an English query.** An
+edition is a *language* filter, not a region preference; the two return near-disjoint sets.
+Across 25 real English headlines from the same morning's `ai_*` feeds, **22 of 25 returned 0
+items in the zh-TW edition** and 1 of 25 in en-US. Bing's `mkt` had the mirror-image defect:
+its default was a fixed `en-US`, which returned 0 for the stripped Chinese query that
+returned 9 under `zh-TW`.
+
+**The fix, and the part that was not obvious.** `text::replacement_query` strips the source
+suffix and then any standing lead-in, repeatedly — `Video: Opinion | …` stacks two. The
+search then goes to en-US for a Latin query and zh-TW for a CJK one. But an English query
+gets **both** editions, because zh-TW is where the *Chinese rewrite* of an English story is
+indexed, and that is the replacement `judge_cross_language_candidate` exists to accept —
+`Anthropic Claude enterprise` returns 45 English items in en-US and 0 Chinese ones, then 3
+items in zh-TW and all 3 Chinese. Sending English queries to en-US alone would have retired
+the cross-language path while looking like a fix.
+
+Brackets are gated on the label being *known*, because a bracket is also how a headline
+names the work it is about: `《Apex英雄》9/22聯動《快打旋風6》` stripped blindly becomes
+`9/22聯動《快打旋風6》`, losing the only distinctive token. Market furniture (`台股：`,
+`盤中：`) is deliberately **not** in the label list — it reads like a label but it is also a
+term the coverage uses, so stripping it *loses* results (37 → 10 and 31 → 5 measured).
+
+**What the checks caught.** The label list was measured, not guessed: each candidate label
+was prepended to a known-good body and only the ones that reliably emptied the query were
+kept. Two bugs in the fix were found this way before shipping — the work-title strip above,
+and a first draft of the dangling-close rule that also fired mid-headline until it was
+gated on there being no opener in the prefix.
+
+Traces to watch: `paywall_replacement_found` (and its `cross_lang` flag),
+`paywall_summary_skipped` — where `words=0` with `error=true` is the hard-paywall stub and
+the signal that a *summary* was never going to work either (WSJ answers any crawler with a
+401). The host list is still the only thing that can know a metered publisher is metered;
+this entry is about the two failures downstream of it.
+
+---
+
 ## cct: the box died with the watchdog in its lap, and the producer moved home again (2026-09-14)
 
 Three Telegram degradations on a Saturday morning, about the previous day:

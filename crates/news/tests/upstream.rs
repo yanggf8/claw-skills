@@ -24,6 +24,67 @@ fn a_topic_url_carries_the_one_day_window_and_the_taiwan_locale() {
     );
 }
 
+// ── the replacement search is routed by the query's script ───────────────────
+
+#[test]
+fn a_chinese_headline_searches_the_taiwanese_edition_only() {
+    // An edition is a language filter, not a region preference: measured
+    // 2026-09-16, a Chinese query returned 0 items in en-US in 8 of 8 cases.
+    assert_eq!(search_editions("台積電2奈米提前量產"), vec![GN_EDITION_TW]);
+    assert_eq!(
+        search_markets("台積電2奈米提前量產"),
+        vec!["zh-TW".to_string()]
+    );
+}
+
+#[test]
+fn an_english_headline_searches_both_editions_taiwan_second() {
+    // en-US is where the English coverage is, and zh-TW is where the
+    // *Chinese rewrite* of the same story is — the cross-language replacement
+    // the judge exists to accept. Dropping zh-TW would retire that path.
+    assert_eq!(
+        search_editions("U.S. Pressures Mexico to Box Out China AI Hardware Exports"),
+        vec![GN_EDITION_US, GN_EDITION_TW]
+    );
+    assert_eq!(
+        search_markets("Nvidia reports record datacenter revenue"),
+        vec!["en-US".to_string(), "zh-TW".to_string()]
+    );
+}
+
+#[test]
+fn a_chinese_suffix_does_not_make_an_english_headline_chinese() {
+    // The suffix is not part of the headline; treating it as one would send
+    // this query to zh-TW, which returns nothing for it.
+    assert_eq!(
+        search_editions("Nvidia beats earnings expectations - 自由時報"),
+        vec![GN_EDITION_US, GN_EDITION_TW]
+    );
+}
+
+#[test]
+fn a_search_url_names_the_edition_it_was_given() {
+    assert_eq!(
+        search_feed_url("AI", GN_EDITION_TW),
+        "https://news.google.com/rss/search?q=AI+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    );
+    assert_eq!(
+        search_feed_url("AI", GN_EDITION_US),
+        "https://news.google.com/rss/search?q=AI+when:1d&hl=en-US&gl=US&ceid=US:en"
+    );
+}
+
+#[test]
+fn the_bing_market_argument_is_what_the_url_carries() {
+    // No env here: `NEWS_PAYWALL_REPLACE_BING_MKT` is process-wide, so its
+    // override lives in its own binary (`tests/bing_market.rs`), the same way
+    // the deny list does. This file stays pure URL construction.
+    let en = bing_news_feed_url("Nvidia reports record revenue", "en-US");
+    assert!(en.contains("mkt=en-US"), "{en}");
+    let zh = bing_news_feed_url("台積電2奈米提前量產", "zh-TW");
+    assert!(zh.contains("mkt=zh-TW"), "{zh}");
+}
+
 #[test]
 fn every_built_in_feed_resolves() {
     for (name, _) in FEEDS {
@@ -60,7 +121,10 @@ fn a_bing_click_tracker_is_unwrapped_to_the_real_article() {
     };
     let out = normalize_replacement_candidate(item);
     assert_eq!(out.link, "https://real.example.com/a?b=1");
-    assert_eq!(out.decoded_url.as_deref(), Some("https://real.example.com/a?b=1"));
+    assert_eq!(
+        out.decoded_url.as_deref(),
+        Some("https://real.example.com/a?b=1")
+    );
 }
 
 #[test]
@@ -121,7 +185,11 @@ fn cdata_is_taken_literally() {
 #[test]
 fn an_item_with_no_usable_title_is_skipped() {
     // Both the whitespace-only title and the missing one.
-    let links: Vec<&str> = parse_rss(FEED, 15).iter().map(|i| i.link.clone()).map(|s| Box::leak(s.into_boxed_str()) as &str).collect();
+    let links: Vec<&str> = parse_rss(FEED, 15)
+        .iter()
+        .map(|i| i.link.clone())
+        .map(|s| Box::leak(s.into_boxed_str()) as &str)
+        .collect();
     assert!(!links.contains(&"https://a/3"));
     assert!(!links.contains(&"https://a/4"));
 }
@@ -241,7 +309,10 @@ fn a_paywall_marker_in_the_body_is_recognised_in_both_scripts() {
 #[test]
 fn an_item_with_no_article_and_no_deny_entry_is_kept() {
     // The lists ship empty, so nothing is denied until an operator says so.
-    assert_eq!(classify_quality("Reuters", "普通標題", None), (Action::Keep, None));
+    assert_eq!(
+        classify_quality("Reuters", "普通標題", None),
+        (Action::Keep, None)
+    );
 }
 
 #[test]

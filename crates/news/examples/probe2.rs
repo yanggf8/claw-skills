@@ -18,7 +18,17 @@ fn main() {
         let out = match kind {
             "quote" => serde_json::json!(feed::quote(v)),
             "topic_url" => serde_json::json!(feed::topic_feed_url(v)),
-            "bing_url" => serde_json::json!(feed::bing_news_feed_url(v)),
+            // The replacement search is script-routed now, so the probe reports
+            // every URL the pass would actually try, in order.
+            "bing_url" => serde_json::json!(feed::search_markets(v)
+                .iter()
+                .map(|m| feed::bing_news_feed_url(v, m))
+                .collect::<Vec<_>>()),
+            "search_url" => serde_json::json!(feed::search_editions(v)
+                .iter()
+                .map(|e| feed::search_feed_url(v, e))
+                .collect::<Vec<_>>()),
+            "replacement_query" => serde_json::json!(news::text::replacement_query(v)),
             "gnews_url" => serde_json::json!(quality::google_news_article_url_pub(v)),
             "payload" => {
                 let p: Vec<&str> = v.split('\u{1}').collect();
