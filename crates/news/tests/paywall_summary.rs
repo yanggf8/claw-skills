@@ -20,6 +20,9 @@ fn a_full_article_is_summarisable_and_a_stub_is_not() {
     // smaller. Summarising the stub would produce a confident paragraph drawn
     // from menu labels.
     assert!(body_is_summarisable(2195));
+    // A paywalled publisher may expose only a useful short preview.
+    assert!(body_is_summarisable(150));
+    assert!(!body_is_summarisable(119));
     assert!(!body_is_summarisable(40));
     assert!(!body_is_summarisable(0));
 }

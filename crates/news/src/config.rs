@@ -132,10 +132,11 @@ pub fn paywall_summary_enabled() -> bool {
     env_flag("NEWS_PAYWALL_SUMMARY")
 }
 /// Below this many words the fetched text is navigation chrome, not an
-/// article. A hard paywall answers a crawler with a stub, and summarising a
-/// stub produces a confident paragraph about nothing.
+/// article. Paywalled publishers often expose only a short lede or preview,
+/// so this is lower than the normal article floor; otherwise a useful
+/// 150–280 word preview becomes headline-only output.
 pub fn paywall_summary_min_words() -> usize {
-    env_usize("NEWS_PAYWALL_SUMMARY_MIN_WORDS", 300)
+    env_usize("NEWS_PAYWALL_SUMMARY_MIN_WORDS", 120)
 }
 /// How much of the body the model is shown. Enough for the lede and the first
 /// few sections, which is what a three-line summary is drawn from.

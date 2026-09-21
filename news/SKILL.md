@@ -314,13 +314,13 @@ Chinese summary, rendered as `　↳ ` continuation lines under the headline so 
 keeps them together. It runs only on entries with no replacement (a link the reader can
 open beats this repo restating the paid one), and it re-fetches because a listed paywall
 host short-circuits `precheck_action` on the host check and never fetches a body at all.
-A body under `NEWS_PAYWALL_SUMMARY_MIN_WORDS` (default 300) is treated as a stub and
+A body under `NEWS_PAYWALL_SUMMARY_MIN_WORDS` (default 120) is treated as a stub and
 skipped — that is what separates a metered publisher, which hands a crawler the whole
 piece, from a hard one, which hands it nav chrome. The Chinese-character floor is applied
 **per line**: a model that half-complies by returning one English sentence among Chinese
 ones would pass a whole-block check and inject English past the section language gate,
 which has already run by then. Env knobs: `NEWS_PAYWALL_SUMMARY=0` disables it,
-`NEWS_PAYWALL_SUMMARY_MIN_WORDS` (default 300), `NEWS_PAYWALL_SUMMARY_BODY_CHARS`
+`NEWS_PAYWALL_SUMMARY_MIN_WORDS` (default 120), `NEWS_PAYWALL_SUMMARY_BODY_CHARS`
 (default 8000) bounds what the model is shown. It shares the replacement pass's deadline.
 Trace: `paywall_summary`, `paywall_summary_skipped`, `paywall_summary_deadline`,
 `paywall_summary_agent`.
