@@ -1,0 +1,8 @@
+{
+  "daily": {
+    "weather_code": [0],
+    "temperature_2m_max": [30.0],
+    "temperature_2m_min": [22.0],
+    "precipitation_probability_max": [0]
+  }
+}

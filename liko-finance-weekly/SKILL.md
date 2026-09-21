@@ -1,0 +1,69 @@
+---
+name: liko-finance-weekly
+description: Draft, validate, and publish the weekly liko-finance cross-border wealth signal stream
+always: false
+---
+
+# liko-finance-weekly
+
+Runs the weekly `weekly-intl-wealth-signals` stream for the
+`liko-finance` persona.
+
+The skill delegates durable state and delivery to `persona-core`; it does
+not call raw SQL, raw dev.to `curl`, or Telegram APIs directly.
+
+## Script
+
+```
+~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly
+```
+
+## Usage
+
+Dry run:
+
+```bash
+~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly --dry-run
+```
+
+Live weekly run:
+
+```bash
+~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly
+```
+
+## Workflow
+
+1. `persona-core streams issues prepare weekly-intl-wealth-signals`
+2. `persona-core personas get liko-finance`
+3. `persona-core streams get weekly-intl-wealth-signals`
+4. The stream-specific source policy is the `source_policy` field of the record
+   step 3 already printed — level_1 / level_2 / level_3 with what each may be
+   used for. There is no separate file; an earlier version of this line pointed
+   at one that never existed.
+5. Ask the nullclaw agent to draft exactly one issue body in liko's voice.
+6. `persona-core streams issues validate-body @<draft>`
+7. The drafting context already includes the default style prompt block
+   (`persona-core style show default --as-prompt-block`).
+8. If valid, write back with `streams issues update-body`.
+9. Publish with `streams issues publish <id> --target both`.
+
+## Safety
+
+- `--dry-run` drafts and validates only; it does not write the issue body
+  and does not publish.
+- The publish step is entirely handled by `persona-core`, which loads the
+  dev.to API key and Telegram bot token internally.
+- Failed-run body snapshots under `liko-finance-weekly/failed/` are local
+  diagnostics and are ignored by git.
+- The skill emits `[skill-status:ok|failed]` and `[trace:<job_id>]` for
+  nullclaw `skill_contract` verification.
+
+## Cron
+
+Sunday 09:00 Asia/Taipei:
+
+```bash
+nullclaw cron add-skill "0 9 * * 0" liko-finance-weekly \
+  --timeout 1800 --tz +08:00 --verify skill_contract --repair retry_once
+```

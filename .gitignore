@@ -2,9 +2,11 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+*.bak.*
 mindfulness-spirit/failed/
 mindfulness-spirit/runs/
 mindfulness-spirit/status.json
+liko-finance-weekly/failed/
 .superpowers/
 
 # credentials — never commit
@@ -14,3 +16,19 @@ mindfulness-spirit/status.json
 .secrets
 *.secrets
 *.credentials.json
+
+# inflation-con runtime stance (local; not committed)
+inflation-con/config.json
+
+# chipcon runtime config (local; not committed)
+chipcon/config.json
+
+# cct2 runtime journal — per-day predictions, resolved through the install
+# symlink (~/.nullclaw/skills/cct2 -> this dir), so they land in the tree
+cct2/journal/
+
+# Rust build artifacts
+target/
+
+# built skill binaries (produced by tools/install-skill.sh, never committed)
+*/bin/

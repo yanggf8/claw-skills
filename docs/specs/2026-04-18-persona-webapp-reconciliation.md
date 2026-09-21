@@ -38,7 +38,7 @@ Retire: `docs/superpowers/seed.py` (inline Python literals for data).
 
 ### P3. Update design doc
 
-`docs/superpowers/specs/2026-04-17-persona-webapp-design-WIP.md`:
+`docs/superpowers/specs/2026-04-17-persona-webapp-design.md`:
 
 - Rename → drop `-WIP` suffix
 - Status → "implemented 2026-04-18"

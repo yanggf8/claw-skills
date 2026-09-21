@@ -11,15 +11,15 @@ Fetch WTI, Brent, and heating-oil closes, then deliver a compact oil regime snap
 ## Script
 
 ```
-~/.nullclaw/skills/oilcon/scripts/run.py
+~/.nullclaw/skills/oilcon/bin/oilcon
 ```
 
 ## Usage
 
 ```
-python3 ~/.nullclaw/skills/oilcon/scripts/run.py
-python3 ~/.nullclaw/skills/oilcon/scripts/run.py --mode record
-python3 ~/.nullclaw/skills/oilcon/scripts/run.py --deliver-to CHAT_ID
+~/.nullclaw/skills/oilcon/bin/oilcon
+~/.nullclaw/skills/oilcon/bin/oilcon --mode record
+~/.nullclaw/skills/oilcon/bin/oilcon --deliver-to CHAT_ID
 ```
 
 ## Options
@@ -39,6 +39,16 @@ WTI: $78.20 (+0.9%)
 確認：Brent ✓ (+0.7%)   HO ✓ (+0.8%)
 更新：2026-04-15 17:00
 ```
+
+### JETS rule-review flag (deliver mode only)
+
+When WTI is in a *sustained uptrend* — defined as **≥10% above its recent low, that low ≥30 days ago, and still rising** (current close > mean of the last 5 closes) — deliver mode appends one advisory line:
+
+```
+⚠ JETS: oil in sustained uptrend (WTI +20.0% off low, low 49d ago, rising) — review entry-exit-rules.md JETS Reduce Rule
+```
+
+This is a **rule-review prompt, not a recommendation.** It surfaces that a JETS reduce condition may be met and points to the human's written rule; it never says buy/sell and has no portfolio awareness. The thresholds are constants in `crates/oilcon/src/analysis.rs` (`JETS_OFF_LOW_PCT`, `JETS_MIN_DAYS_SINCE_LOW`, `JETS_RISING_WINDOW`). The line is omitted when the condition is not met, and record mode is unaffected.
 
 ## Record output
 

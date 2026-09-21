@@ -1,0 +1,28 @@
+[package]
+name = "cct"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "cct"
+path = "src/main.rs"
+
+[[bin]]
+name = "cct-check"
+path = "src/bin/cct-check.rs"
+
+[[bin]]
+name = "cct-trigger"
+path = "src/bin/cct-trigger.rs"
+
+[lib]
+name = "cct"
+path = "src/lib.rs"
+
+[dependencies]
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
+libsql = "0.6"
+tokio = { version = "1", features = ["rt"] }
+ureq = "2"
+serde_json = "1"
+jiff = { version = "0.1", features = ["tzdb-bundle-always"] }

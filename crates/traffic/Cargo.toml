@@ -1,0 +1,21 @@
+[package]
+name = "traffic"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "traffic"
+path = "src/main.rs"
+
+[lib]
+name = "traffic"
+path = "src/lib.rs"
+
+[dependencies]
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
+ureq = "2"
+serde_json = "1"
+
+[dev-dependencies]
+# The binary-level tests drive a local HTTP stub and need a client of their own.
+ureq = "2"

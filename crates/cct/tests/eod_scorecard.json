@@ -1,0 +1,110 @@
+{
+  "overallAccuracy": 0,
+  "totalSignals": 5,
+  "correctCalls": 0,
+  "wrongCalls": 2,
+  "modelGrade": "D",
+  "topWinners": [],
+  "topLosers": [
+    {
+      "ticker": "NVDA",
+      "performance": "-3.6%"
+    },
+    {
+      "ticker": "TSLA",
+      "performance": "-3.0%"
+    }
+  ],
+  "signalBreakdown": [
+    {
+      "ticker": "AAPL",
+      "predicted": "↑ Expected",
+      "predictedDirection": "up",
+      "actual": "↓ 0.6%",
+      "actualDirection": "down",
+      "confidence": 78,
+      "confidenceLevel": "medium",
+      "correct": false,
+      "primary_confidence": null,
+      "mate_confidence": null
+    },
+    {
+      "ticker": "MSFT",
+      "predicted": "↓ Expected",
+      "predictedDirection": "down",
+      "actual": "↓ 0.7%",
+      "actualDirection": "down",
+      "confidence": 68,
+      "confidenceLevel": "medium",
+      "correct": true,
+      "primary_confidence": null,
+      "mate_confidence": null
+    },
+    {
+      "ticker": "GOOGL",
+      "predicted": "↓ Expected",
+      "predictedDirection": "down",
+      "actual": "↑ 0.9%",
+      "actualDirection": "up",
+      "confidence": 78,
+      "confidenceLevel": "medium",
+      "correct": false,
+      "primary_confidence": null,
+      "mate_confidence": null
+    },
+    {
+      "ticker": "TSLA",
+      "predicted": "↓ Expected",
+      "predictedDirection": "down",
+      "actual": "↓ 3.0%",
+      "actualDirection": "down",
+      "confidence": 60,
+      "confidenceLevel": "low",
+      "correct": true,
+      "primary_confidence": null,
+      "mate_confidence": null
+    },
+    {
+      "ticker": "NVDA",
+      "predicted": "↑ Expected",
+      "predictedDirection": "up",
+      "actual": "↓ 3.6%",
+      "actualDirection": "down",
+      "confidence": 66,
+      "confidenceLevel": "medium",
+      "correct": false,
+      "primary_confidence": null,
+      "mate_confidence": null
+    }
+  ],
+  "modelStats": {
+    "primary": null,
+    "mate": null,
+    "agreementRate": 0
+  },
+  "tomorrowOutlook": {
+    "marketBias": "Bearish",
+    "volatilityLevel": "High",
+    "confidenceLevel": "Low",
+    "keyFocus": "AAPL (78% confidence)"
+  },
+  "insights": {
+    "modelPerformance": "No high-confidence signals to evaluate (5 total signals tracked).",
+    "sectorAnalysis": "Top performers: none. Laggards: NVDA, TSLA.",
+    "volatilityPatterns": "Moderate volatility (avg 1.7% moves).",
+    "signalQuality": "Model agreement rate: 0%. 2 high-confidence signals evaluated."
+  },
+  "marketCloseTime": "2026-07-29T21:07:14.713Z",
+  "symbols_analyzed": 5,
+  "symbols_list": [
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "TSLA",
+    "NVDA"
+  ],
+  "timestamp": "2026-07-29T20:05:00.000Z",
+  "trigger_mode": "next_day_market_prediction",
+  "pre_market_run_id": "2026-07-29_pre-market_ca680d95-d2b0-4436-92a8-575678e79a1f",
+  "intraday_run_id": "2026-07-29_intraday_7d513f1d-2abb-41e6-bbe5-910c780bbdb1"
+}

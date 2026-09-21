@@ -1,0 +1,75 @@
+===SET===live
+===NOW===2026-07-30 12:00:00 CST
+===CLASSIFICATION===WATCH
+===SKILL===ok
+===WARNING===
+===RECORD===
+2026-07-30 12:00:00 CST INFLATION-CON WATCH pce3=+3.52% pce6=+4.14% cpi3=+2.29% cpi6=+2.58% be=2.26 stance=restrictive warning=-
+===MESSAGE===
+📈 INFLATION-CON
+狀態：WATCH
+核心PCE (2026-05-01)：3mo +3.52% / 6mo +4.14% 年化
+核心CPI：3mo +2.29% / 6mo +2.58% 年化
+10Y breakeven：2.26 (2026-07-29, flat/down)
+FOMC 立場 (manual)：restrictive
+依據：
+- core PCE 3-mo annualized >= 2.5% but 6-mo not confirming
+
+人工檢查（不入演算法）：
+- 最新 CPI (~月中) / PCE (~月底) release 是否已納入
+- FOMC 立場（restrictive / neutral / easing / unclear）是否需更新 config
+- 能源價格是否推高 headline 但 core 未跟進（headline 只是 context）
+
+SIGNAL-ONLY：這是通膨『確認證據』分級，不是交易指令。
+RED = 進入 review（是否加通膨對沖？IEF gate？），由人決定並記 decision add。
+===END===
+===DIAG===
+core_pce=PCEPILFE rows=809 last=('2026-05-01', 130.082)
+core_cpi=CPILFESL rows=833 last=('2026-06-01', 336.065)
+headline_pce=PCEPI rows=809 last=('2026-05-01', 131.527)
+headline_cpi=CPIAUCSL rows=953 last=('2026-06-01', 332.568)
+breakeven_10y=T10YIE rows=5897 last=('2026-07-29', 2.26)
+real_yield_10y=DFII10 rows=5896 last=('2026-07-28', 2.41)
+nominal_10y=DGS10 rows=16127 last=('2026-07-28', 4.61)
+reasons=['core PCE 3-mo annualized >= 2.5% but 6-mo not confirming']
+pce3=3.5226197405973547 pce6=4.141841665701329 cpi3=2.2937962755186003 cpi6=2.578692049557807 be=2.26 rising=False
+===END_DIAG===
+===SET===hot
+===NOW===2026-07-30 12:00:00 CST
+===CLASSIFICATION===RED
+===SKILL===ok
+===WARNING===
+===RECORD===
+2026-07-30 12:00:00 CST INFLATION-CON RED pce3=+3.52% pce6=+4.14% cpi3=+4.00% cpi6=+4.00% be=2.60 stance=restrictive warning=-
+===MESSAGE===
+📈 INFLATION-CON
+狀態：RED
+核心PCE (2026-05-01)：3mo +3.52% / 6mo +4.14% 年化
+核心CPI：3mo +4.00% / 6mo +4.00% 年化
+10Y breakeven：2.60 (2026-07-29, flat/down)
+FOMC 立場 (manual)：restrictive
+依據：
+- core PCE 3-mo & 6-mo annualized both >= 3.5%
+- core CPI confirms (>= 3.0% on 3-mo or 6-mo)
+- 10Y breakeven 2.60 >= 2.5%
+- policy stance = restrictive (not easing)
+
+人工檢查（不入演算法）：
+- 最新 CPI (~月中) / PCE (~月底) release 是否已納入
+- FOMC 立場（restrictive / neutral / easing / unclear）是否需更新 config
+- 能源價格是否推高 headline 但 core 未跟進（headline 只是 context）
+
+SIGNAL-ONLY：這是通膨『確認證據』分級，不是交易指令。
+RED = 進入 review（是否加通膨對沖？IEF gate？），由人決定並記 decision add。
+===END===
+===DIAG===
+core_pce=PCEPILFE rows=809 last=('2026-05-01', 130.082)
+core_cpi=CPILFESL rows=833 last=('2026-06-01', 339.969)
+headline_pce=PCEPI rows=809 last=('2026-05-01', 131.527)
+headline_cpi=CPIAUCSL rows=953 last=('2026-06-01', 332.568)
+breakeven_10y=T10YIE rows=5897 last=('2026-07-29', 2.6)
+real_yield_10y=DFII10 rows=5896 last=('2026-07-28', 2.41)
+nominal_10y=DGS10 rows=16127 last=('2026-07-28', 4.61)
+reasons=['core PCE 3-mo & 6-mo annualized both >= 3.5%', 'core CPI confirms (>= 3.0% on 3-mo or 6-mo)', '10Y breakeven 2.60 >= 2.5%', 'policy stance = restrictive (not easing)']
+pce3=3.5226197405973547 pce6=4.141841665701329 cpi3=3.999793178594624 cpi6=4.000019799996157 be=2.6 rising=False
+===END_DIAG===

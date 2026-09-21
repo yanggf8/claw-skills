@@ -1,3 +1,9 @@
+> **已被取代。** 這份規劃的落點是 `lib/persona_registry.py` 與 `persona-skill`
+> CLI，兩者都已退役 —— persona 的 CRUD、secrets、history、editorial plan 現在
+> 一律走 `persona-core` Rust CLI。下面未勾的方框指向不存在的檔案。
+>
+> 保留是為了 Turso 整併當初的取捨紀錄。
+
 # Turso Consolidation — Persona Registry + History
 
 **Status:** Draft for review

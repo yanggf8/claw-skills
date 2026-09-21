@@ -1,0 +1,212 @@
+//! cct — the four CCT trading reports, delivered to Telegram.
+//!
+//! Ports cct/scripts/run.py, which lived in the cct repo until 2026-08-01 and
+//! reached back into this one for its shared lib. The dependency ran the wrong
+//! way: a Cloudflare Worker repo importing an agent-skill library. The skill is
+//! an agent skill and now sits with the others.
+//!
+//! Why each mode has its own content predicate. The CCT API answers 200 with
+//! `success: true` even when a job never ran or outright failed — the route
+//! turns a `status === 'failed'` job into a success envelope carrying only a
+//! message. Deciding ok-vs-degraded on "did a payload arrive" would therefore
+//! report ok while the pipeline is broken, which is what happened for 50 days.
+//! Each empty state has a different shape, so each mode tests for real content.
+
+use std::io::Write;
+
+use cct::api;
+use cct::cli::{self, Mode};
+use cct::content::content_gap;
+use cct::freshness::{comparison_today, is_weekend};
+use cct::render::{format_eod, format_intraday, format_pre_market, format_weekly};
+use claw_core::delivery::{deliver, DeliverOptions, DeliveryOutcome};
+use claw_core::env::load_env;
+use claw_core::marker::SkillStatus;
+use claw_core::outcome::{finish, Finish};
+
+fn endpoint(m: Mode) -> &'static str {
+    match m {
+        Mode::PreMarket => "/api/v1/reports/pre-market",
+        Mode::Intraday => "/api/v1/reports/intraday",
+        Mode::Eod => "/api/v1/reports/end-of-day",
+        Mode::Weekly => "/api/v1/reports/weekly",
+    }
+}
+
+fn label(m: Mode) -> &'static str {
+    match m {
+        Mode::PreMarket => "盤前報告",
+        Mode::Intraday => "盤中報告",
+        Mode::Eod => "收盤報告",
+        Mode::Weekly => "週報",
+    }
+}
+
+fn main() {
+    let mut out = std::io::stdout();
+    let mut err = std::io::stderr();
+
+    load_env(None);
+
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let args = match cli::parse_args(&argv) {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = writeln!(err, "[ERROR: {e}]");
+            std::process::exit(2);
+        }
+    };
+
+    // One instant, read in two zones. Calling `now()` twice would leave a
+    // midnight race where the two dates come from different days — the same
+    // shape of defect this whole change is about, one layer down.
+    //
+    // ET is the market's own time, so the trading day IS the ET date, and it is
+    // also what the reports are stamped with. jiff is built with
+    // `tzdb-bundle-always`, so the zone needs nothing from the host and this
+    // works inside the nanoclaw container too.
+    // Test seam: a frozen `now` for the binary tests, which stub the route
+    // but cannot stub the wall clock — the weekend gate below would
+    // otherwise flip nine of their verdicts every ET Saturday and Sunday
+    // (observed 2026-09-13). Honored only outside the scheduler: a cron run
+    // carries a real NULLCLAW_JOB_ID, and dotenv only fills keys that are
+    // absent, so a stray CCT_TEST_NOW pasted into ~/.nullclaw/.env would
+    // otherwise freeze production's clock with nothing to stop it. A
+    // malformed value warns and falls back to the wall clock — a panic here
+    // would take down all four reads with an alert that carries no reason.
+    let job_id = std::env::var("NULLCLAW_JOB_ID").ok();
+    let test_seam_armed = job_id.is_none() || job_id.as_deref() == Some("test-trace:1");
+    let instant = match std::env::var("CCT_TEST_NOW") {
+        Ok(s) if test_seam_armed => match s.parse() {
+            Ok(t) => t,
+            Err(_) => {
+                let _ = writeln!(
+                    err,
+                    "[WARN: CCT_TEST_NOW is not an RFC3339 instant - ignoring] {s}"
+                );
+                jiff::Timestamp::now()
+            }
+        },
+        _ => jiff::Timestamp::now(),
+    };
+    let now = instant.in_tz("UTC").expect("UTC");
+    let now_et = instant.in_tz("America/New_York").expect("tzdb is bundled");
+    let utc_today = now.date();
+    let et_today = now_et.date();
+
+    // Weekend catch-up gate (2026-09-12). A slot drained long after its
+    // minute can land on a Saturday: the three daily reads then asked for
+    // Saturday content, slept through the 60s retry, and shipped three
+    // degradations. No same-day payload can exist (freshness::is_weekend),
+    // so say so once and stop before the fetch. Weekly is exempt: Sunday is
+    // its scheduled day and it looks back over the completed week. No
+    // Telegram delivery — the note echoes to stdout, which the cron capture
+    // keeps, and the Sunday weekly is the heartbeat that proves the chain.
+    if args.mode != Mode::Weekly && is_weekend(et_today) {
+        let body = format!("📊 CCT {}:{et_today} 市場休市,補跑略過", label(args.mode));
+        let opts = DeliverOptions::default();
+        let _ = deliver(None, &body, &opts, &mut out, &mut err);
+        std::process::exit(finish(Finish::Marked { status: SkillStatus::Ok, exit: 0 }, &mut out));
+    }
+
+    // A single inside-run retry is cheaper than a scheduler retry (which
+    // would duplicate Telegram on degraded) and keeps repair_policy=none.
+    // Retry when the first fetch is unusable, not only when the worker says
+    // content is not ready. `has_content == Some(false)` is the "not written
+    // yet" case — 3 of the 12 degraded cct runs on record (the EOD_NOT_READY
+    // shape, observed 10m12s late on 2026-08-26). `None` is a transport or
+    // envelope failure — 5 of the 12 (the "尚未產生或暫時無法存取"
+    // placeholder) — and most are transient: a dropped connection or a 500
+    // recovers within a minute. One 60s wait covers both. A retry run
+    // typically takes ~65s against the 120s job timeout (eod allows 300s);
+    // only the theoretical worst — both fetches burning the full 30s read
+    // budget (~130s) — would be killed at 120s, an accepted edge.
+    let report_opt = {
+        let mut r = api::get(endpoint(args.mode));
+        let degraded_now = match &r {
+            None => true,
+            Some(rep) => rep.has_content == Some(false),
+        };
+        if degraded_now {
+            let _ = writeln!(err, "[cct] first fetch unusable, retrying once after 60s...");
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            if let Some(r2) = api::get(endpoint(args.mode)) {
+                r = Some(r2);
+            }
+        }
+        r
+    };
+    let (body, status) = match report_opt {
+        None => (
+            format!("📭 CCT {}尚未產生或暫時無法存取", label(args.mode)),
+            SkillStatus::Degraded,
+        ),
+        Some(report) => {
+            // The clock follows the field that was read — see
+            // `freshness::comparison_today` for why the two travel together.
+            let today = comparison_today(report.business_date.as_deref(), et_today, utc_today);
+            let body = match args.mode {
+                Mode::PreMarket => format_pre_market(&report.data, today),
+                Mode::Intraday => {
+                    format_intraday(&report.data, &now_et.strftime("%Y-%m-%d %H:%M ET").to_string())
+                }
+                Mode::Eod => format_eod(
+                    report.business_date.as_deref(),
+                    &report.data,
+                    &now_et.strftime("%Y-%m-%d").to_string(),
+                ),
+                Mode::Weekly => format_weekly(&report.data),
+            };
+            // A degraded verdict reached this way used to be silent, and
+            // nullclaw prints the literal "no stderr" in the alert when a skill
+            // writes none (gateway.zig, the degraded branch). The envelope
+            // warnings cover only the other fork — the one where no payload
+            // arrives — so an intact payload with nothing in it alerted with no
+            // reason at all on 2026-08-07.
+            // `has_content: false` is the worker's own answer about its own
+            // storage, so it wins over any predicate a reader can apply to the
+            // shape of a payload the route synthesised. The reverse is refused
+            // deliberately: `true` does not silence the predicates, because they
+            // are what caught a dead pipeline serving plausible reports for 50
+            // days, and a field that could switch them off would hand that
+            // failure a way back in.
+            let gap = match report.has_content {
+                Some(false) => Some(format!(
+                    "the worker has no {} content for {}",
+                    args.mode.slug(),
+                    report.business_date.as_deref().unwrap_or("the day requested"),
+                )),
+                _ => content_gap(args.mode, &report.data, today),
+            };
+            if let Some(reason) = &gap {
+                let _ = writeln!(
+                    err,
+                    "[WARN: CCT {} carries no analysis] {reason}",
+                    args.mode.slug()
+                );
+            }
+            (
+                body,
+                if gap.is_none() {
+                    SkillStatus::Ok
+                } else {
+                    SkillStatus::Degraded
+                },
+            )
+        }
+    };
+
+    // Degraded still delivers. A stale-but-real report has value, and the
+    // "尚未產生" line tells the reader the run happened and found nothing —
+    // silence would be indistinguishable from the cron not firing.
+    let opts = DeliverOptions {
+        account: args.account.clone(),
+        ..Default::default()
+    };
+    let delivery = deliver(args.deliver_to.as_deref(), &body, &opts, &mut out, &mut err);
+    if delivery == DeliveryOutcome::FailedFatal {
+        std::process::exit(finish(Finish::Unmarked { exit: 1 }, &mut out));
+    }
+
+    std::process::exit(finish(Finish::Marked { status, exit: 0 }, &mut out));
+}

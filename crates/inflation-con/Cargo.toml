@@ -1,0 +1,24 @@
+[package]
+name = "inflation-con"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "inflation-con"
+path = "src/main.rs"
+
+[lib]
+name = "inflation_con"
+path = "src/lib.rs"
+
+[dependencies]
+# preserve_order: Map keeps JSON object key order (IndexMap), matching Python
+# dict insertion order for series extras appended after DEFAULT_SERIES.
+serde_json = { version = "1", features = ["preserve_order"] }
+# FRED CSV URL + parse (no HTTP). Path matches crates/chipcon/Cargo.toml.
+market-fetch = { path = "../../../../b/gwebcdb/crates/market-fetch" }
+claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
+# Live FRED transport (fetch::live_fetch). Timeout is mandatory — FRED hangs
+# on a refused User-Agent rather than returning 4xx.
+ureq = "2"
+jiff = { version = "0.1", features = ["tzdb-bundle-always"] }

@@ -1,0 +1,13 @@
+{
+  "type": "intraday_check",
+  "timestamp": "2026-08-07T00:16:15.103Z",
+  "market_status": "closed",
+  "scheduled_date": "2026-08-07",
+  "message": "No intraday data available. Run POST /api/v1/jobs/intraday to generate.",
+  "job_status": null,
+  "symbols": [],
+  "overall_accuracy": 0,
+  "on_track_count": 0,
+  "diverged_count": 0,
+  "total_symbols": 0
+}
