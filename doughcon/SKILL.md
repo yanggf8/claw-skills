@@ -55,7 +55,11 @@ the API returns no usable timestamp.
 - Telegram bot token loaded from `~/.nullclaw/config.json`
 - record mode exits non-0 on API failure (gap is detectable via cron `last_status`)
 - Cron verification: use scheduler-owned `skill_contract` with `retry_once`
-- Deliver mode emits `[skill-status:ok]` for real data and `[skill-status:degraded]` for warning/no-data output, then `[trace:<NULLCLAW_JOB_ID>]` on a separate stdout line
+- Deliver mode emits `[skill-status:ok]` when the payload carries a real level — a
+  null-popularity index is auxiliary and ships as `指數：暫缺` instead of the `-1`
+  sentinel (owner decision 2026-10-01; PizzINT has returned null since 2026-09-26) —
+  and `[skill-status:degraded]` for a payload with no real level (`?`/`None`) or an
+  API failure, then `[trace:<NULLCLAW_JOB_ID>]` on a separate stdout line
 - Record mode emits `[skill-status:ok]` only after the history log append succeeds
 - DST-aware scheduling: PizzINT tracks Pentagon-area pizza demand, so the useful
   window is US-Eastern evening (≈18:00–20:00 ET). `nullclaw cron` uses fixed UTC

@@ -21,9 +21,21 @@ pub fn derive_index(raw_index: &RawIndex, popularity_is_null: &[bool]) -> String
     }
 }
 
+/// A level the API actually sent. `parse` renders an absent `defcon_level`
+/// as "?" and a null one as "None" (Python `dict.get` parity); neither
+/// carries information, so deliver treats them as no-data.
+pub fn level_is_real(level: &str) -> bool {
+    level != "?" && level != "None"
+}
+
 pub fn format_body(level: &str, index: &str, updated: &str, job_id: Option<&str>) -> String {
+    // Owner decision 2026-10-01: the sentinel is a log value, not a reader
+    // value. PizzINT's null popularity — the daily reality since 09-26 — must
+    // not print as "-1"; 暫缺 says the same thing honestly. A real index is
+    // untouched and this reverts on its own when the field returns.
+    let shown = if index == NO_DATA { "暫缺" } else { index };
     let mut s = format!(
-        "🍕 DOUGHCON 情報\n目前等級：DOUGHCON {level}\n指數：{index}\n更新：{updated}"
+        "🍕 DOUGHCON 情報\n目前等級：DOUGHCON {level}\n指數：{shown}\n更新：{updated}"
     );
     if let Some(id) = job_id {
         s.push_str(&format!("\n\n`{id}`"));

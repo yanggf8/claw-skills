@@ -134,11 +134,13 @@ whose *failures* leave the box holding evidence of the hole but never of the
 cause. Replay: `cct-check --date 2026-09-25` still exits 1 today;
 `--date 2026-09-24` and `--date 2026-09-30` stay green.
 
-Side note from the same weekend, still open and unrelated: the doughcon
-deliver jobs have degraded daily since 09-26 because PizzINT's popularity
-field went null (history log: index 21 → 9 → −1, exactly at 09-26). The
-alerts are faithful — the level is still real — and the fix belongs to
-PizzINT or to an owner decision to accept a `NO_DATA` index in deliver mode.
+Side note from the same weekend, since closed: the doughcon deliver jobs
+degraded daily from 09-26 because PizzINT's popularity field went null
+(history log: index 21 → 9 → −1, exactly at 09-26). The alerts were faithful
+— the level stayed real — and on 2026-10-01 the owner delegated the call:
+deliver now accepts a `NO_DATA` index (renders `指數：暫缺`, ships `ok`),
+reserves `degraded` for a payload without a real level, and the record log
+keeps the `-1` sentinel.
 
 ---
 

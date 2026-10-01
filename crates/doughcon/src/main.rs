@@ -11,7 +11,7 @@ use claw_core::marker::SkillStatus;
 use claw_core::outcome::{finish, Finish};
 use doughcon::cli::{self, Gate};
 use doughcon::pizzint;
-use doughcon::report::{derive_index, format_body, NO_DATA};
+use doughcon::report::{derive_index, format_body, level_is_real};
 use jiff::{tz::TimeZone, Timestamp, Zoned};
 
 fn history_log_path() -> std::path::PathBuf {
@@ -109,7 +109,17 @@ fn main() {
         if outcome == DeliveryOutcome::FailedFatal {
             std::process::exit(finish(Finish::Unmarked { exit: 1 }, &mut out));
         }
-        let status = if index != NO_DATA { SkillStatus::Ok } else { SkillStatus::Degraded };
+        // Owner decision 2026-10-01 (delegated): the level is the substance;
+        // a null popularity index is auxiliary and ships as 暫缺 inside an ok
+        // deliver. Until 09-26 the index alone decided status — a sentinel
+        // PizzINT has returned every day since, degrading the skill daily for
+        // data the reader never needed. degraded stays reserved for a payload
+        // with no real level, or an API failure, which is the branch above.
+        let status = if level_is_real(&snapshot.level) {
+            SkillStatus::Ok
+        } else {
+            SkillStatus::Degraded
+        };
         std::process::exit(finish(Finish::Marked { status, exit: 0 }, &mut out));
     }
 

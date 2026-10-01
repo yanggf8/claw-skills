@@ -3,7 +3,7 @@ use doughcon::pizzint::{parse, RawIndex};
 fn present(rendered: &str, is_zero: bool) -> RawIndex {
     RawIndex::Present { rendered: rendered.to_string(), is_zero }
 }
-use doughcon::report::{derive_index, format_body, NO_DATA};
+use doughcon::report::{derive_index, format_body, level_is_real, NO_DATA};
 
 #[test]
 fn normal_index_passes_through() {
@@ -122,4 +122,35 @@ fn body_matches_python_layout() {
 fn body_appends_job_id_when_present() {
     let b = format_body("3", "42", "U", Some("t-1"));
     assert!(b.ends_with("\n\n`t-1`"));
+}
+
+#[test]
+fn no_data_index_renders_as_unavailable_not_minus_one() {
+    // Owner decision 2026-10-01: PizzINT has served null popularity since
+    // 09-26, collapsing the index to the sentinel and degrading every daily
+    // deliver. The index is auxiliary, so the body says 暫缺 instead of
+    // printing the log sentinel at a reader.
+    let b = format_body("5", NO_DATA, "U", None);
+    assert!(b.contains("指數：暫缺"), "body was:\n{b}");
+    assert!(!b.contains("-1"), "the sentinel must not reach the body:\n{b}");
+}
+
+#[test]
+fn real_index_still_renders_verbatim() {
+    let b = format_body("5", "9", "U", None);
+    assert!(b.contains("指數：9"), "body was:\n{b}");
+}
+
+#[test]
+fn level_realness_is_the_substance_predicate() {
+    // parse()'s two non-data levels: an absent defcon_level renders "?", a
+    // null one renders "None" (Python dict.get parity). Neither carries
+    // information, so deliver is degraded on them regardless of the index —
+    // until 2026-10-01 the predicate looked only at the index and never at
+    // the level the status line claims to vouch for.
+    assert!(!level_is_real("?"));
+    assert!(!level_is_real("None"));
+    assert!(level_is_real("3"));
+    assert!(level_is_real("3.5"));
+    assert!(level_is_real("True"));
 }
