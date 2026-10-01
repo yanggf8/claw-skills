@@ -74,6 +74,74 @@ this entry is about the two failures downstream of it.
 
 ---
 
+## cct: the day the worker's crons didn't fire, and the box could only watch (2026-09-25)
+
+Three degraded pushes about one trading day — and this time every scheduled
+witness on the box fired exactly on schedule:
+
+```
+[cron] skill 'cct' degraded: failure=contract_degraded repair=none trace=…:4915
+[WARN: CCT pre-market carries no analysis] stale: payload date=2026-09-24 today=2026-09-25 age=1d
+```
+
+**What happened.** All three of the worker's daily Cloudflare cron triggers —
+12:30 / 16:00 / 20:05 UTC on Friday 2026-09-25 — left no run. The runs history
+goes from 09-24 end-of-day straight to the 09-27 weekly, and
+`?date=2026-09-25` on `/api/v1/jobs/runs` returns `count: 0` to this day, so
+the hole is permanent rather than a late catch-up. The reader saw it as
+designed: pre-market at 15:35Z delivered the 09-24 snapshot under the
+staleness warning above, intraday degraded the same way at 19:05Z, and eod at
+23:45Z found no 09-25 content at all — "first fetch unusable, retrying once
+after 60s", then "the worker has no eod content for 2026-09-25". The rebuilt
+watchdog flagged the hole on four consecutive 00:05Z runs (09-26 through
+09-29, both weekend-bridging vantages included) and went quiet from 09-30
+once the calendar carried 09-25 out of its backward window — the first live
+firing of the 09-14 backward check against a real producer hole, and it
+behaved as its replay tests predicted.
+
+**Ruled out, each with evidence.** *No deploy*: the worker's last push is
+09-14 (the cutover itself), and the same deployed code ran on time on
+09-22…24 and 09-28…30. *No holiday gate*: 09-25 is in no holiday table —
+the worker's `trading-calendar.ts` 2026 NYSE list carries only 09-07, the
+box's `calendar.rs` agrees, and firing into NYSE holidays is the design
+(`cct-trigger.rs`: "the worker's own crons still fire on NYSE holidays"); the
+Mid-Autumn date is coincidence. *No box involvement*: every box-side job ran
+on schedule all day, so nothing on this host even paused. One latent drift
+surfaced while checking, unrelated to this day but worth recording: the
+worker's holiday table omits Juneteenth (2026-06-19), which the box's
+carries — the two copies of the calendar have already diverged.
+
+**What the box cannot know.** The run row is written by `startJobRun`, so
+the worker's log separates "ran and failed" from nothing — a handler that
+dies before that line and a trigger that never fired leave identical
+silence. Cloudflare does not retry a failed scheduled execution, and its
+status page shows no cron-trigger incident in the window — only a minor
+Asia-Pacific network-degradation event spanning 09-23…29, correlation at
+best. The candidates (a CF-side trigger miss, an early crash on all three
+slots, a manual trigger pause in the dashboard) are indistinguishable from
+here, and nothing on the worker retains the answer. Settling the *why* needs
+CF-side telemetry — the dashboard's cron past-events, or Workers Logs / a
+record on every early-exit path in `scheduled()` — and none of those was
+added.
+
+**Handling: none, deliberately.** 09-28 onward is clean, so there is nothing
+to repair; the missing day has no backfill path (`cct-trigger` fires the
+current ET day only, and back-filling a past date is the 09-12 ghost-report
+shape), no second writer was added, and no code changed in any repo. This is
+the residual risk of the 09-14 trade made explicit: moving the producer to
+Cloudflare ended the shared-fate problem, and bought in exchange a producer
+whose *failures* leave the box holding evidence of the hole but never of the
+cause. Replay: `cct-check --date 2026-09-25` still exits 1 today;
+`--date 2026-09-24` and `--date 2026-09-30` stay green.
+
+Side note from the same weekend, still open and unrelated: the doughcon
+deliver jobs have degraded daily since 09-26 because PizzINT's popularity
+field went null (history log: index 21 → 9 → −1, exactly at 09-26). The
+alerts are faithful — the level is still real — and the fix belongs to
+PizzINT or to an owner decision to accept a `NO_DATA` index in deliver mode.
+
+---
+
 ## cct: the box died with the watchdog in its lap, and the producer moved home again (2026-09-14)
 
 Three Telegram degradations on a Saturday morning, about the previous day:
