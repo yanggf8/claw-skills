@@ -9,6 +9,50 @@ this file is only the record of what changed and why.
 
 ---
 
+## inflation-con: the fed-braking watch, and what the test-first order caught (2026-10-02)
+
+The slot-5 hedge research (finance-engineering doc 191) ended in a composite watch condition —
+「泡沫語境持續(人讀)× EFFR 6 個月 +100bp」 — with the owner's approval to automate **only the
+mechanical half**. That half now lives in inflation-con as `--mode braking` (daily cron `skill-f0543a3c…`,
+06:40 +08, between the cds-con store write and its delivery) plus a `──── Fed braking` section on the
+monthly report.
+
+Codex reviewed the design before any code (its review, verified line-by-line, reshaped three things):
+
+- **The change detector needed a persisted cursor.** My first sketch compared "latest vs previous
+  distinct value" — which re-alerts every single day after a change. The cursor records the last
+  delivered (date, value); first run is a silent baseline (history is not news), and the cursor
+  advances **only after a successful delivery** so a failed send re-reports instead of swallowing
+  the move.
+- **DFEDTAR is discontinued (2008).** My spec called it "target lower" — the lower bound is
+  DFEDTARL; the watch uses DFEDTARU, the upper bound, as its daily timeliness series.
+- **The +100bp rule is month-index arithmetic on FEDFUNDS**, never a daily-series approximation
+  dressed up as the same measure — and never asserted as a condition: the render shows
+  「參考線:+100bp」 and the human compares.
+
+Two things the test-first order caught that I would otherwise have shipped:
+
+- `detect()`'s change predicate was written `!neq(to, cursor)` — **inverted**. Five tests failed in
+  a pattern that read as nonsense (the unchanged case delivered, the changed case no-op'd) until the
+  single stray `!` was found. The pure tests failed before any run-level test could mask it.
+- The monthly omission note I wrote to stderr broke
+  `contract.rs::a_secondary_failure_is_degraded_but_still_delivers_and_exits_zero`, which pins
+  "stderr is empty on a degraded-but-successful run". That pin is right — stderr means *failed* in
+  the run.py contract — so the omission is now silent-and-visible-as-absence, and the daily braking
+  run (where DFEDTARU is a hard-fail primary, like core_pce) is the real detector.
+
+One mechanical change to `emit` beyond the braking work: `DeliverOptions.config_path` is now
+resolved CLAW_CONFIG-first, else `Env.home/.nullclaw/config.json`. In the binary `Env.home` **is**
+HOME, so production resolves exactly claw-core's default; in contract tests a temp home has no
+telegram config, so the failed-delivery path (cursor must NOT advance) is exercisable without
+touching a real account or the network.
+
+Output discipline, held by test (`tests/braking.rs`, `FORBIDDEN` list): the braking render carries
+no OK/WATCH/YELLOW/RED, no 成立/觸發/警戒, no advice — arithmetic plus a stated reference line,
+「泡沫語境由人判讀;本工具不判讀。」. Same reasoning as cds-con's ladder-free design: the monthly
+rule over a 6-month window is a rank whose conclusion the window choice flips (doc 190 §三.2:
+75bp/100bp/150bp each select different marker sets), so the tool states numbers and stops.
+
 ## news: the paywall fallback searched for a phrase nobody writes, in the wrong language (2026-09-16)
 
 The 00:30 run delivered this bullet and nothing under it:

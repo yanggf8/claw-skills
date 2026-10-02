@@ -1,6 +1,6 @@
 ---
 name: inflation-con
-description: Judge whether inflation is genuinely persistent (not one hot print) from FRED core-PCE / core-CPI / breakeven data, apply the written status ladder, and deliver a signal-only inflation-confirmation evidence packet.
+description: Judge whether inflation is genuinely persistent (not one hot print) from FRED core-PCE / core-CPI / breakeven data, apply the written status ladder, and deliver a signal-only inflation-confirmation evidence packet. Also carries the fed-braking watch (doc 191 mechanical half): a daily DFEDTARU change detector plus the monthly EFFR +100bp/6m rule arithmetic.
 always: true
 ---
 
@@ -48,6 +48,7 @@ No local store and no price registry — series are fetched fresh each run.
 ```
 ~/.nullclaw/skills/inflation-con/bin/inflation-con
 ~/.nullclaw/skills/inflation-con/bin/inflation-con --mode record
+~/.nullclaw/skills/inflation-con/bin/inflation-con --mode braking
 ~/.nullclaw/skills/inflation-con/bin/inflation-con --deliver-to 7972814626
 ```
 
@@ -79,6 +80,47 @@ meeting.
   fallback if the file exists but is corrupt JSON — that raises).
 - Override: `--config /path/to/config.json`
 
+## Fed-braking watch (`--mode braking`, doc 191 mechanical half)
+
+The slot-5 research (finance-engineering doc 191) settled a composite watch
+condition: **泡沫語境持續(人讀)× EFFR 6 個月 +100bp(機械)**. This skill
+automates **only the mechanical half**; the bubble-context half stays
+human-read and is never evaluated here.
+
+Two series, two different roles — they are deliberately NOT interchangeable:
+
+| Series | FRED | Role |
+|---|---|---|
+| `FEDFUNDS` | Monthly EFFR average | **Rule series** — month-index arithmetic: latest minus the observation six months earlier, shown against the reference line `+100bp`. A daily-series approximation is a different measure and is never presented as this rule. |
+| `DFEDTARU` | Daily target-range upper bound | **Timeliness series** — daily change detection surfaces a Fed move weeks before the monthly average can. (DFEDTAR is discontinued 2008; DFEDTARL is the lower bound.) |
+
+Change detection keeps a persisted cursor
+(`~/.nullclaw/skills/inflation-con/braking-cursor.json`, gitignored, written
+through the install symlink):
+
+- **first run** = baseline: records the latest (date, value), delivers nothing
+  (history is not news);
+- **unchanged** = no-op line on stdout, exit 0;
+- **changed** (including a round-trip: hike then cut back) = delivery, and the
+  cursor advances **only after a successful delivery** — a failed send must
+  re-report on the next run;
+- a present-but-corrupt cursor is a hard error, never a silent re-baseline.
+
+In `--mode braking`, DFEDTARU is the hard-fail primary (like core_pce in the
+monthly mode); FEDFUNDS failing only renders `n/a` for the rule.
+
+The monthly report (default mode) also appends a `──── Fed braking` section
+with the rule arithmetic. A braking-series fetch failure omits the section and
+leaves the inflation status untouched — the two are separate concerns (Codex
+review 2026-10-02) and a missing add-on must not read as a degraded
+inflation run.
+
+**No ladder in the braking output.** Unlike the inflation status table, the
+braking half renders arithmetic plus a stated reference line and nothing else —
+no OK/WATCH/YELLOW/RED, no 成立/觸發, no advice. A percentile-over-window or
+threshold reading is a judgment the window flips; the tool states the numbers,
+the human reads them. Same discipline as `cds-con`.
+
 ## Frequency
 
 Monthly, not daily. Inflation is not a daily signal. Best cadence: run the day
@@ -94,6 +136,16 @@ nullclaw cron add-skill "0 6 3-5 * *" inflation-con --deliver-to 7972814626 --ti
 Runs 06:00 on days 3–5 of each month, UTC+8. The early-month window catches
 the prior month's PCE release; the run no-ops usefully if data hasn't updated —
 it just reports the latest available. Next fire after wiring: 2026-08-03.
+
+**Daily braking cron** (doc 191 mechanical half, added 2026-10-02):
+
+```
+nullclaw cron add-skill "40 6 * * *" inflation-con --skill-args "--mode braking" --deliver-to 7972814626 --timeout 180 --tz +08:00 --verify skill_contract --repair retry_once
+```
+
+Daily at 06:40 UTC+8, after the cds-con store write at 06:00 and the cds-con
+skill at 06:30. Most days are a no-op (target unchanged); a DFEDTARU move
+delivers the same day.
 
 The skill emits `[skill-status:ok|degraded|failed]` and `[trace:<job_id>]`
 for `skill_contract` verification.

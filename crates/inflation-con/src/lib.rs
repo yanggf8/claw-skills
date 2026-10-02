@@ -5,6 +5,7 @@
 //! by contract goldens and the binary.
 
 pub mod analysis;
+pub mod braking;
 pub mod config;
 pub mod fetch;
 pub mod render;

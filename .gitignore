@@ -32,3 +32,7 @@ target/
 
 # built skill binaries (produced by tools/install-skill.sh, never committed)
 */bin/
+
+# inflation-con fed-braking cursor — runtime state written through the install
+# symlink (~/.nullclaw/skills/inflation-con -> this dir), like config.json
+inflation-con/braking-cursor.json
