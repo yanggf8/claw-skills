@@ -94,3 +94,20 @@ immune to any content.
   self-reports `degraded` to flag the fetch warning.
 - `failed` (`skill-status:failed`): a hard error — SMH fetch failed or empty,
   or delivery failure.
+
+## Tracing a delivery failure
+
+Use the cron alert's `trace` value to inspect the exact run. New failed runs
+store a bounded Telegram terminal summary in `cron_runs.diagnostic`; the CLI
+shows it alongside the exit code and failure class. The alert and service log
+also show the final Telegram diagnostic, including attempt count, elapsed time,
+and a safe transport and I/O error class. A retry that succeeds logs its
+successful attempt. The summary omits the bot token and request URL.
+
+```
+nullclaw cron run-by-trace '<trace from alert>' --json
+journalctl --user -u nullclaw.service --since 'YYYY-MM-DD HH:MM:SS' --no-pager | rg 'trace=<trace from alert>'
+```
+
+The database does not retain individual attempts or historical stderr from
+before this change. For those runs, `diagnostic` is null.

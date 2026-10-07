@@ -512,7 +512,7 @@ fn monthly_braking_failure_omits_the_section_without_degrading() {
 #[test]
 fn braking_is_a_valid_mode_and_the_refusals_still_hold() {
     let home = tmp();
-    let (code, out, err) = go(
+    let (code, out, _err) = go(
         &["inflation-con", "--mode", "braking"],
         None,
         &home,
