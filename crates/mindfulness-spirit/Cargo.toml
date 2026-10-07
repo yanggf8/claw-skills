@@ -11,10 +11,6 @@ path = "src/main.rs"
 name = "mindfulness_spirit"
 path = "src/lib.rs"
 
-[[example]]
-name = "mindfulness_probe"
-path = "examples/probe.rs"
-
 [dependencies]
 claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
 serde_json = "1"
