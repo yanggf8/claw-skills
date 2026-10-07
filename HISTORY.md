@@ -9,6 +9,58 @@ this file is only the record of what changed and why.
 
 ---
 
+## chipcon: reviewing a docs commit — accurate prose, three things riding along (2026-10-07)
+
+`9fe5fa8` ("docs(chipcon): explain trace based delivery diagnostics") got reviewed while it was
+still the tip of master, which is the only kind of review worth running. Three-way — my own pass,
+then kimi-review, then its cross-model companion pass — and all three converged, each against the
+nullclaw/claw-core source rather than the diff.
+
+**The new SKILL.md section is accurate.** Every claim checked out against the implementation:
+`nullclaw cron run-by-trace <trace_id> [--json]` exists (`main.zig:1789`, `:2195`);
+`cron_runs.diagnostic` is written only by `dbSetRunDiagnostic` (`cron.zig:8450`), whose
+`safeSkillRunDiagnostic` (`cron.zig:404`) accepts a single ≤256-char
+`[telegram] trace=… send failed (attempts=… last=… total_elapsed=…s)` line — the fixed alphabet
+excludes URL and bot-token punctuation, so the "omits the bot token" claim is structural, not
+aspirational. "A retry that succeeds logs its successful attempt" is claw-core's
+`send recovered on attempt N/M` (`telegram.rs:137`). `nullclaw.service` exists as a user unit.
+
+**The defect was in what else the commit carried.** Under a `docs(chipcon)` title:
+
+- **It promoted an orphan instead of removing it.** `examples/probe.rs` is a differential probe
+  whose opening line says it compares against `mindfulness-spirit/scripts/run.py` — Python deleted
+  2026-08-02, and mindfulness-spirit is not among the skills whose oracles were frozen into
+  fixtures. Nothing in the repo references the example under either name. With edition 2021's
+  default `autoexamples`, the file had been compiled by every `cargo test`/clippy run since August
+  anyway, so the new `[[example]]` stanza's only real effect was renaming the target
+  `probe` → `mindfulness_probe`. The correct action was `git rm`.
+- **An unrelated warning fix.** The `_err` rename in `crates/inflation-con/tests/braking.rs:515`
+  is correct — that binding is genuinely unused (the `err` asserts at `:532` belong to a different
+  `go()` call) — but the unused variable was introduced five days earlier by `65b2662` and belongs
+  in that story, not this one.
+- **One sentence overclaimed.** "New failed runs store a bounded Telegram terminal summary" reads
+  as if every new failed run gets one; a run that never attempted a send (chipcon's SMH fetch
+  failure) has no `[telegram]` line for `safeSkillRunDiagnostic` to accept, and its `diagnostic`
+  stays NULL even on new runs.
+
+The review also caught a **pre-existing** contradiction in the same file: the intro and
+`## Data Store` still cited `lib/oil_fetch.py` `fetch_history(range=1y)` — `lib/` died with the
+Python, and chipcon has fetched through the shared `market_fetch` crate since the port
+(`chart_url` / `parse_yahoo_chart`, wired in `crates/chipcon/src/fetch.rs`).
+
+Fixes, one commit each, verified fresh before pushing (`cargo test --workspace`, clippy
+`--all-targets` zero warnings, `tools/lint-http.sh`); the push itself 403'd on `lisyanggf` until
+`gh auth switch -u yanggf8`:
+
+- `98475b0` — delete probe.rs and the stanza
+- `1d0f597` — SKILL.md points at `market_fetch`
+- `e7a9a9b` — the diagnostic sentence scoped to "whose Telegram delivery failed"
+
+The pattern worth keeping: vestigial Python references surface long after the deletion — probe.rs
+sat compiled-but-unreferenced for two months, and the stale `lib/oil_fetch.py` citations sat in the
+very file this commit touched. When a commit's scope doesn't match its message, the extra hunks
+are where the review should look first.
+
 ## inflation-con: the fed-braking watch, and what the test-first order caught (2026-10-02)
 
 The slot-5 hedge research (finance-engineering doc 191) ended in a composite watch condition —
