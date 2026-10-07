@@ -12,9 +12,9 @@ position sizing, no portfolio edits. Status labels describe trend health, not
 an instruction to sell or reduce.
 
 Data input comes from Yahoo Finance. Each daily run fetches ~1 year of daily
-closes per configured ticker via `lib/oil_fetch.py` `fetch_history(range=1y)`
-for the trend calculation. No local store, no registry, and no broker state is
-read or changed.
+closes per configured ticker via the shared `market_fetch` crate
+(`chart_url` / `parse_yahoo_chart`, range `1y`) for the trend calculation.
+No local store, no registry, and no broker state is read or changed.
 
 ## Script
 
@@ -62,7 +62,8 @@ Manual event checks remain outside the algorithm:
 
 ## Data Store
 
-- Source: Yahoo Finance chart API via `lib/oil_fetch.py` `fetch_history(range=1y)`
+- Source: Yahoo Finance chart API via the shared `market_fetch` crate
+  (`~/b/gwebcdb/crates/market-fetch`; wired in `crates/chipcon/src/fetch.rs`)
 - Each run fetches ~1 year of daily closes per configured ticker (SMH, QQQ, SOXX)
 - No local store and no price registry — history is fetched fresh each run
 
