@@ -99,7 +99,8 @@ immune to any content.
 ## Tracing a delivery failure
 
 Use the cron alert's `trace` value to inspect the exact run. New failed runs
-store a bounded Telegram terminal summary in `cron_runs.diagnostic`; the CLI
+whose Telegram delivery failed store a bounded Telegram terminal summary in
+`cron_runs.diagnostic`; the CLI
 shows it alongside the exit code and failure class. The alert and service log
 also show the final Telegram diagnostic, including attempt count, elapsed time,
 and a safe transport and I/O error class. A retry that succeeds logs its
