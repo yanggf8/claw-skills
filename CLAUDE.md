@@ -215,10 +215,17 @@ arrives.
 **`cct` generation moved onto the worker's own Cloudflare cron triggers on
 2026-09-14** (before that: this box's nullclaw cron 2026-09-02…09-14; GH
 Actions `schedule:` until then). `yanggf8/cct` `wrangler.toml [triggers]`
-carries the four UTC crons, dispatched by `scheduler.ts` on exact (hour,
-minute, weekday) tuples — and CF's parser wants `SUN`, not `0`, in the
+carries two UTC cron expressions — the three weekday slots multiplex onto
+one, because triggers are capped per account (5 Free / 250 Paid) while
+`scheduler.ts` dispatches exact (hour, minute, weekday) tuples, so one
+expression carries any number of slots and its bycatch is a side-effect-free
+400 — and CF's parser wants `SUN`, not `0`, in the
 day-of-week field (error 10100, and a failed trigger change half-applies:
-check the deploy output's `schedule:` lines, not its exit). **Do NOT add a
+check the deploy output's `schedule:` lines, not its exit). **Day-of-week
+takes an explicit list, never a range**: CF registers `1-5` verbatim but
+fires Mon–Thu only (half-open `[1,5)`) — every Friday from 2026-09-18 to
+10-09 produced zero generator runs that way (post-mortem:
+[`HISTORY.md`](HISTORY.md), 2026-10-13). **Do NOT add a
 second writer** — no Actions `schedule:`, no box-side trigger job; one day
 would get two trigger rows (`job_run_results.run_id` embeds a uuid4;
 `job_date_results` rewinds the day to `running` on the second writer). The

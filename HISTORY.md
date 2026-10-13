@@ -9,6 +9,64 @@ this file is only the record of what changed and why.
 
 ---
 
+## cct: every Friday went dark, and the alarm that knew never left the box (2026-10-13)
+
+Three reader degradations landed in Telegram on the evening of 2026-10-13: pre-market stale by a
+day, intraday and eod finding nothing for 2026-10-09. It looked exactly like the 09-25 hole —
+which the earlier investigation had closed as "one day, permanently missing, not recurring". That
+conclusion was the first thing to fall: querying the worker's D1 for the days *around* the
+suspected one showed 2026-10-02 and 2026-09-18 equally empty. **Every Friday since the 2026-09-14
+cutover to Cloudflare cron triggers had produced zero generator runs — 09-18, 09-25, 10-02,
+10-09 — while every Monday-through-Thursday had all three slots within a minute of schedule.**
+A failure that periodic is not platform weather; it is config semantics.
+
+**The semantics.** The deploy log from 09-14 (`~/.wrangler/logs/wrangler-2026-09-14_03-11-00_793.log`)
+shows Cloudflare accepted `schedule: 30 12 * * 1-5` with a 200 and echoed it back — *registered
+verbatim* is not *parsed as written*. The effective day set was Mon–Thu: the range behaves
+half-open, `[1,5)`. The discriminating evidence: Sundays carry exactly one row (weekly, `SUN`
+by name), which falsifies the Quartz reading (`1=SUN`, which would have fired the weekday jobs
+on Sundays too); `0` as a day-of-week was rejected on 09-14 with error 10100 while names are
+accepted. Zero rows means the trigger never began executing — `startJobRun`
+(`~/a/cct/src/modules/d1-job-storage.ts`) writes a `running` row as its first act, and even a
+failed start leaves a completion row — while the worker served HTTP fine on hole days, ruling
+out account limits and crashes.
+
+**The alarm that knew.** Box-side detection worked at both layers, every time: the three readers
+degraded as designed, and `cct-check` exited 1 for four consecutive mornings naming the missing
+triggers ("the expected 12:30Z trigger left no attributable run"). None of that reached Telegram,
+because scheduled *shell* jobs alert only on `repair_policy = alert_only`
+(nullclaw `gateway.zig:4445`) and the watchdog job sat on `none` — its diagnosis was written into
+`cron.db` for an operator who does not read `cron.db`. The skill jobs' alerts arrived and were
+still easy to misread as one bad day, because the watchdog's precise version of the same story
+was silenced.
+
+Fixes, all applied 2026-10-13:
+
+- `~/a/cct` `7391ae3` — the three weekday crons become explicit `MON,TUE,WED,THU,FRI` lists;
+  deployed, `schedule:` lines checked per the standing rule. First real test is Friday
+  2026-10-16 (D1 should gain three rows that evening); the watchdog going quiet on 10-17 00:05Z
+  is the passive confirmation.
+- Same day, one step further: the three weekday expressions consolidate onto **one multiplexed
+  expression**, `0,5,30 12,16,20 * * MON,TUE,WED,THU,FRI` — nine firings per weekday, three real
+  tuples, six side-effect-free 400s. The push was the cron-trigger cap (5 per account on Free;
+  the account was at 4), and the observation that unlocks it: dispatch lives in `scheduler.ts`,
+  not in the cron syntax, so an expression is a delivery vehicle, not a schedule — slots cost
+  tuples, not trigger entries. The account goes from one spare slot to three (cct `77a709f`).
+- `nullclaw cron update … --repair alert_only` on both `cct-check` and `cct2-check` — the same
+  one-field defect, fixed together.
+- This entry; the CLAUDE.md cron gotcha now carries the no-ranges rule.
+
+**Worth keeping from how it went.** The 09-25 post-mortem was honest and wrong: it concluded
+"not recurring" from a single occurrence, and periodicity is invisible at n=1 — any
+single-hole investigation should ask "does this day-of-week shape repeat?" before closing.
+"Registered with 200" tests acceptance, not meaning; the deploy-output check this repo already
+prescribes catches half-applied changes but cannot catch a misparse, and only a fired-or-not
+probe (D1 rows, the watchdog) tests semantics. And an alarm wired only into a database the
+operator never opens is detection theater — the watcher must be able to reach the watched-for
+human, or it exists to feel safe.
+
+---
+
 ## chipcon: reviewing a docs commit — accurate prose, three things riding along (2026-10-07)
 
 `9fe5fa8` ("docs(chipcon): explain trace based delivery diagnostics") got reviewed while it was
