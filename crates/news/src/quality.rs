@@ -64,6 +64,10 @@ pub struct QualityConfig {
     pub deny: HashSet<String>,
     /// Drop the item outright, by host.
     pub deny_domains: HashSet<String>,
+    /// Drop the item when the name shows up in the raw headline (Tier 1) or
+    /// in the head of its post-precheck body excerpt — a person's byline,
+    /// not an outlet name. Curated by the operator like `deny`.
+    pub deny_authors: HashSet<String>,
     /// Keep the item, but only its headline.
     pub paywall_domains: HashSet<String>,
 }
@@ -94,6 +98,7 @@ pub fn load_quality_config(path: Option<&std::path::Path>) -> QualityConfig {
     merge("trusted", &mut cfg.trusted);
     merge("deny", &mut cfg.deny);
     merge("deny_domains", &mut cfg.deny_domains);
+    merge("deny_authors", &mut cfg.deny_authors);
     merge("paywall_domains", &mut cfg.paywall_domains);
     cfg
 }

@@ -73,26 +73,90 @@ fn cached_precheck(
     verdict
 }
 
-/// Tier 1: drop deny-listed sources, nothing else.
+/// Tier 1: drop deny-listed sources and author-denied headlines, nothing else.
 ///
 /// Promo judgement is left to the prompt and to Tier 2's title-only check.
-/// Titles are not gated here and promo is never matched against body text —
-/// bare substrings like 限時 over-match real news such as 限時降息.
+/// The one thing gated on the title itself is `deny_authors` — curated person
+/// names, where the bare-substring over-match that keeps promo words out of
+/// this stage does not apply. Promo is still never matched against body text.
 pub fn tier1_filter_items(items: Vec<Item>) -> Vec<Item> {
     if !precheck_enabled() || items.is_empty() {
         return items;
     }
-    let deny = &quality::active_config().deny;
+    let cfg = quality::active_config();
+    let authors: Vec<&str> = cfg
+        .deny_authors
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .collect();
+    let deny = &cfg.deny;
     let before = items.len();
     let kept: Vec<Item> = items
         .into_iter()
-        .filter(|it| !deny.contains(&it.source))
+        .filter(|it| {
+            !deny.contains(&it.source) && !authors.iter().any(|name| it.title.contains(name))
+        })
         .collect();
     log_trace(
         "quality_tier1",
         json!({"before": before, "after": kept.len(), "dropped": before - kept.len()}),
     );
     kept
+}
+
+/// How much of a body excerpt the author check reads: the byline region.
+/// Outlets print 記者X／台北報導-style bylines at the top; a name further
+/// down is a mention, not an authorship.
+const AUTHOR_BYLINE_HEAD_CHARS: usize = 400;
+
+/// Drop picks whose precheck excerpt carries a denied author's name in its
+/// head, and take the excerpt out with the bullet.
+///
+/// This is the body half of `deny_authors`; the title half runs in Tier 1.
+/// Excerpts exist only where `usable_excerpt` passed — the same pool the
+/// headline-enrichment pass reads — so a byline that never made it into an
+/// excerpt never surfaced in a digest headline either, and nothing visible is
+/// left unchecked. Fail-open by construction: no excerpt, no drop.
+pub fn drop_denied_author_bullets(
+    summary: &str,
+    bodies: &mut BTreeMap<u32, String>,
+    deny_authors: &HashSet<String>,
+) -> (String, usize) {
+    let active: Vec<&str> = deny_authors
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if active.is_empty() || summary.is_empty() {
+        return (summary.to_string(), 0);
+    }
+    let denied: HashSet<u32> = bodies
+        .iter()
+        .filter(|(_, excerpt)| {
+            let head: String = excerpt.chars().take(AUTHOR_BYLINE_HEAD_CHARS).collect();
+            active.iter().any(|name| head.contains(name))
+        })
+        .map(|(num, _)| *num)
+        .collect();
+    if denied.is_empty() {
+        return (summary.to_string(), 0);
+    }
+    let mut dropped = 0usize;
+    let out: Vec<&str> = summary
+        .lines()
+        .filter(|line| match leading_marker(line) {
+            Some(num) if denied.contains(&num) => {
+                dropped += 1;
+                false
+            }
+            _ => true,
+        })
+        .collect();
+    for num in &denied {
+        bodies.remove(num);
+    }
+    (out.join("\n"), dropped)
 }
 
 /// What Tier 2 recorded about one paywalled pick.
@@ -638,5 +702,74 @@ mod tests {
         assert!(!bodies.contains_key(&2));
         assert!(!bodies.contains_key(&3));
         assert!(!bodies.contains_key(&4));
+    }
+
+    #[test]
+    fn author_name_in_excerpt_head_drops_the_bullet_and_the_excerpt() {
+        let mut bodies = BTreeMap::new();
+        bodies.insert(
+            1u32,
+            "記者蔣季容／台北報導　北市長辯論會協商過程曝光，羅智強爆料……".to_string(),
+        );
+        bodies.insert(2, "台積電今日舉行法說會，展望樂觀。".to_string());
+        let mut deny = HashSet::new();
+        deny.insert("蔣季容".to_string());
+        let (out, dropped) = drop_denied_author_bullets(
+            "- #1 北市長辯論會協商過程曝光\n- #2 台積電法說會展望",
+            &mut bodies,
+            &deny,
+        );
+        assert_eq!(dropped, 1);
+        assert_eq!(out, "- #2 台積電法說會展望");
+        assert!(!bodies.contains_key(&1));
+        assert!(bodies.contains_key(&2));
+    }
+
+    #[test]
+    fn author_name_past_the_byline_head_is_a_mention_and_keeps_the_bullet() {
+        let mut bodies = BTreeMap::new();
+        // The name starts exactly past the byline-head window: a mention, not
+        // an authorship.
+        bodies.insert(1u32, format!("{}蔣季容", "字".repeat(400)));
+        let mut deny = HashSet::new();
+        deny.insert("蔣季容".to_string());
+        let (out, dropped) = drop_denied_author_bullets("- #1 某篇報導", &mut bodies, &deny);
+        assert_eq!(dropped, 0);
+        assert_eq!(out, "- #1 某篇報導");
+        assert!(bodies.contains_key(&1));
+    }
+
+    #[test]
+    fn no_excerpt_keeps_the_bullet() {
+        let mut bodies = BTreeMap::new();
+        let mut deny = HashSet::new();
+        deny.insert("蔣季容".to_string());
+        let (out, dropped) = drop_denied_author_bullets("- #1 某篇報導", &mut bodies, &deny);
+        assert_eq!(dropped, 0);
+        assert_eq!(out, "- #1 某篇報導");
+    }
+
+    #[test]
+    fn blank_deny_entries_match_nothing() {
+        let mut bodies = BTreeMap::new();
+        bodies.insert(1u32, "蔣季容撰文".to_string());
+        let mut deny = HashSet::new();
+        deny.insert(String::new());
+        deny.insert("   ".to_string());
+        let (out, dropped) = drop_denied_author_bullets("- #1 某篇報導", &mut bodies, &deny);
+        assert_eq!(dropped, 0);
+        assert_eq!(out, "- #1 某篇報導");
+    }
+
+    #[test]
+    fn deny_names_are_matched_trimmed() {
+        // A config entry with stray whitespace must not silently never match.
+        let mut bodies = BTreeMap::new();
+        bodies.insert(1u32, "記者蔣季容／台北報導　全文……".to_string());
+        let mut deny = HashSet::new();
+        deny.insert(" 蔣季容 ".to_string());
+        let (out, dropped) = drop_denied_author_bullets("- #1 某篇報導", &mut bodies, &deny);
+        assert_eq!(dropped, 1);
+        assert_eq!(out, "");
     }
 }

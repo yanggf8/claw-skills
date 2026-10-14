@@ -14,9 +14,10 @@ use crate::config::{
     LLM_TRANSLATION_TIMEOUT_SECS, TRANSLATION_RULES_STRICT,
 };
 use crate::precheck::{
-    precheck_apply, render_replacements, resolve_paywall_replacements,
-    resolve_paywall_summaries, PaywallMap, SharedCache,
+    drop_denied_author_bullets, precheck_apply, render_replacements,
+    resolve_paywall_replacements, resolve_paywall_summaries, PaywallMap, SharedCache,
 };
+use crate::quality;
 use crate::render::{
     attach_numbered_links, markdown_visible_text, strip_links_keep_spacing, LinkMap, Numbered,
     PAYWALL_NOTE,
@@ -557,7 +558,12 @@ pub fn summarize_default_section(
         });
     }
 
-    let (summary, mut paywall, bodies) = precheck_apply(&summary, &numbered, key, cache_handle);
+    let (summary, mut paywall, mut bodies) = precheck_apply(&summary, &numbered, key, cache_handle);
+    let (summary, author_dropped) =
+        drop_denied_author_bullets(&summary, &mut bodies, &quality::active_config().deny_authors);
+    if author_dropped > 0 {
+        log_trace("author_deny", json!({"section": key, "dropped": author_dropped}));
+    }
     if news_bullet_lines(&summary).is_empty() {
         // Every pick was denied or promotional. That is the filter working, not
         // the model failing, so `used_fallback` stays false and no alert fires.
@@ -707,7 +713,12 @@ pub fn run_ai_substage(
         return Ok(Vec::new());
     }
 
-    let (summary, mut paywall, bodies) = precheck_apply(&summary, &numbered, "ai", cache_handle);
+    let (summary, mut paywall, mut bodies) = precheck_apply(&summary, &numbered, "ai", cache_handle);
+    let (summary, author_dropped) =
+        drop_denied_author_bullets(&summary, &mut bodies, &quality::active_config().deny_authors);
+    if author_dropped > 0 {
+        log_trace("author_deny", json!({"section": "ai", "dropped": author_dropped}));
+    }
     if news_bullet_lines(&summary).is_empty() {
         // A filter success, not a model failure — the driver must not escalate.
         log_trace("ai_substage_all_dropped", json!({"range": [start, end]}));
@@ -926,7 +937,7 @@ pub fn run_custom_topic(
     date_str: &str,
     cache_handle: &SharedCache,
 ) -> Result<Vec<String>, String> {
-    let variant = "custom_topic_v4_dedup";
+    let variant = "custom_topic_v5_author_deny";
     let path = custom_cache_path(date_str, variant, topic);
     match std::fs::read_to_string(&path) {
         Ok(cached) => {
@@ -1114,8 +1125,13 @@ pub fn run_custom_topic(
         return Ok(vec![NO_NEWS.to_string()]);
     }
 
-    let (summary, mut paywall, _bodies) =
+    let (summary, mut paywall, mut bodies) =
         precheck_apply(&summary, &numbered, &section_key, cache_handle);
+    let (summary, author_dropped) =
+        drop_denied_author_bullets(&summary, &mut bodies, &quality::active_config().deny_authors);
+    if author_dropped > 0 {
+        log_trace("author_deny", json!({"section": section_key, "dropped": author_dropped}));
+    }
     if news_bullet_lines(&summary).is_empty() {
         // Returns before the cache write below, so an empty result is never
         // persisted and cannot suppress the topic for the rest of the day.

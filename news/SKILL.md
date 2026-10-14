@@ -198,9 +198,12 @@ The skill sees only RSS titles, so a strong title on paywalled/thin/promo conten
 to slip through. Two-tier prechecking (`crates/news/src/quality.rs`) handles it with a **three-way
 verdict** per item — `keep`, `drop`, or `title_only`:
 
-- **Tier 1 (every run, no network):** at the dedup site, drops deny-listed **sources** only.
-  Promo/listicle judgement is left to the LLM + Tier 2 (the body-tuned patterns over-match
-  short legitimate titles like `限時降息`, so they must not hard-gate titles).
+- **Tier 1 (every run, no network):** at the dedup site, drops deny-listed **sources** and
+  items whose raw title carries a `deny_authors` name. Promo/listicle judgement is left to
+  the LLM + Tier 2 (the body-tuned patterns over-match short legitimate titles like
+  `限時降息`, so they must not hard-gate titles); curated person names are the one
+  title-level exception, and they gate before dedup, before the LLM, and before every
+  fallback listing (all of which feed from the same Tier-1 output).
 - **Tier 2 (only the LLM-picked items, before link attach):** decodes each picked Google
   News link to its real publisher URL (headless `batchexecute`, no browser), then:
   - **drop** — deny source/domain (e.g. `chinatimes.com`) or marketing/PR/listicle body.
@@ -218,8 +221,13 @@ section or a false failure.
 
 **Source policy lives in config, not code** — the module ships EMPTY deny/paywall seeds
 (no hardcoded publishers). Policy is read from `~/.nullclaw/news-quality-sources.json`
-`{"trusted":[...],"deny":[...],"deny_domains":[...],"paywall_domains":[...]}`:
-`deny`/`deny_domains` → drop; `paywall_domains` → title_only (keep LLM bullet). Host matching
+`{"trusted":[...],"deny":[...],"deny_domains":[...],"deny_authors":[...],"paywall_domains":[...]}`:
+`deny`/`deny_domains` → drop; `deny_authors` → drop (Tier 1 matches the raw title; Tier 2
+also matches the first 400 chars of the body excerpt, where `記者X／台北報導`-style bylines
+live, and removes the bullet after selection — items without an excerpt stay, because a
+byline that never entered an excerpt never surfaced in a digest headline either, the
+enrichment pass reading the same pool); `paywall_domains` → title_only (keep LLM bullet).
+Host matching
 is suffix-aware (`ft.com` matches `www.ft.com`, not `craft.com`). The repo's working policy
 (e.g. `chinatimes.com` deny; Nikkei/FT paywall) lives in that file, so it is operator-owned
 and removable without editing source. Because config is union-only (it cannot *remove* a code
