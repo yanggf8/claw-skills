@@ -270,10 +270,17 @@ pub fn precheck_apply(
 
     let n_drop = actions.values().filter(|a| **a == Action::Drop).count();
     let n_title = actions.values().filter(|a| **a == Action::TitleOnly).count();
+    // Why each drop happened, so a `media` or `deny` drop is visible in the
+    // trace rather than folded into a bare count.
+    let mut drop_reasons: BTreeMap<&str, usize> = BTreeMap::new();
+    for v in verdicts.values().filter(|v| v.action == Action::Drop) {
+        *drop_reasons.entry(v.reason.unwrap_or("unknown")).or_default() += 1;
+    }
     log_trace(
         "quality_tier2",
         json!({"section": section, "checked": selected.len(),
-               "dropped": n_drop, "paywalled_kept": n_title}),
+               "dropped": n_drop, "drop_reasons": drop_reasons,
+               "paywalled_kept": n_title}),
     );
 
     let mut paywall = PaywallMap::new();

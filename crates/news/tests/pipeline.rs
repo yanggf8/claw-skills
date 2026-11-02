@@ -263,6 +263,48 @@ fn the_collapse_runs_before_the_precheck_and_the_precheck_only_sees_survivors() 
 }
 
 #[test]
+fn a_pick_that_decodes_to_a_podcast_page_is_dropped_and_traced_as_media() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::new();
+    // Seed the decode cache — the file `decode_google_news_url` consults before
+    // any network — so item 2 resolves to a podcast page while staying offline.
+    // The page is on the unroutable host too: if the path rule were gone, the
+    // fetch would fail and the item would be kept as `fetch_error`.
+    let link = "http://127.0.0.1:1/2";
+    use sha1::Digest;
+    let hex: String = sha1::Sha1::digest(link.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let day = env
+        .home
+        .join(".nullclaw/.news-quality-cache")
+        .join(jiff::Zoned::now().date().to_string());
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(
+        day.join(format!("{hex}.url")),
+        "http://127.0.0.1:1/podcast/news/5/memory-bear-market/2722624",
+    )
+    .unwrap();
+
+    env.reply_default("- #1 美半導體危機影響台積電美光三星\n- #2 記憶體股技術性熊市\n- #3 半導體股震盪何時完結");
+    let (lines, _) = summarize_default_section(
+        "tech",
+        &items(&TECH_FIXTURE),
+        DATE,
+        &LinkMap::default(),
+        &new_cache(),
+    );
+
+    let t2 = env.first("quality_tier2").expect("precheck ran");
+    assert_eq!(t2["dropped"], 1, "{t2}");
+    assert_eq!(t2["drop_reasons"]["media"], 1, "{t2}");
+    let body = lines.join("\n");
+    assert!(!body.contains("記憶體股技術性熊市"), "media pick delivered: {body}");
+    assert!(body.contains("美半導體危機影響台積電美光三星"), "{body}");
+}
+
+#[test]
 fn a_reply_with_an_unmarked_line_falls_back_to_the_raw_listing() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let env = Env::new();

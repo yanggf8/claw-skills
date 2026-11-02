@@ -207,6 +207,12 @@ verdict** per item — `keep`, `drop`, or `title_only`:
 - **Tier 2 (only the LLM-picked items, before link attach):** decodes each picked Google
   News link to its real publisher URL (headless `batchexecute`, no browser), then:
   - **drop** — deny source/domain (e.g. `chinatimes.com`) or marketing/PR/listicle body.
+  - **drop (`media`)** — the decoded URL's path has a whole segment `podcast`/`podcasts`/
+    `audio`/`video`/`videos` (case-insensitive; a slug like `video-china-…` does not count).
+    An audio/video page has no text to read, so it is dropped before any fetch — and before
+    the paywall rule, so a paywalled player page is dropped, not kept title-only. Decided from
+    the path alone, so the verdict does not depend on fetch success; counted under
+    `drop_reasons` in the `quality_tier2` trace.
   - **title_only** — paywalled/truncated reputable source (e.g. Nikkei/FT). The item is
     **kept**; the LLM's already-Chinese bullet stays as-is (we don't drop it, and we don't
     overwrite it with the raw RSS headline — that would inject English/Japanese past the
