@@ -14,7 +14,7 @@ use crate::config::{
     LLM_TRANSLATION_TIMEOUT_SECS, TRANSLATION_RULES_STRICT,
 };
 use crate::precheck::{
-    drop_denied_author_bullets, precheck_apply, render_replacements,
+    drop_denied_author_bullets, precheck_apply, render_replacements, Precheck,
     resolve_paywall_replacements, resolve_paywall_summaries, PaywallMap, SharedCache,
 };
 use crate::quality;
@@ -30,8 +30,8 @@ use crate::text::{title_without_source, Item};
 use crate::trace::{clip_subprocess_text, log_trace, sample_nonempty_lines};
 use crate::validate::{
     count_cjk, has_cjk_2_in_head, is_no_news_answer, language_ok, language_stats, leading_marker,
-    leading_marker_ids, line_tokens_covered, marker_stats, neutralize_markdown, news_bullet_lines,
-    shape_ok,
+    leading_marker_ids, leading_marker_span, line_tokens_covered, marker_stats, neutralize_markdown,
+    news_bullet_lines, shape_ok,
 };
 use serde_json::json;
 use std::collections::{BTreeMap, HashSet};
@@ -49,6 +49,28 @@ pub struct AiSubstageExhausted(pub String);
 
 fn counts_of(items: &[(String, Vec<Item>)]) -> Vec<(String, usize)> {
     items.iter().map(|(k, v)| (k.clone(), v.len())).collect()
+}
+
+/// `numbered` with each decoded pick's link replaced by its publisher URL,
+/// and the Google link → publisher URL pairs that were swapped.
+///
+/// Applied right after the precheck, so every renderer downstream — the
+/// direct render and the translation fallback alike — links the publisher.
+/// Nothing before the render reads `link` except the precheck itself, which
+/// has already keyed its cache on the Google link by then. The pairs go into
+/// the section cache's sidecar; see `cache::write_links_sidecar`.
+fn with_publisher_links(
+    numbered: &NumberedMap,
+    links: &BTreeMap<u32, String>,
+) -> (NumberedMap, BTreeMap<String, String>) {
+    let mut out = numbered.clone();
+    let mut swapped = BTreeMap::new();
+    for (num, url) in links {
+        if let Some(item) = out.get_mut(num) {
+            swapped.insert(std::mem::replace(&mut item.link, url.clone()), url.clone());
+        }
+    }
+    (out, swapped)
 }
 
 fn known_ids(numbered: &NumberedMap) -> HashSet<u32> {
@@ -429,6 +451,28 @@ pub fn fallback_summary(
 
 // ── one default section ──────────────────────────────────────────────────────
 
+/// What the model wrote for each marked line, beside the title it was given.
+///
+/// Logged as `section_picks` so a bad headline in a delivered digest can be
+/// compared against its source after the fact; a later Google News fetch
+/// returns a different feed. On 2026-11-13 (`- 川普喊` in 重大新聞) the trace
+/// held neither side, so the cause could not be proved. `source` is the feed
+/// title as offered to the model, outlet suffix included.
+fn section_pick_records(summary: &str, numbered: &NumberedMap) -> Vec<serde_json::Value> {
+    let clip = |s: &str| s.chars().take(120).collect::<String>();
+    summary
+        .lines()
+        .filter_map(|line| {
+            let (n, end) = leading_marker_span(line)?;
+            Some(json!({
+                "n": n,
+                "source": numbered.get(&n).map(|i| clip(&i.title)),
+                "written": clip(line[end..].trim()),
+            }))
+        })
+        .collect()
+}
+
 /// `(lines, used_fallback)`.
 ///
 /// `used_fallback` is true only when the LLM path failed and the raw listing
@@ -526,6 +570,11 @@ pub fn summarize_default_section(
         );
     }
 
+    log_trace(
+        "section_picks",
+        json!({"section": key, "picks": section_pick_records(&summary, &numbered)}),
+    );
+
     // Collapse same-event rewrites while `#N` identity still exists, before
     // precheck builds its paywall map from those same ids.
     let summary = post_dedup_selected_summary(
@@ -558,7 +607,10 @@ pub fn summarize_default_section(
         });
     }
 
-    let (summary, mut paywall, mut bodies) = precheck_apply(&summary, &numbered, key, cache_handle);
+    let Precheck { summary, mut paywall, mut bodies, links } =
+        precheck_apply(&summary, &numbered, key, cache_handle);
+    // Not cached, so the swapped pairs have nowhere to go.
+    let (numbered, _) = with_publisher_links(&numbered, &links);
     let (summary, author_dropped) =
         drop_denied_author_bullets(&summary, &mut bodies, &quality::active_config().deny_authors);
     if author_dropped > 0 {
@@ -713,7 +765,9 @@ pub fn run_ai_substage(
         return Ok(Vec::new());
     }
 
-    let (summary, mut paywall, mut bodies) = precheck_apply(&summary, &numbered, "ai", cache_handle);
+    let Precheck { summary, mut paywall, mut bodies, links } =
+        precheck_apply(&summary, &numbered, "ai", cache_handle);
+    let (numbered, swapped_links) = with_publisher_links(&numbered, &links);
     let (summary, author_dropped) =
         drop_denied_author_bullets(&summary, &mut bodies, &quality::active_config().deny_authors);
     if author_dropped > 0 {
@@ -739,7 +793,7 @@ pub fn run_ai_substage(
         else {
             return Err("language_validation".to_string());
         };
-        cache::put(date_str, variant, start, end, &translated.join("\n"));
+        cache::put(date_str, variant, start, end, &translated.join("\n"), &swapped_links);
         return Ok(translated);
     }
 
@@ -755,7 +809,7 @@ pub fn run_ai_substage(
     if attached == 0 {
         return Err("no_links_attached".to_string());
     }
-    cache::put(date_str, variant, start, end, &with_links);
+    cache::put(date_str, variant, start, end, &with_links, &swapped_links);
     Ok(with_links.lines().map(str::to_string).collect())
 }
 
@@ -1125,8 +1179,9 @@ pub fn run_custom_topic(
         return Ok(vec![NO_NEWS.to_string()]);
     }
 
-    let (summary, mut paywall, mut bodies) =
+    let Precheck { summary, mut paywall, mut bodies, links } =
         precheck_apply(&summary, &numbered, &section_key, cache_handle);
+    let (numbered, swapped_links) = with_publisher_links(&numbered, &links);
     let (summary, author_dropped) =
         drop_denied_author_bullets(&summary, &mut bodies, &quality::active_config().deny_authors);
     if author_dropped > 0 {
@@ -1149,6 +1204,13 @@ pub fn run_custom_topic(
     let write_cache = |body: &str| {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
+        }
+        if !cache::write_links_sidecar(&path, &swapped_links) {
+            log_trace(
+                "news_cache_write_skipped",
+                json!({"variant": variant, "topic": topic, "reason": "links_sidecar"}),
+            );
+            return;
         }
         match std::fs::write(&path, body) {
             Ok(()) => log_trace(
@@ -1522,5 +1584,46 @@ mod enrich_tests {
             sanitize_enriched(&orig, "- #3 Meta 發布開放權重模型", &[3], &nm, &b);
         assert_eq!(out[0], "- #3 Meta 發布開放權重模型");
         assert_eq!(reverted, 0);
+    }
+}
+
+#[cfg(test)]
+mod picks_tests {
+    use super::*;
+    use crate::render::Numbered;
+
+    fn numbered() -> NumberedMap {
+        [
+            (2, "Fed holds rates steady as inflation cools - Reuters"),
+            (5, "川普喊話伊朗限期談判否則開戰 - 中央社"),
+        ]
+        .into_iter()
+        .map(|(n, t)| (n, Numbered { title: t.to_string(), ..Default::default() }))
+        .collect()
+    }
+
+    #[test]
+    fn each_marked_line_is_paired_with_its_source_title() {
+        let summary = "- #5 川普喊\n- #2 聯準會按兵不動\n**雜訊**\n- #9 不在候選內";
+        assert_eq!(
+            section_pick_records(summary, &numbered()),
+            vec![
+                json!({"n": 5, "source": "川普喊話伊朗限期談判否則開戰 - 中央社", "written": "川普喊"}),
+                json!({"n": 2, "source": "Fed holds rates steady as inflation cools - Reuters",
+                       "written": "聯準會按兵不動"}),
+                json!({"n": 9, "source": null, "written": "不在候選內"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn both_strings_are_clipped_to_120_characters() {
+        let long_title = "長".repeat(130);
+        let numbered: NumberedMap =
+            [(1, Numbered { title: long_title, ..Default::default() })].into_iter().collect();
+        let summary = format!("- #1 {}", "寫".repeat(130));
+        let recs = section_pick_records(&summary, &numbered);
+        assert_eq!(recs[0]["source"], json!("長".repeat(120)));
+        assert_eq!(recs[0]["written"], json!("寫".repeat(120)));
     }
 }

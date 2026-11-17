@@ -133,7 +133,7 @@ fn a_free_replacement_wins_over_a_summary() {
         },
     )]
     .into();
-    let (text, _) = attach_numbered_links("- #1 原標題", &numbered(), &paywall);
+    let (text, _) = attach_numbered_links("- #1 或許是該對 AI 感到恐慌的時候了", &numbered(), &paywall);
     assert!(text.contains("免費替代標題"), "{text}");
     assert!(!text.contains("不該出現的摘要"), "{text}");
 }
@@ -141,7 +141,7 @@ fn a_free_replacement_wins_over_a_summary() {
 #[test]
 fn no_summary_and_no_replacement_still_degrades_to_one_bullet_and_a_note() {
     let paywall: HashMap<u32, Replacement> = [(1, Replacement::default())].into();
-    let (text, _) = attach_numbered_links("- #1 原標題", &numbered(), &paywall);
+    let (text, _) = attach_numbered_links("- #1 或許是該對 AI 感到恐慌的時候了", &numbered(), &paywall);
     assert_eq!(text.lines().count(), 1, "{text}");
     assert!(text.contains(PAYWALL_NOTE), "{text}");
 }

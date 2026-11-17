@@ -9,6 +9,47 @@ this file is only the record of what changed and why.
 
 ---
 
+## news: a three-character headline, and links a phone could not open (2026-11-17)
+
+Two operator reports on one day. First, the 2026-11-13 digest's 重大新聞 shipped `- 川普喊 [🔗]`
+— a headline cut to three characters. The cause could not be proved: the trace kept neither the
+model's stdout nor the feed titles it was given, and a refetch hours later hit Google's 429. Every
+step downstream of the model was read and none truncates (the RSS parser accumulates text
+events; `neutralize_markdown` only swaps `*`/`_`; Telegram does not swallow text after `[`), so
+the model writing `#5 川普喊` is the standing explanation. The real defect was that nothing
+checked a model headline against its source. Now a body under 6 ideographs whose source has 10+
+is replaced by the source title — but only when the source is provably Traditional Chinese
+(no kana, no Simplified marker, at least one Traditional marker). The first cut said "10+
+ideographs means Chinese"; review showed a Japanese or Simplified title passes that, and a
+blacklist of Simplified characters still failed open (`人工智能图像识别`, all-kanji Japanese), so the
+gate fails closed: unsure means the model's line ships as written. `section_picks` now records
+source and written text per pick, so the next one is provable.
+
+Second, the operator tapped a digest link on a phone (mobile network, then a second phone) and
+got Google's "automated queries" page: every link was a `news.google.com/rss/articles/…`
+redirect. Tier-2 precheck had always decoded each pick to its publisher URL — and thrown it away
+after the paywall/deny checks. It is now rendered, with the Google link as fallback. Two
+consequences the first version missed, both found in review: the `protected_name_lost`
+observation joins digest lines to sources *by link*, so it would have gone silently blind
+(fixed by preferring the publisher URL the digest actually contains), and on a cache hit the
+precheck never runs, so every later run of the day was blind again (fixed by a
+`<entry>.links.json` sidecar written before, and required by, each cache entry).
+
+**What this does not fix.** Decoding is itself a Google call (`batchexecute`). The same afternoon
+the NUC's own address was being 429'd by Google intermittently, and a manual resend at 15:43
+decoded only 9 of 18 links (tech 5/5, general 0/3, AI 4/10) — the other 9 still go through
+Google and still fail on a phone. Whether the NUC's own volume (three runs, seventeen custom
+topics, decodes and paywall searches within minutes) is what earns the 429 is not established.
+`links_decoded` per section is the number to watch.
+
+Reviews: Muse was unavailable (402 billing), so K3.1 Pro reviewed the backend in its place —
+four rounds, every finding verified against source before it was fixed. The tests had also
+been writing ~10 fake events into the real `~/.nullclaw/skill-traces.jsonl` per run (render and
+select tests without HOME isolation); both now run under a scratch HOME, and the 72 stray lines
+written on 2026-11-17 were removed.
+
+---
+
 ## cct: every Friday went dark, and the alarm that knew never left the box (2026-10-13)
 
 Three reader degradations landed in Telegram on the evening of 2026-10-13: pre-market stale by a

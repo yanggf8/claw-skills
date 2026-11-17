@@ -3,8 +3,28 @@
 use news::render::Numbered;
 use news::select::*;
 use news::text::Item;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// A scratch `HOME`, set once for the whole binary.
+///
+/// The post-selection collapse writes trace events to `$HOME/.nullclaw/`, so
+/// without this every run of this suite appended fixture events to the
+/// operator's real trace file. Every map passes through [`n`], which sets it
+/// before any trace write can read `HOME`.
+fn scratch_home() -> &'static PathBuf {
+    static HOME: OnceLock<PathBuf> = OnceLock::new();
+    HOME.get_or_init(|| {
+        let home = std::env::temp_dir().join(format!("news-select-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".nullclaw")).unwrap();
+        std::env::set_var("HOME", &home);
+        home
+    })
+}
 
 fn n(entries: &[(u32, &str)]) -> NumberedMap {
+    scratch_home();
     entries
         .iter()
         .map(|(i, t)| {

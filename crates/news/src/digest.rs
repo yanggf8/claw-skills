@@ -2,7 +2,7 @@
 
 use crate::alert::{alert_failure, AlertContext};
 use crate::config::{section, THEME_TRIM_THRESHOLD};
-use crate::precheck::SharedCache;
+use crate::precheck::{publisher_link, SharedCache};
 use crate::render::{
     build_link_map, markdown_visible_text, trim_digest_links, trim_links_to_limit, PAYWALL_NOTE,
 };
@@ -15,6 +15,7 @@ use crate::theme::theme_ai_section;
 use crate::trace::log_trace;
 use crate::validate::dropped_protected_names;
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Instant;
 
 pub const SECTION_KEYS: [&str; 3] = ["ai", "tech", "general"];
@@ -27,18 +28,55 @@ fn items_for<'a>(all_items: &'a [(String, Vec<Item>)], key: &str) -> &'a [Item] 
         .unwrap_or(&[])
 }
 
+/// `(title, link)` per source item, with `link` the URL the digest carries
+/// for it.
+///
+/// The loss check joins a rendered line back to its headline by link, and a
+/// pick the precheck decoded is rendered with its publisher URL rather than
+/// the Google one. Two places know that URL: this run's precheck memo, and —
+/// for a section replayed from the day cache, where no precheck ran —
+/// `day_links`, read from the cache sidecars. A line can still carry the
+/// Google link (a decode that landed after the deadline, an entry cached
+/// before sidecars existed), so a publisher URL is used only when the digest
+/// actually contains it.
+fn protected_name_sources(
+    all_items: &[(String, Vec<Item>)],
+    digest: &str,
+    cache_handle: &SharedCache,
+    day_links: &HashMap<String, String>,
+) -> Vec<(String, String)> {
+    let cache = cache_handle.lock().ok();
+    all_items
+        .iter()
+        .flat_map(|(_, items)| items)
+        .map(|i| {
+            let memo = cache
+                .as_ref()
+                .and_then(|c| c.get(&i.link))
+                .and_then(|v| v.decoded_url.as_deref());
+            let decoded = [memo, day_links.get(&i.link).map(String::as_str)]
+                .into_iter()
+                .filter_map(publisher_link)
+                .find(|u| digest.contains(u));
+            (i.title.clone(), decoded.unwrap_or(&i.link).to_string())
+        })
+        .collect()
+}
+
 /// Record any company name that was in a source headline and is not in the
 /// line the reader gets — translated away, or summarised away.
 ///
 /// Called once the digest is final, because theming and the length revert can
 /// both rewrite which lines ship. Observation only — see
 /// [`crate::validate::dropped_protected_names`] for why this must not gate.
-fn log_protected_name_losses(all_items: &[(String, Vec<Item>)], digest: &str) {
-    let sources: Vec<(String, String)> = all_items
-        .iter()
-        .flat_map(|(_, items)| items)
-        .map(|i| (i.title.clone(), i.link.clone()))
-        .collect();
+fn log_protected_name_losses(
+    all_items: &[(String, Vec<Item>)],
+    digest: &str,
+    cache_handle: &SharedCache,
+    date_str: &str,
+) {
+    let day_links = crate::cache::day_publisher_links(date_str);
+    let sources = protected_name_sources(all_items, digest, cache_handle, &day_links);
     let lines: Vec<String> = digest.lines().map(str::to_string).collect();
     let lost = dropped_protected_names(&sources, &lines);
     if lost.is_empty() {
@@ -163,7 +201,7 @@ pub fn summarize_llm(
     }
 
     let digest = trim_digest_links(&digest);
-    log_protected_name_losses(all_items, &digest);
+    log_protected_name_losses(all_items, &digest, cache_handle, date_str);
     Ok(digest)
 }
 
@@ -274,7 +312,7 @@ pub fn summarize_llm_custom(
         json!({"topic_count": topics.len(), "degraded_count": degraded.len()}),
     );
     let digest = trim_links_to_limit(&digest, 4000);
-    log_protected_name_losses(all_items, &digest);
+    log_protected_name_losses(all_items, &digest, cache_handle, date_str);
     digest
 }
 
@@ -338,5 +376,85 @@ mod tests {
         assert!(detail.ends_with("…+2 more"), "{detail}");
         // five entries kept plus the tail note, so five separators
         assert_eq!(detail.matches("; ").count(), 5, "{detail}");
+    }
+
+    mod protected_name_join {
+        use super::super::protected_name_sources;
+        use crate::precheck::new_cache;
+        use crate::quality::{Action, Verdict};
+        use crate::text::Item;
+        use std::collections::HashMap;
+
+        const GOOGLE: &str = "https://news.google.com/rss/articles/CBMi-x?oc=5";
+        const PUBLISHER: &str = "https://www.example.com/anthropic-story";
+
+        fn items() -> Vec<(String, Vec<Item>)> {
+            vec![(
+                "ai".to_string(),
+                vec![Item {
+                    title: "Anthropic ships a new model - Example".to_string(),
+                    link: GOOGLE.to_string(),
+                    ..Default::default()
+                }],
+            )]
+        }
+
+        fn cache_decoding_to(url: &str) -> crate::precheck::SharedCache {
+            let cache = new_cache();
+            cache.lock().unwrap().insert(
+                GOOGLE.to_string(),
+                Verdict {
+                    action: Action::Keep,
+                    reason: None,
+                    decoded_url: Some(url.to_string()),
+                    body_excerpt: None,
+                },
+            );
+            cache
+        }
+
+        #[test]
+        fn a_line_rendered_with_the_publisher_url_joins_on_that_url() {
+            // The join is by link, and the rendered line now carries the
+            // publisher URL; joining on the Google link would never find it.
+            let digest = format!("- 新模型發布 [🔗]({PUBLISHER})");
+            assert_eq!(
+                protected_name_sources(&items(), &digest, &cache_decoding_to(PUBLISHER), &HashMap::new()),
+                vec![("Anthropic ships a new model - Example".to_string(), PUBLISHER.to_string())]
+            );
+        }
+
+        #[test]
+        fn a_line_still_carrying_the_google_link_joins_on_the_google_link() {
+            // A decode that landed after the deadline, or a section cached
+            // before this change: the cache knows the URL, the line does not.
+            let digest = format!("- 新模型發布 [🔗]({GOOGLE})");
+            assert_eq!(
+                protected_name_sources(&items(), &digest, &cache_decoding_to(PUBLISHER), &HashMap::new()),
+                vec![("Anthropic ships a new model - Example".to_string(), GOOGLE.to_string())]
+            );
+        }
+
+        #[test]
+        fn a_section_replayed_from_the_day_cache_joins_on_its_sidecar_url() {
+            // No precheck ran this process, so the memo is empty; the mapping
+            // comes from the cache sidecar.
+            let digest = format!("- 新模型發布 [🔗]({PUBLISHER})");
+            let day: HashMap<String, String> =
+                [(GOOGLE.to_string(), PUBLISHER.to_string())].into();
+            assert_eq!(
+                protected_name_sources(&items(), &digest, &new_cache(), &day),
+                vec![("Anthropic ships a new model - Example".to_string(), PUBLISHER.to_string())]
+            );
+        }
+
+        #[test]
+        fn an_undecoded_item_joins_on_the_google_link() {
+            let digest = format!("- 新模型發布 [🔗]({GOOGLE})");
+            assert_eq!(
+                protected_name_sources(&items(), &digest, &new_cache(), &HashMap::new()),
+                vec![("Anthropic ships a new model - Example".to_string(), GOOGLE.to_string())]
+            );
+        }
     }
 }

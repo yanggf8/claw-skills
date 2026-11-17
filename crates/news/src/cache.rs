@@ -7,7 +7,8 @@
 use crate::config::{cache_dir, CACHE_TTL_DAYS};
 use crate::trace::log_trace;
 use serde_json::json;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 
 /// `"YYYY/MM/DD (Mon)"` → `"YYYY-MM-DD"`, safe as a directory name.
 fn safe_date(date_str: &str) -> String {
@@ -45,8 +46,24 @@ pub fn get(date_str: &str, variant: &str, start: usize, end: usize) -> Option<St
     }
 }
 
-pub fn put(date_str: &str, variant: &str, start: usize, end: usize, body: &str) {
+/// Cache a rendered section, with `links` (Google link → publisher URL) for
+/// the picks it rendered with a publisher URL.
+pub fn put(
+    date_str: &str,
+    variant: &str,
+    start: usize,
+    end: usize,
+    body: &str,
+    links: &BTreeMap<String, String>,
+) {
     let path = cache_path(date_str, variant, start, end);
+    if !write_links_sidecar(&path, links) {
+        log_trace(
+            "news_cache_write_skipped",
+            json!({"variant": variant, "start": start, "end": end, "reason": "links_sidecar"}),
+        );
+        return;
+    }
     match std::fs::write(&path, body) {
         Ok(()) => log_trace(
             "news_cache_write",
@@ -57,6 +74,70 @@ pub fn put(date_str: &str, variant: &str, start: usize, end: usize, body: &str) 
             json!({"variant": variant, "error": e.to_string()}),
         ),
     }
+}
+
+// ── publisher-link sidecars ──────────────────────────────────────────────────
+//
+// A cached section is rendered text whose links are publisher URLs, while the
+// protected-name check joins digest lines to source items by their Google
+// link. On a cache hit the precheck never runs, so the run that replays the
+// section has no record of which publisher URL stands for which Google link.
+// Each cache entry therefore carries its map in a sidecar beside it.
+//
+// A sidecar rather than a change to the entry itself: entries are plain text
+// read back verbatim, and an entry written before sidecars existed must keep
+// replaying exactly as it did. Its absence means "no mapping", which is right
+// for such an entry — it was rendered with Google links.
+
+const LINKS_SUFFIX: &str = ".links.json";
+
+fn sidecar_path(cache_file: &Path) -> PathBuf {
+    let mut name = cache_file.file_name().unwrap_or_default().to_os_string();
+    name.push(LINKS_SUFFIX);
+    cache_file.with_file_name(name)
+}
+
+/// Write `links` beside `cache_file`, and say whether it landed.
+///
+/// Callers write the entry only after this returns `true`, so an entry never
+/// exists without its map — a replay would otherwise blind the protected-name
+/// check for the rest of the day. A map without an entry is harmless, and a
+/// skipped entry costs one recomputation on the next run.
+#[must_use]
+pub fn write_links_sidecar(cache_file: &Path, links: &BTreeMap<String, String>) -> bool {
+    let written = serde_json::to_string(links)
+        .map_err(|e| e.to_string())
+        .and_then(|body| std::fs::write(sidecar_path(cache_file), body).map_err(|e| e.to_string()));
+    match written {
+        Ok(()) => true,
+        Err(error) => {
+            log_trace("news_cache_links_write_error", json!({"error": error}));
+            false
+        }
+    }
+}
+
+/// Every Google link → publisher URL mapping recorded for `date_str`'s cache
+/// entries, across all sections. An unreadable sidecar is skipped: this feeds
+/// an observation, never delivery.
+pub fn day_publisher_links(date_str: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(cache_dir().join(safe_date(date_str))) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.to_string_lossy().ends_with(LINKS_SUFFIX) {
+            continue;
+        }
+        let parsed = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok());
+        if let Some(map) = parsed {
+            out.extend(map);
+        }
+    }
+    out
 }
 
 /// Drop day directories older than the TTL, and prune the separate URL-decode

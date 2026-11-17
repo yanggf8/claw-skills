@@ -8,9 +8,9 @@
 //! size.
 
 use crate::config::TELEGRAM_RAW_CHUNK_LIMIT;
-use crate::text::Item;
+use crate::text::{title_without_source, Item};
 use crate::trace::log_trace;
-use crate::validate::{leading_marker_span, neutralize_markdown};
+use crate::validate::{count_cjk, leading_marker_span, neutralize_markdown};
 use regex::Regex;
 use serde_json::json;
 use std::collections::HashMap;
@@ -155,6 +155,92 @@ fn linked(body: &str, link: &str, count: &mut usize) -> String {
     }
 }
 
+/// A model-written headline with fewer CJK characters than this is a fragment,
+/// not a headline — provided its source is long enough to have said more
+/// (see [`DEGENERATE_SOURCE_MIN_CJK`]).
+///
+/// Both floors are absolute on purpose. Ratio checks were tried on paper and
+/// rejected: a Chinese translation of an English title is legitimately about
+/// 30% of its character length, and the model is asked to condense long CJK
+/// titles, so any ratio low enough to spare those cases is too low to catch
+/// anything. The case behind this is 2026-11-13, when 重大新聞 shipped
+/// `- 川普喊` for a full headline.
+pub const DEGENERATE_BODY_MAX_CJK: usize = 6;
+
+/// A source title needs at least this many CJK ideographs before a short body
+/// counts as degenerate. Below it, a short body may be a faithful short
+/// headline. An English source never reaches it, so its short translation is
+/// left alone.
+///
+/// Reaching it does **not** make the title Traditional Chinese: a Japanese or
+/// Simplified Chinese headline clears it just as easily, and substituting one
+/// would put the wrong script into the digest. [`is_traditional_chinese`]
+/// decides whether a degenerate body may actually be replaced.
+pub const DEGENERATE_SOURCE_MIN_CJK: usize = 10;
+
+/// High-frequency Simplified-only characters, each with a distinct Traditional
+/// form (們這個為國發時對說經會實現關進開動產東車門問間過還讓網電買賣業應華兩處
+/// 務則層訊資級億價場長) and none in ordinary Traditional use.
+///
+/// A heuristic, not a converter: a short Simplified title that happens to use
+/// none of them passes as Traditional. `会` and `国` are also Japanese
+/// shinjitai, which is a bonus for a Japanese title written without kana.
+const SIMPLIFIED_ONLY: &str = "们这个为国发时对说经会实现关进开动产东车门问间过还让网电买卖业应华两处务则层讯资级亿价场长";
+
+/// Hiragana, katakana, the katakana extensions, and half-width katakana.
+///
+/// U+30FB (`・`) is excluded: Taiwanese and Hong Kong outlets use it to
+/// separate transliterated names (唐納・川普), so it says nothing about the
+/// language.
+fn is_kana(c: char) -> bool {
+    (('\u{3040}'..='\u{30FF}').contains(&c) && c != '\u{30FB}')
+        || ('\u{31F0}'..='\u{31FF}').contains(&c)
+        || ('\u{FF66}'..='\u{FF9F}').contains(&c)
+}
+
+/// Traditional forms that differ from **both** their Simplified form **and**
+/// their Japanese standard (shinjitai) form, so a title containing one is
+/// neither Simplified Chinese nor modern Japanese.
+///
+/// The rule for adding a character: its Simplified form and its Japanese form
+/// must both be different code points. 國 (国/国), 發 (发/発), 說 (说/説) and
+/// 產 (产/産) qualify; 開, 話, 談, 時, 門, 買, 進, 電 do not, because Japanese
+/// writes them identically, and an all-kanji Japanese headline made of them
+/// would pass.
+const TRADITIONAL_ONLY: &str = "國會發對圖學經實關戰體讀賣氣廣歐區應當黨總舊萬與來說產讓兩處價灣臺參獎稅數歲號鐵證險據變舉權濟擊";
+
+/// Whether a headline may stand in a Traditional Chinese digest as-is.
+///
+/// Fails closed: no kana, none of [`SIMPLIFIED_ONLY`], **and** at least one
+/// of [`TRADITIONAL_ONLY`]. The first two alone are a blacklist, and a
+/// Simplified title avoiding the listed characters (人工智能图像识别) or an
+/// all-kanji Japanese one (半導体性能比較検証結果) passed it. The cost is a
+/// Traditional title built only of shared characters, which is judged
+/// uncertain and keeps the model's text — traced as `replaced: false`, never
+/// replaced by something that might be the wrong script.
+fn is_traditional_chinese(text: &str) -> bool {
+    !text.chars().any(|c| is_kana(c) || SIMPLIFIED_ONLY.contains(c))
+        && text.chars().any(|c| TRADITIONAL_ONLY.contains(c))
+}
+
+/// A model-written body judged degenerate against its source.
+struct Degenerate<'a> {
+    /// The source title with its ` - Source` suffix removed.
+    source: &'a str,
+    /// Whether `source` may be rendered in its place.
+    replaceable: bool,
+}
+
+fn degenerate_check<'a>(written: &str, source_title: &'a str) -> Option<Degenerate<'a>> {
+    let source = title_without_source(source_title.trim()).trim();
+    let degenerate = count_cjk(written) < DEGENERATE_BODY_MAX_CJK
+        && count_cjk(source) >= DEGENERATE_SOURCE_MIN_CJK;
+    degenerate.then(|| Degenerate {
+        source,
+        replaceable: is_traditional_chinese(source),
+    })
+}
+
 /// Render marked bullets into linked ones, dropping anything unrecognised.
 ///
 /// Returns the rendered text and how many links were attached — the caller
@@ -165,6 +251,11 @@ fn linked(body: &str, link: &str, count: &mut usize) -> String {
 /// model occasionally leaks instrumentation like `[hint_picked:none]`, whose
 /// stray underscores fail the Markdown safety probe below and force the whole
 /// message into plaintext — which expands every `[🔗]` into a raw URL.
+///
+/// A degenerate body (see [`DEGENERATE_BODY_MAX_CJK`]) is replaced by its
+/// source title before anything else uses it, so every paywall shape below
+/// renders the repaired text — when that title is Traditional Chinese.
+/// Otherwise the body ships as written, and either way the item is traced.
 pub fn attach_numbered_links(
     summary: &str,
     numbered: &HashMap<u32, Numbered>,
@@ -173,6 +264,7 @@ pub fn attach_numbered_links(
     let mut attached = 0usize;
     let mut dropped_noise: Vec<String> = Vec::new();
     let mut dropped_unknown: Vec<String> = Vec::new();
+    let mut degenerate: Vec<serde_json::Value> = Vec::new();
     let mut rendered: Vec<String> = Vec::new();
 
     for line in summary.lines() {
@@ -198,7 +290,18 @@ pub fn attach_numbered_links(
         };
 
         let item = numbered.get(&num);
-        let body = neutralize_markdown(line[digits_end..].trim_start());
+        let written = line[digits_end..].trim_start();
+        let check = item.and_then(|i| degenerate_check(written, &i.title));
+        if let Some(d) = &check {
+            degenerate.push(json!({
+                "n": num,
+                "written": take_chars(written.trim(), 120),
+                "source": take_chars(d.source, 120),
+                "replaced": d.replaceable,
+            }));
+        }
+        let repaired = check.filter(|d| d.replaceable).map(|d| d.source);
+        let body = neutralize_markdown(repaired.unwrap_or(written));
         let link = item.map(|i| i.link.as_str()).unwrap_or("");
 
         match paywall.get(&num) {
@@ -241,6 +344,12 @@ pub fn attach_numbered_links(
         }
     }
 
+    if !degenerate.is_empty() {
+        log_trace(
+            "headline_degenerate",
+            json!({"count": degenerate.len(), "items": degenerate}),
+        );
+    }
     if !dropped_noise.is_empty() {
         log_trace(
             "section_noise_dropped",
@@ -534,4 +643,42 @@ pub fn markdown_chunk_is_safe(chunk: &str) -> Result<(), &'static str> {
 
 pub fn telegram_chunks(body: &str) -> Vec<String> {
     split_message_preserving_lines(body, TELEGRAM_RAW_CHUNK_LIMIT)
+}
+
+#[cfg(test)]
+mod script_sets {
+    use super::{is_kana, SIMPLIFIED_ONLY, TRADITIONAL_ONLY};
+    use crate::validate::count_cjk;
+    use std::collections::HashSet;
+
+    #[test]
+    fn the_marker_sets_are_disjoint() {
+        let simplified: HashSet<char> = SIMPLIFIED_ONLY.chars().collect();
+        let both: Vec<char> = TRADITIONAL_ONLY.chars().filter(|c| simplified.contains(c)).collect();
+        assert!(both.is_empty(), "{both:?}");
+    }
+
+    #[test]
+    fn no_traditional_marker_is_kana() {
+        let kana: Vec<char> = TRADITIONAL_ONLY.chars().filter(|c| is_kana(*c)).collect();
+        assert!(kana.is_empty(), "{kana:?}");
+    }
+
+    #[test]
+    fn every_marker_is_a_single_listed_ideograph() {
+        for set in [SIMPLIFIED_ONLY, TRADITIONAL_ONLY] {
+            let n = set.chars().count();
+            assert_eq!(count_cjk(set), n, "{set}");
+            assert_eq!(set.chars().collect::<HashSet<_>>().len(), n, "duplicate in {set}");
+        }
+    }
+
+    #[test]
+    fn characters_japanese_writes_identically_are_not_traditional_markers() {
+        // A sample of the exclusions the rule names; adding any of them would
+        // let an all-kanji Japanese headline through.
+        for c in "開話談時門買進電業間過動東車則場長".chars() {
+            assert!(!TRADITIONAL_ONLY.contains(c), "{c}");
+        }
+    }
 }

@@ -189,6 +189,51 @@ fn collect_bodies(verdicts: &BTreeMap<u32, Verdict>) -> BTreeMap<u32, String> {
         .collect()
 }
 
+/// What Tier 2 hands back to the section that called it.
+#[derive(Debug, Default)]
+pub struct Precheck {
+    /// The model's summary with dropped picks removed.
+    pub summary: String,
+    pub paywall: PaywallMap,
+    /// `num -> excerpt` for the headline-enrichment pass.
+    pub bodies: BTreeMap<u32, String>,
+    /// `num -> publisher URL` for every surviving pick whose Google News
+    /// redirect was decoded, to render in place of the redirect. Google
+    /// answers a redirect followed from a phone on a mobile network with its
+    /// "automated queries" page, so the redirect is only the fallback.
+    pub links: BTreeMap<u32, String>,
+}
+
+impl Precheck {
+    fn unchanged(summary: &str) -> Self {
+        Self {
+            summary: summary.to_string(),
+            ..Default::default()
+        }
+    }
+}
+
+/// A decoded URL that is safe to render inside `[🔗](…)`, trimmed.
+///
+/// Only `http`/`https` with a host. Parentheses, backslashes and whitespace
+/// are refused rather than escaped: the Markdown link ends at the first `)`,
+/// a backslash escapes the `)` that closes it, and a percent-encoded variant
+/// is not guaranteed to reach the same page — the Google link still does, so
+/// it is the safer fallback.
+pub fn publisher_link(decoded: Option<&str>) -> Option<&str> {
+    let url = decoded?.trim();
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return None;
+    }
+    let breaks_link = |c: char| c.is_whitespace() || c.is_control() || matches!(c, '(' | ')' | '\\');
+    if url.chars().any(breaks_link) {
+        return None;
+    }
+    let has_host = split_url(url).is_some_and(|(host, _, _)| !host.is_empty());
+    has_host.then_some(url)
+}
+
 /// Tier 2: body-precheck the selected items before links are attached.
 ///
 /// `drop` removes the bullet. `title_only` keeps the model's bullet **exactly
@@ -196,21 +241,23 @@ fn collect_bodies(verdicts: &BTreeMap<u32, Verdict>) -> BTreeMap<u32, String> {
 /// replacement and a 付費牆 note — the digest is Traditional Chinese and a
 /// language gate enforces that, so rewriting a bullet back to the raw RSS
 /// headline would inject English or Japanese past the gate. `keep` does
-/// nothing. Its gated body excerpts ride out in the third element
-/// (`num -> excerpt`) for the headline-enrichment pass.
+/// nothing. Gated body excerpts ride out in [`Precheck::bodies`] for the
+/// headline-enrichment pass, and decoded publisher URLs in
+/// [`Precheck::links`]. With the precheck off nothing is decoded, so every
+/// pick keeps its Google link.
 pub fn precheck_apply(
     summary: &str,
     numbered: &NumberedMap,
     section: &str,
     cache: &SharedCache,
-) -> (String, PaywallMap, BTreeMap<u32, String>) {
+) -> Precheck {
     if !precheck_enabled() || summary.trim().is_empty() {
-        return (summary.to_string(), PaywallMap::new(), BTreeMap::new());
+        return Precheck::unchanged(summary);
     }
     let known: HashSet<u32> = numbered.keys().copied().collect();
     let selected = leading_marker_ids(summary, &known);
     if selected.is_empty() {
-        return (summary.to_string(), PaywallMap::new(), BTreeMap::new());
+        return Precheck::unchanged(summary);
     }
 
     let (tx, rx) = mpsc::channel::<(u32, Verdict)>();
@@ -303,19 +350,38 @@ pub fn precheck_apply(
         );
     }
 
-    let bodies = collect_bodies(&verdicts);
-    if n_drop == 0 {
-        return (summary.to_string(), paywall, bodies);
-    }
-
-    let out: Vec<&str> = summary
-        .lines()
-        .filter(|line| match leading_marker(line) {
-            Some(n) => actions.get(&n) != Some(&Action::Drop),
-            None => true,
-        })
+    // A pick still undecided at the deadline has no verdict, so it is a
+    // survivor that keeps its Google link.
+    let links: BTreeMap<u32, String> = verdicts
+        .iter()
+        .filter(|(_, v)| v.action != Action::Drop)
+        .filter_map(|(num, v)| publisher_link(v.decoded_url.as_deref()).map(|u| (*num, u.to_string())))
         .collect();
-    (out.join("\n"), paywall, bodies)
+    log_trace(
+        "links_decoded",
+        json!({"section": section, "decoded": links.len(),
+               "total": selected.len() - n_drop}),
+    );
+
+    let bodies = collect_bodies(&verdicts);
+    let summary = if n_drop == 0 {
+        summary.to_string()
+    } else {
+        summary
+            .lines()
+            .filter(|line| match leading_marker(line) {
+                Some(n) => actions.get(&n) != Some(&Action::Drop),
+                None => true,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Precheck {
+        summary,
+        paywall,
+        bodies,
+        links,
+    }
 }
 
 /// Two hosts sharing a registrable domain, taken as the last two labels.
