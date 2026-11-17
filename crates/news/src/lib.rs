@@ -8,6 +8,7 @@ pub mod config;
 pub mod crossdedup;
 pub mod deliver;
 pub mod digest;
+pub mod direct;
 pub mod feed;
 pub mod precheck;
 pub mod quality;

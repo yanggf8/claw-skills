@@ -9,6 +9,9 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::time::Duration;
 
+/// Sent on every feed request, Google and direct alike.
+pub const USER_AGENT: &str = "nullclaw-news/1.0";
+
 /// The built-in feeds, in the order the digest reads them.
 pub const FEEDS: [(&str, &str); 6] = [
     // AI — broad US coverage: research, policy, industry.
@@ -128,7 +131,7 @@ pub fn fetch_feed(url: &str, max_items: usize, timeout: Duration) -> Vec<Item> {
     // whole response.
     let fetched = claw_core::http::agent(timeout)
         .get(url)
-        .set("User-Agent", "nullclaw-news/1.0")
+        .set("User-Agent", USER_AGENT)
         .call()
         .map_err(|e| claw_core::http::error_class(&e))
         .and_then(|r| r.into_string().map_err(|e| e.to_string()));
@@ -256,6 +259,286 @@ fn local_name(raw: &[u8]) -> &[u8] {
         Some(i) => &raw[i + 1..],
         None => raw,
     }
+}
+
+/// One `<item>` (RSS) or `<entry>` (Atom), as the document wrote it.
+///
+/// `date` is the first of RSS `pubDate`, Atom `published`, Atom `updated`
+/// that [`parse_feed_date_at`] can read (with the feed's declared offset, if
+/// any) — so an unreadable `published` falls back
+/// to a readable `updated`. When none is readable it is the first non-empty
+/// one as written, and deciding what that means is the caller's job.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FeedEntry {
+    pub title: String,
+    pub link: String,
+    pub date: String,
+    pub description: String,
+}
+
+/// Every item of an RSS or Atom document, for the direct publisher feeds.
+///
+/// Separate from [`parse_rss`] on purpose, which keeps Google's parsing
+/// byte-identical. Three differences, all deliberate:
+///
+/// - **no early stop** — a publisher feed can be its whole archive, and the
+///   fresh items need not come first, so the caller filters before it caps;
+/// - **direct children only, unprefixed names only** — an Atom
+///   `<source><title>` or an RSS `<media:title>` is not the headline;
+/// - **all or nothing** — an XML error, a root that is not `rss`, `feed` or
+///   `RDF` (an HTML block page answered with 200), or a document that ends
+///   with elements still open (a truncated response — quick-xml reports a
+///   clean end of input there) is an `Err` naming why, rather than whatever
+///   was read before the break.
+///
+/// Atom `<link>` is read from its `href`, preferring the first with
+/// `rel="alternate"` or no `rel`.
+pub fn parse_feed_all(xml: &str) -> Result<Vec<FeedEntry>, String> {
+    parse_feed_all_at(xml, None)
+}
+
+/// [`parse_feed_all`] for a feed that declares a `naive_date_offset`: picking
+/// the first readable date must read zoneless dates the way the caller will.
+pub fn parse_feed_all_at(
+    xml: &str,
+    naive_offset: Option<jiff::tz::Offset>,
+) -> Result<Vec<FeedEntry>, String> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Field {
+        Title,
+        Link,
+        PubDate,
+        Published,
+        Updated,
+        Description,
+    }
+
+    #[derive(Default)]
+    struct Open {
+        title: Option<String>,
+        link: Option<String>,
+        pub_date: Option<String>,
+        published: Option<String>,
+        updated: Option<String>,
+        description: Option<String>,
+    }
+
+    impl Open {
+        fn slot(&mut self, f: Field) -> &mut Option<String> {
+            match f {
+                Field::Title => &mut self.title,
+                Field::Link => &mut self.link,
+                Field::PubDate => &mut self.pub_date,
+                Field::Published => &mut self.published,
+                Field::Updated => &mut self.updated,
+                Field::Description => &mut self.description,
+            }
+        }
+        fn finish(self, naive_offset: Option<jiff::tz::Offset>) -> FeedEntry {
+            let t = |s: Option<String>| s.unwrap_or_default().trim().to_string();
+            let candidates: Vec<String> = [self.pub_date, self.published, self.updated]
+                .into_iter()
+                .map(t)
+                .filter(|d| !d.is_empty())
+                .collect();
+            let date = candidates
+                .iter()
+                .find(|d| parse_feed_date_at(d, naive_offset).is_some())
+                .or(candidates.first())
+                .cloned()
+                .unwrap_or_default();
+            FeedEntry {
+                title: t(self.title),
+                link: t(self.link),
+                date,
+                description: t(self.description),
+            }
+        }
+    }
+
+    /// An Atom link worth taking: `href` present, `rel` absent or alternate.
+    fn atom_href(e: &quick_xml::events::BytesStart) -> Option<Option<String>> {
+        let mut href = None;
+        let mut rel_ok = true;
+        for a in e.attributes().flatten() {
+            let value = a
+                .unescape_value()
+                .map(|v| v.into_owned())
+                .unwrap_or_else(|_| String::from_utf8_lossy(&a.value).into_owned());
+            match a.key.as_ref() {
+                b"href" => href = Some(value),
+                b"rel" => rel_ok = value.trim() == "alternate",
+                _ => {}
+            }
+        }
+        // Some(None): an Atom link to skip. None: not an Atom link at all.
+        href.map(|h| rel_ok.then_some(h))
+    }
+
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut entries = Vec::new();
+    let mut depth = 0usize;
+    let mut saw_root = false;
+    // Depth of the open item/entry element, and the entry being built.
+    let mut entry_depth: Option<usize> = None;
+    let mut open = Open::default();
+    // The field being captured, and the depth its element opened at.
+    let mut field: Option<(Field, usize)> = None;
+
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|e| format!("xml error at byte {}: {e}", reader.error_position()))?;
+        match event {
+            Event::Start(ref e) | Event::Empty(ref e) => {
+                let is_empty = matches!(event, Event::Empty(_));
+                let raw = e.name();
+                let name = raw.as_ref();
+                if !saw_root {
+                    saw_root = true;
+                    if !matches!(local_name(name), b"rss" | b"feed" | b"RDF") {
+                        return Err(format!(
+                            "root element <{}> is not rss, feed or RDF",
+                            String::from_utf8_lossy(name)
+                        ));
+                    }
+                }
+                // The element's own nesting level, whether or not it encloses
+                // anything; only an open element moves `depth`.
+                let level = depth + 1;
+                if !is_empty {
+                    depth = level;
+                }
+                match entry_depth {
+                    None if !is_empty && matches!(name, b"item" | b"entry") => {
+                        entry_depth = Some(level);
+                        open = Open::default();
+                    }
+                    Some(d) if field.is_none() && level == d + 1 => {
+                        let f = match name {
+                            b"title" => Some(Field::Title),
+                            b"link" => Some(Field::Link),
+                            b"pubDate" => Some(Field::PubDate),
+                            b"published" => Some(Field::Published),
+                            b"updated" => Some(Field::Updated),
+                            b"description" => Some(Field::Description),
+                            _ => None,
+                        };
+                        let Some(f) = f else { continue };
+                        if f == Field::Link {
+                            match atom_href(e) {
+                                Some(Some(href)) => {
+                                    if open.link.is_none() {
+                                        open.link = Some(href);
+                                    }
+                                    continue;
+                                }
+                                Some(None) => continue,
+                                None => {}
+                            }
+                        }
+                        if !is_empty && open.slot(f).is_none() {
+                            *open.slot(f) = Some(String::new());
+                            field = Some((f, level));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::Text(t) => {
+                if let Some((f, _)) = field {
+                    let text = t
+                        .unescape()
+                        .map(|c| c.into_owned())
+                        .unwrap_or_else(|_| String::from_utf8_lossy(&t).into_owned());
+                    if let Some(buf) = open.slot(f).as_mut() {
+                        buf.push_str(&text);
+                    }
+                }
+            }
+            Event::CData(c) => {
+                if let Some((f, _)) = field {
+                    let raw = String::from_utf8_lossy(&c.into_inner()).into_owned();
+                    if let Some(buf) = open.slot(f).as_mut() {
+                        buf.push_str(&raw);
+                    }
+                }
+            }
+            Event::End(_) => {
+                if field.is_some_and(|(_, d)| d == depth) {
+                    field = None;
+                }
+                if entry_depth == Some(depth) {
+                    entry_depth = None;
+                    entries.push(std::mem::take(&mut open).finish(naive_offset));
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if !saw_root {
+        return Err("no root element".to_string());
+    }
+    if depth != 0 {
+        return Err(format!("truncated: {depth} element(s) still open at end of input"));
+    }
+    Ok(entries)
+}
+
+/// RSS `pubDate` is RFC 2822 and Atom dates are RFC 3339, but feeds mix them
+/// up often enough that either is accepted in either place. RFC 2822's named
+/// zones are read as RFC 2822 defines them — `CST` is US Central (−06:00),
+/// not China Standard Time.
+pub fn parse_feed_date(raw: &str) -> Option<jiff::Timestamp> {
+    parse_feed_date_at(raw, None)
+}
+
+static NAIVE_DATETIME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})[ T]([0-9]{2}):([0-9]{2})(?::([0-9]{2}))?$")
+        .expect("naive datetime pattern")
+});
+
+/// [`parse_feed_date`], plus zoneless `YYYY-MM-DD HH:MM[:SS]` (space or `T`)
+/// read at `naive_offset` — the operator's declaration of a feed's clock, as
+/// iThome's `<pubDate>2026-11-17 16:29</pubDate>` needs. A date that carries
+/// its own zone always keeps it; without a declared offset a zoneless date is
+/// unreadable, so it counts as `undated` instead of being guessed.
+pub fn parse_feed_date_at(
+    raw: &str,
+    naive_offset: Option<jiff::tz::Offset>,
+) -> Option<jiff::Timestamp> {
+    static RFC2822: jiff::fmt::rfc2822::DateTimeParser = jiff::fmt::rfc2822::DateTimeParser::new();
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(zoned) = RFC2822
+        .parse_timestamp(s)
+        .ok()
+        .or_else(|| s.parse::<jiff::Timestamp>().ok())
+    {
+        return Some(zoned);
+    }
+    let offset = naive_offset?;
+    let cap = NAIVE_DATETIME.captures(s)?;
+    let num = |i: usize| -> Option<i16> {
+        cap.get(i).map_or(Some(0), |m| m.as_str().parse().ok())
+    };
+    let dt = jiff::civil::DateTime::new(
+        num(1)?,
+        num(2)? as i8,
+        num(3)? as i8,
+        num(4)? as i8,
+        num(5)? as i8,
+        num(6)? as i8,
+        0,
+    )
+    .ok()?;
+    offset.to_timestamp(dt).ok()
 }
 
 /// Bing wraps result links in a click tracker; unwrap it to the real article.

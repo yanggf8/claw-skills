@@ -1271,6 +1271,7 @@ name = "news"
 version = "0.1.0"
 dependencies = [
  "claw-core",
+ "flate2",
  "jiff",
  "quick-xml",
  "regex",

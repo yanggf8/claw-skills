@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<rss version="2.0"
+   xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>iThome AI 頻道</title>
+    <link>https://www.ithome.com.tw/rss/news</link>
+    <description>iThome 新聞</description>
+    <language>zh-hant</language>
+        <!-- PubSubHubbub Discovery -->
+    <link rel="hub" href="http://ithome.superfeedr.com/" xmlns="http://www.w3.org/2005/Atom" />
+    <link rel="self" href="http://www.ithome.com.tw/rss/fulltext/news" xmlns="http://www.w3.org/2005/Atom" />
+    <!-- End Of PubSubHubbub Discovery -->
+        <item>
+      <title>德國研究揭露AI開發平臺Lovable用戶開發的應用程式，有不少存在資料庫權限設定不當問題</title>
+      <link>https://www.ithome.com.tw/news/180567</link>
+       <guid isPermaLink="true">https://www.ithome.com.tw/news/180567</guid>
+ <pubDate>2026-11-17 16:29</pubDate>
+ <dc:creator>羅正漢</dc:creator>
+      <description><![CDATA[<p>Vibe Coding雖夯，但基本資安風險防護不容忽視。德國應用程式安全業者Crissy Field與當地媒體Handelsblatt於11月公布一項聯合調查，透過分析超過15萬個透過AI開發平臺Lovable建立的專案，發現其中逾7千個網站的資料庫存在存取權限設定缺失，未登入的外部人士也能讀取原本不應公開的資料</p>
+]]></description>
+      <content:encoded><![CDATA[<figure>
+<img src="https://www.ithome.com.tw/sites/default/files/styles/picture_size_small/public/field/image/de_guo_yan_jiu_jie_lu_aikai_fa_ping_tai_lovableyong_hu_kai_fa_de_ying_yong_cheng_shi_you_bu_shao_cun_zai_zi_liao_ku_quan_xian_she_ding_bu_dang_wen_ti_.jpg?itok=M28elU_8" width="300" height="132" alt="" />
+</figure>
+<p>許多用戶透過主打無程式碼AI應用程式開發的Lovable，以自然語言描述需求，就能快速建立網站及網頁應用程式，但降低開發門檻的同時，也不能忽略既有的基本資安要求，尤其是資料庫存取權限設定。近日，德國一項研究提出<a href="https://www.crissyfield.de/research/lovable-en/"><strong>警告</strong></a>，指出以Lovable專案開發的部分應用程式存在資料存取控制問題，讓未登入的外部人士也能讀取原本不應公開的資料。</p>
+<p>這項調查由德國應用程式安全業者Crissy Field與德國媒體Handelsblatt合作進行，研究人員共分析159,041個Lovable專案，其中有34,545個使用資料庫服務Supabase。在上述研究中，有24,664個網站在載入頁面時，會將Supabase資料庫紀錄傳送至瀏覽器，過程中不需要使用者登入或進行其他操作。</p>
+<p>後續研究人員沿用相同的API金鑰，對24,664個網站發出額外唯讀請求，進一步測試能否讀取其他資料庫內容，結果顯示，當中有7,403個網站的資料庫可讀取到包含電子郵件地址的紀錄，比例約占3成。這顯示部分使用Lovable開發的應用程式，可能存在資料存取權限設定不當的情況，讓外部人士有機會讀取原本不應公開的資料。</p>
+<p>從研究人員找到的案例來看，遭到暴露的資料種類相當多，當中不僅有一般個人資料，也包含業者營運紀錄及內部文件。例如，有一家服務供應商暴露超過1,000筆身分證件資料，包含護照號碼、有效期限及國籍等資訊；一個德國生活風格論壇也面臨資料暴露危機，當中有超過8萬筆使用者個人檔案及20萬則以上聊天訊息，能被外部人士存取。此外，部分活動主辦單位及餐廳也暴露數萬筆票券與餐飲銷售紀錄，包含電子郵件、電話、郵寄地址、付款資訊及票券代碼。其他還有物業管理公司的AI生成內部電子郵件摘要、合約、發票、個人相簿及內部WhatsApp通訊紀錄，甚至，有一家業者寄給客戶的28萬封電子郵件，也能被外部讀取。</p>
+<p>研究人員尚無法確認這些資料是否已遭實際濫用，但調查時確實能透過網際網路，在不需登入的情況下讀取，代表這些資料已暴露在未經授權存取的風險中，可能進一步被用於釣魚攻擊、詐欺或身分盜用。不過，研究團隊也提醒，網站在載入頁面時傳送資料庫紀錄，本身不一定代表存在資安問題，因為這些資料可能原本就是網站設定要公開的內容；而7,403個網站的調查結果，也不能直接解讀為實際發生資料外洩的比率，因為其中的電子郵件地址可能只是公開聯絡資訊或測試資料。此外，研究樣本取自Common Crawl，並未涵蓋所有Lovable應用程式，研究人員也只擷取部分資料集，並未完整下載所有紀錄，因此實際涉及的資料量可能更多。</p>
+<p>事實上，資料存取控制錯誤並非AI開發工具獨有的問題，人工開發的應用程式同樣可能發生，因此，Crissy Field更想強調的是，Lovable專案與資料庫的整合均採用重複的模式，攻擊者可能更容易找出多個應用程式的類似權限設定缺失，並以較低成本複製相同的攻擊手法。</p>
+<p>研究團隊提醒，Lovable這類開發平臺降低了應用程式開發門檻，但不代表使用者可以忽略安全檢查。該平臺已在服務條款中將應用程式及資料處理的責任交由客戶承擔，因此，在應用程式開始處理真實客戶或企業資料之前，仍應由具備專業能力的人員檢查資料存取權限、介面及不同使用者帳號之間的資料隔離機制，並在系統有重大變更後重新檢查。<br />
+ </p>
+]]></content:encoded>
+    </item>
+    <item>
+      <title>Apple調整macOS App權限管理，27.3測試版開始可限制存取範圍</title>
+      <link>https://www.ithome.com.tw/news/180559</link>
+       <guid isPermaLink="true">https://www.ithome.com.tw/news/180559</guid>
+ <pubDate>2026-11-17 12:59</pubDate>
+ <dc:creator>李建興</dc:creator>
+      <description><![CDATA[<p>Apple在macOS 27.3 beta 2加入細部授權，部分App可只存取指定資料夾或控制指定程式，使用者也可要求跨程式操作前先取得同意，既有授權不受影響</p>
+]]></description>
+      <content:encoded><![CDATA[<figure>
+<img src="https://www.ithome.com.tw/sites/default/files/styles/picture_size_small/public/field/image/apple-macos-27-3-scoped-permissions-banner-1440x630.png?itok=9ygIzu9h" width="300" height="132" alt="" />
+</figure>
+<p>Apple在macOS 27.3 beta 2<strong><a href="https://developer.apple.com/news/?id=oqng0zjk">加入</a></strong>更細緻的應用程式授權機制，當部分App要求完整磁碟存取或控制其他應用程式時，使用者可限定開放的資料夾與App，不必直接授予廣泛的系統存取權。新版也允許使用者設定App每次控制其他程式前先取得同意，並在App控制其他程式時顯示狀態提示，讓使用者更清楚App取得的權限。</p>
+<p>完整磁碟存取（Full Disk Access）允許App繞過多項系統保護，存取Mac上的訊息、郵件、照片及其他使用者帳號的資料，並可讀取、修改、刪除或匯出檔案。新版則允許部分App只存取使用者指定的受保護資料夾，其餘資料仍受到系統保護。</p>
+<p>Apple將原本的裝置控制與資料存取（Device Control and Data Access）拆分為System &amp; App Protection Override及輔助使用（Accessibility）兩項設定。前者允許App控制其他程式，使用者現在可指定受控對象，並針對個別App設定操作前先詢問，或允許隨時控制。當App透過該權限控制其他程式時，macOS也會顯示狀態提示。</p>
+<p>新的授權流程統一由使用者從清單選擇要求權限的App，並更明確說明全面授權的風險。使用者仍可選擇略過系統保護，授予完整磁碟存取或廣泛的應用程式控制權限，但必須先確認App可能執行的操作，包括讀取、修改、刪除及匯出資料等。</p>
+<p>Apple先前於10月預告將強化完整磁碟存取管理，指出隨著AI代理越來越能自主操作檔案與應用程式，廣泛的存取權限可能增加資料安全與隱私風險。不過，新機制並非僅針對AI代理，備份、磁碟清理、檔案索引及資安工具也可能使用相關權限。</p>
+<p>Apple提醒開發者調整權限申請流程，並確保App在只能存取部分資料夾或程式時仍能正常運作。使用者先前核准的權限將繼續有效，不會因更新而自動撤銷，使用完整磁碟存取進行備份，或透過輔助使用權限提供無障礙功能的App，開發者可申請特殊授權，讓新安裝的App維持過去的使用方式。Apple表示，目前已知的相關App不受影響，無須申請特殊授權。</p>
+]]></content:encoded>
+    </item>
+    <item>
+      <title>駭客利用AI自動化漏洞研究，遭到利用的零時差漏洞一個月爆增至22個</title>
+      <link>https://www.ithome.com.tw/news/180561</link>
+       <guid isPermaLink="true">https://www.ithome.com.tw/news/180561</guid>
+ <pubDate>2026-11-17 12:32</pubDate>
+ <dc:creator>周峻佑</dc:creator>
+      <description><![CDATA[<p>Google威脅情報團隊（GTIG）警告，駭客借助AI自動化研究漏洞與開發利用工具，已從實驗階段轉向實際應用。攻擊者分析軟體修補前後的程式碼差異、尋找潛在漏洞及產生攻擊程式碼，甚至在無須人工介入的情況下執行漏洞攻擊，大幅縮短漏洞公開至遭武器化利用的時間</p>
+]]></description>
+      <content:encoded><![CDATA[<figure>
+<img src="https://www.ithome.com.tw/sites/default/files/styles/picture_size_small/public/field/image/figure_3_count_of_vulnerabilities_exploite-156.jpg?itok=mzHD9hoK" width="300" height="132" alt="" />
+</figure>
+<p>11月17日Google威脅情報團隊（GTIG）<strong><a href="https://cloud.google.com/blog/topics/threat-intelligence/agentic-threat-activity-crosses-a-significant-threshold">發布AI威脅追蹤報告</a></strong>，當中特別提及駭客將AI代理與大型語言模型（LLM）進行漏洞研究與攻擊工具開發的情況，已從實驗階段進入實際運作。攻擊者透過多代理系統執行修補程式差異分析、動態模糊測試，以及概念驗證（PoC）攻擊程式開發等工作，逐步建立自動化漏洞攻擊流程，甚至出現完全不需要人工介入的漏洞發現與利用活動。</p>
+<p>GTIG提及，攻擊者將零時差漏洞用於實際攻擊的情況，到了最近突然大幅增加。從2025年平均一個月有8個，到了今年平均一個月增加至11個，但這個態勢到了今年8月突然爆增，一舉達到22個。這樣的現象，反映出攻擊方積極濫用AI挖掘新漏洞。然而，這並非代表攻擊者就特別偏好挖掘未知漏洞，因為已經有公開資料的已知漏洞，攻擊者可集中鎖定資安公告、新舊版本的原始碼、資安研究報告，以及根念驗證程式碼（PoC）等資料，透過LLM快速掌握漏洞成因並開發攻擊程式。GTIG舉出兩個實際的例子，一個是<strong><a href="https://www.ithome.com.tw/news/178550">8月底開始遭到利用</a></strong>的PaperCut漏洞CVE-2026-82078與CVE-2026-81578，另一個是PHP重大漏洞CVE-2026-109618與CVE-2026-109619（合稱<strong><a href="https://www.ithome.com.tw/tags/php2shell">PHP2Shell</a></strong>），兩者都在有PoC資訊或相關修補程式碼之後，短短數天內出現漏洞利用的活動。</p>
+<p>值得留意的是，攻擊者已打造了實際的漏洞自動化分析及利用環境。GTIG發現一臺暴露於網際網路的測試伺服器，上面運作著名為exploit_agent的多代理漏洞研究與武器化框架，可整合多種頂尖及本地部署的LLM，持續分析熱門網頁應用程式的程式碼。當軟體發布安全修補程式後，該框架會自動比較修補前後的程式碼版本，找出可能存在的漏洞、產生攻擊程式並自動執行。這是研究人員首度觀察到完全不需要人工介入的漏洞發現與利用平臺，根據其存放的受害組織資料，攻擊者的主要目標是法國媒體、娛樂，以及教育領域的網站。</p>
+]]></content:encoded>
+    </item>
+  </channel>
+</rss>

@@ -22,6 +22,11 @@ pub fn cache_dir() -> PathBuf {
 pub fn failure_log() -> PathBuf {
     home().join(".nullclaw/news-failures.log")
 }
+/// The operator's list of direct AI publisher feeds. The crate ships no
+/// default list: an absent file is reported, never filled in.
+pub fn ai_feeds_file() -> PathBuf {
+    home().join(".nullclaw/news-ai-feeds.json")
+}
 
 pub const CACHE_TTL_DAYS: u64 = 7;
 /// 1 MiB, then rotate to `.1` and start again.

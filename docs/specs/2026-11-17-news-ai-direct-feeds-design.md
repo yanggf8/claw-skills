@@ -71,7 +71,7 @@ Candidates for the operator's list, not defaults.
   "feeds": [
     {"name": "Techmeme", "url": "https://www.techmeme.com/feed.xml", "kind": "techmeme", "max_items": 15},
     {"name": "OpenAI", "url": "https://openai.com/news/rss.xml", "max_items": 5},
-    {"name": "iThome", "url": "https://www.ithome.com.tw/rss/ai", "max_items": 10}
+    {"name": "iThome", "url": "https://www.ithome.com.tw/rss/ai", "max_items": 10, "naive_date_offset": "+08:00"}
   ],
   "max_age_hours": 30,
   "feeds_deadline_secs": 40
@@ -81,6 +81,16 @@ Candidates for the operator's list, not defaults.
 The crate ships **no** feed list. `name` becomes the item's source; `kind`
 defaults to plain RSS/Atom, `techmeme` turns on the unwrap in §2; `max_items` caps
 one feed **after** filtering (§3).
+
+`naive_date_offset` (optional, `±HH:MM`) is the UTC offset the operator declares
+for a feed whose dates carry **no zone at all**. iThome emits
+`<pubDate>2026-11-17 16:29</pubDate>` — neither RFC 2822 nor RFC 3339 — and on
+2026-11-17 its newest item read 16:29 while Taipei time was 17:4x, so its clock
+is +08:00 (read as UTC it would be seven hours in the future). The offset applies
+only to such zoneless `YYYY-MM-DD HH:MM[:SS]` values; a date that carries a zone
+always uses its own. Without the field a zoneless date stays `undated`, counted
+in the trace, so a feed that needs one is visible rather than guessed. The code
+assumes no zone for any feed.
 
 ### 2. Items must look like Google items to everything downstream
 

@@ -144,7 +144,7 @@ Env（去重相關）：
 - **S4** 程式端免費源 ranking：屬編輯政策非事件正確性；硬編碼 source 名單會隨付費牆變化失效 → 只保留 prompt 文字偏好。
 - **S6** 無第四條未接路徑：default / AI / custom 已對齊 P0+P1+P2（含 custom 路徑 post-dedup 後語言閘，與 AI/default 一致）。
 
-快取：`~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`。AI 預設新聞分段使用 `AI_SUBSTAGE_CACHE_VARIANT`（目前為 `default_ai_clustered_v5_post_dedup`）variant，避免重用舊版分段快取——prompt 或 cached-output 語意變更時 bump variant 即可讓當日舊快取失效。鍵為 `(date, variant, range)`。腳本啟動時會清除 7 天以前的子目錄；需要時可手動刪除。每個 AI 段與自訂主題的快取旁有 `<快取檔名>.links.json` sidecar（Google 連結 → 媒體網址），命中快取的 run 靠它讓 `protected_name_lost` 觀察照常運作；sidecar 寫不進去時整筆快取不寫（trace：`news_cache_write_skipped`），沒有 sidecar 的舊快取照常重播。注意：快取存的是**渲染後的文字**，連結格式改變後，當天先前寫下的快取仍會重播舊格式。
+快取：`~/.nullclaw/.news-cache/<YYYY-MM-DD>/<variant>-<range>.txt`。AI 預設新聞分段使用 `AI_SUBSTAGE_CACHE_VARIANT` variant（值見 `crates/news/src/config.rs`，這裡不抄寫以免過期），避免重用舊版分段快取——prompt 或 cached-output 語意變更時 bump variant 即可讓當日舊快取失效。鍵為 `(date, variant, range)`。腳本啟動時會清除 7 天以前的子目錄；需要時可手動刪除。每個 AI 段與自訂主題的快取旁有 `<快取檔名>.links.json` sidecar（Google 連結 → 媒體網址），命中快取的 run 靠它讓 `protected_name_lost` 觀察照常運作；sidecar 寫不進去時整筆快取不寫（trace：`news_cache_write_skipped`），沒有 sidecar 的舊快取照常重播。注意：快取存的是**渲染後的文字**，連結格式改變後，當天先前寫下的快取仍會重播舊格式。
 
 送出長度處理：
 
@@ -155,6 +155,20 @@ Env（去重相關）：
 - Markdown 字元中和：標題中的 `*` 與 `_` 在送至 Telegram 前會換成全形 `＊` / `＿`，避免 Markdown 解析失敗（例如「長科*成關鍵受惠股」這類台股除權息標示）。僅針對新聞條目本文，不影響區段標題與連結語法。
 - 版塊雜訊行剝除：LLM 版塊輸出偶爾夾帶純 `[括號:標記]` 雜訊行（如 `[hint_picked:none]`、`[cat_dedup:0]`——非本 repo 產生，模型自發吐出）。其底線會使該分塊未配對而 Markdown 安全預檢失敗、整份降級純文字（`[🔗]` 連結攤成長 URL）。`_attach_numbered_links` 在附連結前丟棄「整行僅為 `[...]`」的行（保留 `**區段標題**`、`#N` bullet、`[🔗]` 連結語法、`　↳` paywall 續行），trace：`section_noise_dropped`（含丟棄數與樣本）。僅擋整行標記；行內或無括號雜訊仍由上述 Markdown 預檢降級兜底。
 - Markdown 預檢 + 純文字降級：送出前會檢查每個分塊是否能通過 Telegram Markdown 解析（檢查未配對的 `*` / `_` / `` ` ``、跨塊未閉合的連結括號等）。若任一分塊不安全，整份摘要會降級為純文字送出（`parse_mode=None`），確保整體交付的原子性：要嘛全部以 Markdown 送出，要嘛全部純文字，避免「分塊 1 送出成功，分塊 2 失敗導致 cron 重試又重送分塊 1」。`digest_markdown_unsafe_fallback` trace 會記錄發生降級時的不安全分塊編號。
+
+## AI 直連來源（建置中，尚未接線）
+
+AI 段要從 Google News RSS 改成直連媒體 feed，設計見
+`docs/specs/2026-11-17-news-ai-direct-feeds-design.md`。目前只完成抓取層
+（`crates/news/src/direct.rs`），**沒有任何 run 呼叫它**，投遞行為不變。
+
+- 來源清單是 operator 設定：`~/.nullclaw/news-ai-feeds.json`，程式不內建任何 feed。
+  每個 feed 必填 `name`、`url`、`max_items`；選填 `kind: "techmeme"`（還原原媒體與原文連結）
+  與 `naive_date_offset: "±HH:MM"`（日期不帶時區的 feed 用，例如 iThome 是 `+08:00`）。
+  頂層必填 `max_age_hours`、`feeds_deadline_secs`。未知欄位一律報錯。
+- 每則依序歸入一個桶：malformed → undated → future（超過現在 1 小時）→ stale →
+  invalid_link → capped → kept；trace `ai_direct_feeds` 記每個 feed 的 outcome 與各桶數量。
+- 接進 AI 段（`NEWS_AI_SOURCES=google|direct`）與 `news shadow-ai` 子指令是下一階段。
 
 ## Failure alerts (hard rule)
 
