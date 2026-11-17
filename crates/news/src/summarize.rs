@@ -9,12 +9,12 @@ use crate::agent::{run_agent, try_reformat_retry, AgentResult};
 use crate::alert::{alert_failure, AlertContext};
 use crate::cache;
 use crate::config::{
-    self, llm_dedup_hints_enabled, section, AI_SUBSTAGE_CACHE_VARIANT, AI_SUBSTAGE_TIMEOUT_SECS,
-    DEDUP_RULES, LLM_CUSTOM_TOPIC_LIMIT, LLM_DEDUP_HINT_OVERLAP, LLM_SECTION_TIMEOUT_SECS,
+    self, llm_dedup_hints_enabled, section, AI_SUBSTAGE_TIMEOUT_SECS, DEDUP_RULES,
+    LLM_CUSTOM_TOPIC_LIMIT, LLM_DEDUP_HINT_OVERLAP, LLM_SECTION_TIMEOUT_SECS,
     LLM_TRANSLATION_TIMEOUT_SECS, TRANSLATION_RULES_STRICT,
 };
 use crate::precheck::{
-    drop_denied_author_bullets, precheck_apply, render_replacements, Precheck,
+    drop_denied_author_bullets, precheck_apply, precheck_apply_for, render_replacements, Precheck,
     resolve_paywall_replacements, resolve_paywall_summaries, PaywallMap, SharedCache,
 };
 use crate::quality;
@@ -26,6 +26,7 @@ use crate::select::{
     default_pair_hints, dedup_pair_hints, format_dedup_hint_block, number_items_for_prompt,
     parse_pick_min, post_dedup_selected_summary, NumberedMap,
 };
+use crate::sources::AiSources;
 use crate::text::{title_without_source, Item};
 use crate::trace::{clip_subprocess_text, log_trace, sample_nonempty_lines};
 use crate::validate::{
@@ -684,7 +685,21 @@ pub fn run_ai_substage(
     date_str: &str,
     cache_handle: &SharedCache,
 ) -> Result<Vec<String>, String> {
-    let variant = AI_SUBSTAGE_CACHE_VARIANT;
+    run_ai_substage_for(AiSources::Google, items, start, end, date_str, cache_handle)
+}
+
+/// [`run_ai_substage`] for the given AI sources. The cache variant is the
+/// mode's own at the read and both writes, and a direct pick is prechecked on
+/// its own URL with no Google decode (spec §5, §6 [R1]).
+pub fn run_ai_substage_for(
+    sources: AiSources,
+    items: &[Item],
+    start: usize,
+    end: usize,
+    date_str: &str,
+    cache_handle: &SharedCache,
+) -> Result<Vec<String>, String> {
+    let variant = sources.cache_variant();
     if let Some(cached) = cache::get(date_str, variant, start, end) {
         return Ok(cached.lines().map(str::to_string).collect());
     }
@@ -766,7 +781,13 @@ pub fn run_ai_substage(
     }
 
     let Precheck { summary, mut paywall, mut bodies, links } =
-        precheck_apply(&summary, &numbered, "ai", cache_handle);
+        precheck_apply_for(
+            &summary,
+            &numbered,
+            "ai",
+            cache_handle,
+            sources == AiSources::Direct,
+        );
     let (numbered, swapped_links) = with_publisher_links(&numbered, &links);
     let (summary, author_dropped) =
         drop_denied_author_bullets(&summary, &mut bodies, &quality::active_config().deny_authors);
@@ -823,6 +844,19 @@ pub fn summarize_default_ai_substaged(
     ctx: &AlertContext,
     cache_handle: &SharedCache,
 ) -> Result<Vec<String>, AiSubstageExhausted> {
+    summarize_default_ai_substaged_for(AiSources::Google, items, date_str, ctx, cache_handle)
+}
+
+/// [`summarize_default_ai_substaged`] for the given AI sources: every
+/// substage, and the Level-3 diagnostic's cache lookup, use the mode's own
+/// cache variant.
+pub fn summarize_default_ai_substaged_for(
+    sources: AiSources,
+    items: &[Item],
+    date_str: &str,
+    ctx: &AlertContext,
+    cache_handle: &SharedCache,
+) -> Result<Vec<String>, AiSubstageExhausted> {
     if items.is_empty() {
         return Ok(vec![NO_NEWS.to_string()]);
     }
@@ -851,7 +885,7 @@ pub fn summarize_default_ai_substaged(
     let mut half_errors: [String; 2] = [String::new(), String::new()];
 
     for (i, (s, e)) in halves.iter().enumerate() {
-        match run_ai_substage(&items, *s, *e, date_str, cache_handle) {
+        match run_ai_substage_for(sources, &items, *s, *e, date_str, cache_handle) {
             Ok(lines) => half_results[i] = Some(lines),
             Err(err) => {
                 log_trace(
@@ -887,13 +921,13 @@ cannot subdivide further. Level 2 error: {}",
 
         let mut merged: Vec<String> = Vec::new();
         for (qs, qe) in quarters {
-            match run_ai_substage(&items, qs, qe, date_str, cache_handle) {
+            match run_ai_substage_for(sources, &items, qs, qe, date_str, cache_handle) {
                 Ok(lines) => merged.extend(lines),
                 Err(err) => {
                     let cached_ok: Vec<[usize; 2]> = quarters
                         .iter()
                         .filter(|(a, b)| {
-                            cache::get(date_str, AI_SUBSTAGE_CACHE_VARIANT, *a, *b).is_some()
+                            cache::get(date_str, sources.cache_variant(), *a, *b).is_some()
                         })
                         .map(|(a, b)| [*a, *b])
                         .collect();

@@ -156,19 +156,29 @@ Env（去重相關）：
 - 版塊雜訊行剝除：LLM 版塊輸出偶爾夾帶純 `[括號:標記]` 雜訊行（如 `[hint_picked:none]`、`[cat_dedup:0]`——非本 repo 產生，模型自發吐出）。其底線會使該分塊未配對而 Markdown 安全預檢失敗、整份降級純文字（`[🔗]` 連結攤成長 URL）。`_attach_numbered_links` 在附連結前丟棄「整行僅為 `[...]`」的行（保留 `**區段標題**`、`#N` bullet、`[🔗]` 連結語法、`　↳` paywall 續行），trace：`section_noise_dropped`（含丟棄數與樣本）。僅擋整行標記；行內或無括號雜訊仍由上述 Markdown 預檢降級兜底。
 - Markdown 預檢 + 純文字降級：送出前會檢查每個分塊是否能通過 Telegram Markdown 解析（檢查未配對的 `*` / `_` / `` ` ``、跨塊未閉合的連結括號等）。若任一分塊不安全，整份摘要會降級為純文字送出（`parse_mode=None`），確保整體交付的原子性：要嘛全部以 Markdown 送出，要嘛全部純文字，避免「分塊 1 送出成功，分塊 2 失敗導致 cron 重試又重送分塊 1」。`digest_markdown_unsafe_fallback` trace 會記錄發生降級時的不安全分塊編號。
 
-## AI 直連來源（建置中，尚未接線）
+## AI 直連來源（`NEWS_AI_SOURCES`，預設仍是 Google）
 
-AI 段要從 Google News RSS 改成直連媒體 feed，設計見
-`docs/specs/2026-11-17-news-ai-direct-feeds-design.md`。目前只完成抓取層
-（`crates/news/src/direct.rs`），**沒有任何 run 呼叫它**，投遞行為不變。
+AI 段可以從 Google News RSS 改成直連媒體 feed，設計見
+`docs/specs/2026-11-17-news-ai-direct-feeds-design.md`。
 
+- 切換：環境變數 `NEWS_AI_SOURCES`，每次 run 讀取。**未設或空字串 = `google`**，行為與之前逐位元組相同。
+  `direct` = AI 段只讀直連 feed。其他值（打錯字）→ 告警 `news_ai_sources_invalid`，照常用 Google，
+  marker 維持 `ok`（`degraded` 在 `retry_once` 下會重送整份 digest）。只影響預設 digest，自訂主題不讀它。
+  告警送到該 job 的 `--deliver-to`，所以只在要切換的 job 上設定，不要設成全機共用。
 - 來源清單是 operator 設定：`~/.nullclaw/news-ai-feeds.json`，程式不內建任何 feed。
   每個 feed 必填 `name`、`url`、`max_items`；選填 `kind: "techmeme"`（還原原媒體與原文連結）
   與 `naive_date_offset: "±HH:MM"`（日期不帶時區的 feed 用，例如 iThome 是 `+08:00`）。
   頂層必填 `max_age_hours`、`feeds_deadline_secs`。未知欄位一律報錯。
 - 每則依序歸入一個桶：malformed → undated → future（超過現在 1 小時）→ stale →
-  invalid_link → capped → kept；trace `ai_direct_feeds` 記每個 feed 的 outcome 與各桶數量。
-- 接進 AI 段（`NEWS_AI_SOURCES=google|direct`）與 `news shadow-ai` 子指令是下一階段。
+  invalid_link（含 `news.google.com` 連結）→ capped → kept；trace `ai_direct_feeds` 記每個 feed
+  的 outcome 與各桶數量，設定檔讀不到時記 `{config_error, feeds: [], total_kept: 0}`。
+- `direct` 全部 feed 都空、或設定檔有問題 → 告警 `ai_direct_feeds_empty`，AI 段顯示 `今日無相關新聞`，
+  科技與重大新聞照送，marker `ok`。**不會**默默退回 Google。
+- `direct` 的 AI 連結本身就是媒體網址，precheck 不做 Google 解碼；付費牆替代搜尋照舊。
+  AI 段快取用獨立 variant（`AI_SUBSTAGE_CACHE_VARIANT_DIRECT`），兩種模式不會互相重播。
+- 每次 digest 都記一筆 `ai_section_rendered {stories, links_total, links_google, ai_sources}`，
+  `stories` 數的是 `- ` 開頭的故事行（不算主題標題與 `↳` 續行），供切換門檻比對。
+- 尚未完成：`news shadow-ai` 子指令（獨立 cron job 跑直連版、只寫檔不投遞）。
 
 ## Failure alerts (hard rule)
 

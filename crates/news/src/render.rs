@@ -373,6 +373,49 @@ pub fn attach_numbered_links(
     (rendered.join("\n"), attached)
 }
 
+// ── counting the delivered AI section (spec §7 `ai_section_rendered`) ───────
+
+/// Stories in a rendered AI section: lines that begin with `- `, or are
+/// exactly `-` (the bodyless, linkless bullet [`linked`] writes).
+///
+/// One per story by construction of the renderer: theme headings (`▸ …`) and
+/// paywall continuations ([`PAYWALL_CONT_PREFIX`], of which a paywall summary
+/// renders several) never begin with `- `. The empty-section sentinel
+/// ([`crate::validate::NO_NEWS`]) is a bullet in shape and zero stories in
+/// fact. Deliberately not `theme::parse_ai_blocks`, which rejects headings and
+/// takes one continuation, so it fails on exactly the sections counted here.
+pub fn count_ai_stories(section: &str) -> usize {
+    section
+        .lines()
+        .filter(|l| l.starts_with("- ") || *l == "-")
+        .filter(|l| l.trim() != crate::validate::NO_NEWS)
+        .count()
+}
+
+fn link_target_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"\[🔗\]\(([^)]+)\)").expect("literal"))
+}
+
+/// `(links_total, links_google)`: every `[🔗](…)` target in the section, and
+/// those whose host is `news.google.com` — a redirect the reader may not be
+/// able to open. The host is compared whole and case-insensitively, so a
+/// look-alike such as `news.google.com.example.org` is not Google.
+pub fn ai_section_link_counts(section: &str) -> (usize, usize) {
+    let mut total = 0;
+    let mut google = 0;
+    for cap in link_target_re().captures_iter(section) {
+        total += 1;
+        let host = crate::feed::split_url(&cap[1])
+            .map(|(h, _, _)| h)
+            .unwrap_or_default();
+        if host.eq_ignore_ascii_case("news.google.com") {
+            google += 1;
+        }
+    }
+    (total, google)
+}
+
 // ── length management ────────────────────────────────────────────────────────
 
 fn link_re() -> &'static Regex {

@@ -4,11 +4,13 @@ use crate::alert::{alert_failure, AlertContext};
 use crate::config::{section, THEME_TRIM_THRESHOLD};
 use crate::precheck::{publisher_link, SharedCache};
 use crate::render::{
-    build_link_map, markdown_visible_text, trim_digest_links, trim_links_to_limit, PAYWALL_NOTE,
+    ai_section_link_counts, build_link_map, count_ai_stories, markdown_visible_text,
+    trim_digest_links, trim_links_to_limit, PAYWALL_NOTE,
 };
+use crate::sources::AiSources;
 use crate::summarize::{
     assemble_digest, custom_topic_raw_listing, fallback_section_lines, run_custom_topic,
-    summarize_default_ai_substaged, summarize_default_section, AiSubstageExhausted, NO_NEWS,
+    summarize_default_ai_substaged_for, summarize_default_section, AiSubstageExhausted, NO_NEWS,
 };
 use crate::text::Item;
 use crate::theme::theme_ai_section;
@@ -109,6 +111,50 @@ pub fn summarize_llm(
     date_str: &str,
     cache_handle: &SharedCache,
 ) -> Result<String, AiSubstageExhausted> {
+    summarize_llm_sourced(all_items, ctx, date_str, cache_handle, AiSources::Google)
+}
+
+/// The AI section's lines as delivered: everything between its header and
+/// the next section's header in the final digest.
+fn delivered_ai_section(digest: &str) -> String {
+    let ai_header = section("ai").expect("ai section").header;
+    let others: Vec<&str> = SECTION_KEYS
+        .iter()
+        .filter(|k| **k != "ai")
+        .filter_map(|k| section(k).map(|s| s.header))
+        .collect();
+    digest
+        .lines()
+        .skip_while(|l| *l != ai_header)
+        .skip(1)
+        .take_while(|l| !others.contains(l))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Spec §7: one `ai_section_rendered` per AI section, in every mode, counted
+/// on what the reader gets — after cross-dedup, theming, the length revert
+/// and link trimming. `ai_sources` rides on this event only.
+fn log_ai_section_rendered(digest: &str, sources: AiSources) {
+    let ai = delivered_ai_section(digest);
+    let (links_total, links_google) = ai_section_link_counts(&ai);
+    log_trace(
+        "ai_section_rendered",
+        json!({"stories": count_ai_stories(&ai), "links_total": links_total,
+               "links_google": links_google, "ai_sources": sources.as_str()}),
+    );
+}
+
+/// [`summarize_llm`] with the AI section built from `sources`. The caller
+/// has already put the matching candidates under `"ai"`; this decides the
+/// substage cache variant and the precheck's treatment of their links.
+pub fn summarize_llm_sourced(
+    all_items: &[(String, Vec<Item>)],
+    ctx: &AlertContext,
+    date_str: &str,
+    cache_handle: &SharedCache,
+    sources: AiSources,
+) -> Result<String, AiSubstageExhausted> {
     let link_map = build_link_map(all_items);
     let mut section_results: Vec<(String, Vec<String>)> = Vec::new();
     let mut degraded: Vec<String> = Vec::new();
@@ -116,7 +162,13 @@ pub fn summarize_llm(
     for key in SECTION_KEYS {
         let started = Instant::now();
         let result = if key == "ai" {
-            summarize_default_ai_substaged(items_for(all_items, key), date_str, ctx, cache_handle)
+            summarize_default_ai_substaged_for(
+                sources,
+                items_for(all_items, key),
+                date_str,
+                ctx,
+                cache_handle,
+            )
         } else {
             let (lines, used_fallback) = summarize_default_section(
                 key,
@@ -202,6 +254,7 @@ pub fn summarize_llm(
 
     let digest = trim_digest_links(&digest);
     log_protected_name_losses(all_items, &digest, cache_handle, date_str);
+    log_ai_section_rendered(&digest, sources);
     Ok(digest)
 }
 

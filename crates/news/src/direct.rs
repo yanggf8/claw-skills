@@ -312,7 +312,7 @@ pub fn select_entries(
             counts.stale += 1;
             continue;
         }
-        let Some(link) = publisher_link(Some(&link)) else {
+        let Some(link) = publisher_link(Some(&link)).filter(|l| !is_google_news_link(l)) else {
             counts.invalid_link += 1;
             continue;
         };
@@ -334,6 +334,24 @@ pub fn select_entries(
     survivors.truncate(spec.max_items);
     counts.kept = survivors.len();
     (survivors.into_iter().map(|(_, item)| item).collect(), counts)
+}
+
+/// Whether `url`'s host is `news.google.com` or one of its subdomains.
+///
+/// Such a link is a Google redirect, not a publisher URL: precheck would
+/// fetch it from Google and the reader would land on Google (spec §2, §5).
+/// The host is compared whole — userinfo and port stripped, case folded — so
+/// `notnews.google.com.evil.com` or `xnews.google.com` is not Google.
+fn is_google_news_link(url: &str) -> bool {
+    let Some((netloc, _, _)) = split_url(url) else {
+        return false;
+    };
+    let host = netloc.rsplit_once('@').map_or(netloc.as_str(), |(_, h)| h);
+    let host = host
+        .split_once(':')
+        .map_or(host, |(h, _)| h)
+        .to_ascii_lowercase();
+    host == "news.google.com" || host.ends_with(".news.google.com")
 }
 
 /// `(headline, source, link)` for one entry, or `None` when it is malformed.
@@ -557,6 +575,27 @@ fn fetch_body(url: &str, timeout: Duration) -> Result<Vec<u8>, (FeedOutcome, Opt
 /// the per-feed report. Also writes that report as the `ai_direct_feeds`
 /// trace event.
 ///
+/// Load the feed list and fetch it — what a direct build does.
+///
+/// A config that cannot be used still leaves one `ai_direct_feeds` event,
+/// `{config_error, feeds: [], total_kept: 0}` (spec §7), so the gate's feed
+/// check sees that day rather than a gap. `None` reads the operator's file.
+pub fn direct_ai_from_config(
+    path: Option<&Path>,
+    now: Timestamp,
+) -> Result<(Vec<Item>, DirectReport), ConfigError> {
+    match load_direct_config(path) {
+        Ok(cfg) => Ok(fetch_direct_ai(&cfg, now)),
+        Err(e) => {
+            log_trace(
+                "ai_direct_feeds",
+                serde_json::json!({"config_error": e.code(), "feeds": [], "total_kept": 0}),
+            );
+            Err(e)
+        }
+    }
+}
+
 /// The whole fetch stops at `feeds_deadline_secs`; a feed still pending then
 /// is reported `timeout` and its thread is abandoned (each request is itself
 /// bounded by [`FEED_TIMEOUT`], so an abandoned worker cannot live long). An

@@ -43,6 +43,12 @@ pub const TELEGRAM_RAW_CHUNK_LIMIT: usize = 3800;
 /// day-caches written under an older variant are simply never looked up.
 pub const AI_SUBSTAGE_CACHE_VARIANT: &str = "default_ai_clustered_v7_author_deny";
 
+/// The same substage fed from the direct publisher feeds. Kept apart from the
+/// Google variant so neither mode replays the other's section (spec §6 [R1]),
+/// and spelled as the Google variant plus a suffix so bumping the prompt
+/// variant above means bumping this one too — a test pins the prefix.
+pub const AI_SUBSTAGE_CACHE_VARIANT_DIRECT: &str = "default_ai_clustered_v7_author_deny_direct";
+
 /// Each Level-2 half (or Level-3 quarter) gets less than the 90s the monolithic
 /// call had — a half-size prompt should not need it.
 pub const AI_SUBSTAGE_TIMEOUT_SECS: u64 = 60;

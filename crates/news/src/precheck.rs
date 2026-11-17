@@ -49,8 +49,15 @@ fn cached_precheck(
     title: &str,
     link: &str,
     decoded_hint: Option<&str>,
+    self_hint_reuses_memo: bool,
 ) -> Verdict {
-    let hinted = decoded_hint.is_some_and(|s| !s.is_empty());
+    // A hinted lookup bypasses the memo: the hint may classify differently
+    // from the memo's entry. The one exception is the direct AI precheck,
+    // where every link arrives as its own hint (spec §5) — and only there:
+    // Bing replacement candidates also carry link == decoded_url, and letting
+    // them reuse the memo would change Google-mode replacement behaviour.
+    let self_hinted = self_hint_reuses_memo && decoded_hint == Some(link);
+    let hinted = decoded_hint.is_some_and(|s| !s.is_empty()) && !self_hinted;
     if !hinted {
         if let Some(hit) = cache.lock().ok().and_then(|c| c.get(link).cloned()) {
             return hit;
@@ -251,6 +258,28 @@ pub fn precheck_apply(
     section: &str,
     cache: &SharedCache,
 ) -> Precheck {
+    precheck_apply_for(summary, numbered, section, cache, false)
+}
+
+/// [`precheck_apply`], told whether every link is already a publisher URL.
+///
+/// `links_are_publisher` is set for the direct AI section (spec §5 [R4]): a
+/// direct item's link came from the publisher's own feed, so it is passed as
+/// its own `decoded_url_hint` and `decode_google_news_url` — two Google
+/// requests per pick — never runs. Paywall, deny, media and body checks then
+/// run on that URL exactly as they do on a decoded one.
+///
+/// Scoped by caller rather than by the link's host: a test fixture or a
+/// Google section may carry a non-Google link that is still meant to be
+/// decoded (`tests/pipeline.rs` seeds the decode cache for one), and Google
+/// mode must not change at all.
+pub fn precheck_apply_for(
+    summary: &str,
+    numbered: &NumberedMap,
+    section: &str,
+    cache: &SharedCache,
+    links_are_publisher: bool,
+) -> Precheck {
     if !precheck_enabled() || summary.trim().is_empty() {
         return Precheck::unchanged(summary);
     }
@@ -278,7 +307,15 @@ pub fn precheck_apply(
             };
             let item = items.iter().find(|(n, _)| *n == num).map(|(_, v)| v.clone());
             let item = item.unwrap_or_default();
-            let verdict = cached_precheck(&cache, &item.source_name, &item.title, &item.link, None);
+            let hint = links_are_publisher.then_some(item.link.as_str());
+            let verdict = cached_precheck(
+                &cache,
+                &item.source_name,
+                &item.title,
+                &item.link,
+                hint,
+                links_are_publisher,
+            );
             // A closed receiver means the deadline passed; stop rather than
             // keep fetching for results nobody will read.
             if tx.send((num, verdict)).is_err() {
@@ -498,6 +535,19 @@ pub fn resolve_paywall_replacements(
     translate: &dyn Fn(&str, &str) -> Option<String>,
     judge: &dyn Fn(&str, &str, &str) -> Option<String>,
 ) {
+    resolve_paywall_replacements_with(paywall, date_str, translate, judge, &fetch_feed);
+}
+
+/// [`resolve_paywall_replacements`] with the search-feed fetch injected —
+/// `(url, max_items, timeout)`, the signature of [`fetch_feed`] — so the pass
+/// can be driven offline. Every other step is the real one.
+pub fn resolve_paywall_replacements_with(
+    paywall: &mut PaywallMap,
+    date_str: &str,
+    translate: &dyn Fn(&str, &str) -> Option<String>,
+    judge: &dyn Fn(&str, &str, &str) -> Option<String>,
+    fetch: &dyn Fn(&str, usize, Duration) -> Vec<Item>,
+) {
     if paywall.is_empty() || !paywall_replace_enabled() || !precheck_enabled() {
         return;
     }
@@ -565,7 +615,7 @@ pub fn resolve_paywall_replacements(
                     continue;
                 }
                 if let Some(t) = fetch_timeout() {
-                    candidates.extend(fetch_feed(&search_feed_url(&query, edition), 8, t));
+                    candidates.extend(fetch(&search_feed_url(&query, edition), 8, t));
                 }
                 if expired() {
                     break;
@@ -580,7 +630,7 @@ pub fn resolve_paywall_replacements(
                 }
                 if let Some(t) = fetch_timeout() {
                     candidates.extend(
-                        fetch_feed(&url, 8, t)
+                        fetch(&url, 8, t)
                             .into_iter()
                             .map(normalize_replacement_candidate),
                     );
@@ -617,6 +667,7 @@ pub fn resolve_paywall_replacements(
                 &cand.title,
                 &cand.link,
                 cand.decoded_url.as_deref(),
+                false,
             );
             if matches!(verdict.action, Action::TitleOnly | Action::Drop) {
                 continue; // the candidate is itself paywalled, or junk

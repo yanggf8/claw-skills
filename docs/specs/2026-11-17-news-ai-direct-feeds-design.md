@@ -145,9 +145,14 @@ first N positions ahead of a fresh one — the fresh one must survive.
 ### 5. Precheck never touches Google for a direct item [R4]
 
 `precheck_action` calls `decode_google_news_url` on whatever link it is given.
-Whenever the link's host is not `news.google.com`, `precheck_apply` passes the
-link itself as `decoded_url_hint` (the parameter exists; it passes `None` today).
-Paywall, deny, media and body checks then run on the real publisher URL.
+In `direct` mode `precheck_apply` passes every AI link itself as
+`decoded_url_hint` (the parameter exists; it passes `None` today). Paywall, deny,
+media and body checks then run on the real publisher URL. The switch is the
+**mode, not the link's host**: a host rule would change Google mode too, whose
+tests already stand in non-Google loopback links for Google ones. The host
+guarantee is made at ingestion instead — a direct feed item whose link host is
+`news.google.com` (or a subdomain) is dropped as `invalid_link` (§2), so no
+direct item can reach precheck carrying a Google link.
 
 The **paywall replacement** search (Google + Bing) is kept, so the invariant is
 stated precisely: *direct mode makes no Google request to ingest, decode or check
@@ -233,7 +238,10 @@ the read, both writes, and the Level-3 diagnostic lookup in
 `ai_direct_feeds` once per direct or shadow build:
 `{feeds: [{name, outcome: ok|http_error|timeout|oversize|parse_error,
 fetched, stale, undated, invalid_link, kept}], total_kept, elapsed_ms}`. A feed
-that returned zero for a reason is distinguishable from one that is empty.
+that returned zero for a reason is distinguishable from one that is empty. When
+the config itself is missing, empty or invalid no feed is fetched, and the event
+is still written as `{config_error: "missing|unreadable|empty|invalid", feeds: [],
+total_kept: 0}`, so the §8 feed check sees that day instead of a gap.
 
 `ai_section_rendered` once per AI section in **every** mode — Google delivery,
 direct delivery and shadow — so the gate compares like with like:
@@ -273,9 +281,6 @@ shadow file alone:
   `cron_runs` show no `repair_action = retried*` and exactly one delivery per day;
   `news-failures.log` has no line written by a `shadow-ai` process (the silent
   sink makes this structural; the check confirms it).
-
-Above the floor the decision is the operator's: is the direct section at least as
-good to read as the Google one. No numeric quality score is invented for this.
 
 Above the floor the decision is the operator's: is the direct section at least as
 good to read as the Google one. No numeric quality score is invented for this.
