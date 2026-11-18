@@ -22,6 +22,7 @@ git history if a rollback is ever needed. Publish the binary with
 
 ```
 ~/.nullclaw/skills/news/bin/news --deliver-to 7972814626
+~/.nullclaw/skills/news/bin/news shadow-ai        # 直連 AI 段只寫檔、不投遞，見「AI 直連來源」
 ```
 
 ## Options
@@ -178,7 +179,23 @@ AI 段可以從 Google News RSS 改成直連媒體 feed，設計見
   AI 段快取用獨立 variant（`AI_SUBSTAGE_CACHE_VARIANT_DIRECT`），兩種模式不會互相重播。
 - 每次 digest 都記一筆 `ai_section_rendered {stories, links_total, links_google, ai_sources}`，
   `stories` 數的是 `- ` 開頭的故事行（不算主題標題與 `↳` 續行），供切換門檻比對。
-- 尚未完成：`news shadow-ai` 子指令（獨立 cron job 跑直連版、只寫檔不投遞）。
+- **Shadow：`news shadow-ai`**（切換前的比對用，規格 §6）。只建 AI 段、只讀直連 feed
+  （與 `direct` 投遞同一套 substage / precheck / 跨批去重 / 主題，同一個 direct 快取 variant），
+  把渲染後的 AI 段寫到 `~/.nullclaw/.news-shadow/<YYYY-MM-DD>.md`（台北日期，與 digest 同一日期來源；
+  先寫暫存檔再 rename，同日重跑整檔覆蓋）。**不投遞**：沒有 `--deliver-to` / `--account`，
+  帶任何參數都是 usage error（exit 2）；stdout 只有 marker，診斷走 stderr。
+  - 告警靜音：所有告警只寫 trace 事件 `news_alert_silenced {reason, detail, detail_chars}`，
+    **不寫** `news-failures.log`、**不發** Telegram。
+  - 整個 process 的每筆 trace 都帶 `"ai_sources": "shadow"`（含背景執行緒；`ai_section_rendered`
+    原本的 `ai_sources` 也被覆寫成 `shadow`）。投遞的 run 不會有這個標記。
+  - 每次 run 一筆 `ai_sources_shadow {path, outcome, stories, links_total, links_google, elapsed_ms}`；
+    `outcome` = `ok` | `empty` | `exhausted` | `write_failed`（後者另有 `error`）。
+  - Marker：有至少一則故事 → `ok`；AI 段空（設定檔缺/壞、feed 全空、沒挑到）或 Level-3 生成失敗 →
+    `degraded`（檔案照寫，失敗時寫一行「（AI 段未產生：ai_substage_level3_failed）」）；
+    檔案寫不出去 → exit 1、不印 marker。
+  - Cron：另開一個 job（`skill_contract`、`repair_policy = none`、自己的 timeout），排在當天
+    投遞 job 跑完之後；時間由 operator 決定，本 repo 不預設排程。直連 feed 清單一樣讀
+    `~/.nullclaw/news-ai-feeds.json`。同日若之後再以 `direct` 投遞，會重播 shadow 寫下的 direct 快取。
 
 ## Failure alerts (hard rule)
 
@@ -191,6 +208,9 @@ attempted on every failure:
    outages.
 2. Best-effort Telegram message to the same chat the news would have gone
    to (`fail_on_delivery_error=False`, never raises).
+
+唯一例外是 `news shadow-ai`：它不是投遞，告警只寫 trace（`news_alert_silenced`），
+兩個通道都不走。
 
 每則告警的 `detail` 會附上同一 `(reason, account)` 在過去 30 天的累計次數
 （`_recent_failure_count`，例如「此告警近30天已出現 5 次」），讓慢性問題

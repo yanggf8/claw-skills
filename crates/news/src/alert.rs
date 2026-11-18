@@ -17,6 +17,14 @@ pub struct AlertContext {
     pub deliver_to: Option<String>,
     pub account: String,
     pub job_id: String,
+    /// Alerts go to the trace only — never `news-failures.log`, never
+    /// Telegram. `news shadow-ai` runs this way [R2]: it is not the delivery,
+    /// so nothing it hits is the operator's to be paged about, and the
+    /// failure log stays a record of delivering runs only.
+    pub silent: bool,
+    /// Test seam only: the Telegram API base the alert is sent to. `None`
+    /// is the real host.
+    pub telegram_base_url: Option<String>,
 }
 
 impl AlertContext {
@@ -25,7 +33,15 @@ impl AlertContext {
             deliver_to,
             account,
             job_id: job_id.filter(|s| !s.is_empty()).unwrap_or_else(|| "interactive".into()),
+            silent: false,
+            telegram_base_url: None,
         }
+    }
+
+    /// The same context with every alert routed to the trace only.
+    pub fn silenced(mut self) -> Self {
+        self.silent = true;
+        self
     }
 }
 
@@ -94,7 +110,24 @@ pub fn recent_failure_count(reason: &str, account: &str, days: i64) -> usize {
 }
 
 /// Never raises, by construction: every step is best effort.
+///
+/// A silent context writes one `news_alert_silenced` trace event
+/// (`{reason, detail, detail_chars}`, the detail clipped to the 500
+/// characters a Telegram alert would carry) and returns. It is a separate
+/// event rather than `news_failure_alert` with a flag, so every existing
+/// query on `news_failure_alert` keeps meaning "the operator was alerted";
+/// and the 30-day recurrence count is skipped, because it reads the failure
+/// log a silent alert never writes.
 pub fn alert_failure(ctx: &AlertContext, reason: &str, detail: &str) {
+    if ctx.silent {
+        log_trace(
+            "news_alert_silenced",
+            json!({"reason": reason,
+                   "detail": detail.chars().take(500).collect::<String>(),
+                   "detail_chars": detail.chars().count()}),
+        );
+        return;
+    }
     // Counted before this block is written, so the number reads as "already
     // happened N times", excluding the alert being raised now.
     let prior_30d = recent_failure_count(reason, &ctx.account, 30);
@@ -153,6 +186,7 @@ pub fn alert_failure(ctx: &AlertContext, reason: &str, detail: &str) {
         account: ctx.account.clone(),
         // Already in the failure path — a send error here must not escalate.
         fail_on_delivery_error: false,
+        base_url: ctx.telegram_base_url.clone(),
         ..Default::default()
     };
     let mut out = std::io::stdout();

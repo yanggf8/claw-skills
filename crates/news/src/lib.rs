@@ -15,6 +15,7 @@ pub mod quality;
 pub mod render;
 pub mod run;
 pub mod select;
+pub mod shadow;
 pub mod sources;
 pub mod summarize;
 pub mod text;

@@ -73,6 +73,16 @@ fn an_unknown_flag_exits_two_and_prints_nothing_to_stdout() {
 }
 
 #[test]
+fn shadow_ai_takes_no_delivery_flag() {
+    // The shadow has no route to Telegram; naming one is a usage error.
+    let home = Home::new();
+    let out = run(&home, None, &["shadow-ai", "--deliver-to", "123"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(stdout(&out), "");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown argument: --deliver-to"));
+}
+
+#[test]
 fn an_unknown_manage_action_also_exits_two() {
     let home = Home::new();
     assert_eq!(

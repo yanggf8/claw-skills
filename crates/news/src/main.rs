@@ -32,17 +32,24 @@ fn main() {
         }
     };
 
+    if command == Command::ShadowAi {
+        // Before anything else runs and before any thread exists, so every
+        // event this process writes — worker threads included — is stamped.
+        news::trace::stamp_process_as_shadow();
+    }
+
     load_env(None);
 
     match command {
         Command::Deliver(args) => std::process::exit(run_deliver(&args, &mut out)),
+        Command::ShadowAi => std::process::exit(run_shadow_ai(&mut out)),
         other => std::process::exit(run_manage(&other, &mut out, &mut err)),
     }
 }
 
 fn run_manage(command: &Command, out: &mut impl Write, err: &mut impl Write) -> i32 {
     let (output, account, deliver_to) = match command {
-        Command::Deliver(_) => unreachable!("handled by the caller"),
+        Command::Deliver(_) | Command::ShadowAi => unreachable!("handled by the caller"),
         Command::ManageList {
             account,
             deliver_to,
@@ -75,10 +82,21 @@ fn run_manage(command: &Command, out: &mut impl Write, err: &mut impl Write) -> 
     )
 }
 
-fn run_deliver(args: &DeliverArgs, out: &mut impl Write) -> i32 {
-    let date_str = jiff::Timestamp::now()
+/// The run's Taipei date, `"YYYY/MM/DD (Mon)"` — the one date source for
+/// prompts, the day cache and the shadow file name.
+fn taipei_date_str() -> String {
+    jiff::Timestamp::now()
         .in_tz("Asia/Taipei")
         .map(|z| z.strftime("%Y/%m/%d (%a)").to_string())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+fn run_deliver(args: &DeliverArgs, out: &mut impl Write) -> i32 {
+    let date_str = taipei_date_str();
     news::run::run_deliver(args, &LiveFeeds, &date_str, &new_cache(), out)
+}
+
+fn run_shadow_ai(out: &mut impl Write) -> i32 {
+    let date_str = taipei_date_str();
+    news::shadow::run_shadow_ai(&LiveFeeds, &date_str, &new_cache(), out)
 }

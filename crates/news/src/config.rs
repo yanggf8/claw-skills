@@ -27,6 +27,10 @@ pub fn failure_log() -> PathBuf {
 pub fn ai_feeds_file() -> PathBuf {
     home().join(".nullclaw/news-ai-feeds.json")
 }
+/// Where `news shadow-ai` writes one `<YYYY-MM-DD>.md` per day.
+pub fn shadow_dir() -> PathBuf {
+    home().join(".nullclaw/.news-shadow")
+}
 
 pub const CACHE_TTL_DAYS: u64 = 7;
 /// 1 MiB, then rotate to `.1` and start again.

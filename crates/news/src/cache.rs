@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// `"YYYY/MM/DD (Mon)"` → `"YYYY-MM-DD"`, safe as a directory name.
-fn safe_date(date_str: &str) -> String {
+pub fn safe_date(date_str: &str) -> String {
     date_str
         .split_whitespace()
         .next()

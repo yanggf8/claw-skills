@@ -134,15 +134,93 @@ fn delivered_ai_section(digest: &str) -> String {
 
 /// Spec §7: one `ai_section_rendered` per AI section, in every mode, counted
 /// on what the reader gets — after cross-dedup, theming, the length revert
-/// and link trimming. `ai_sources` rides on this event only.
-fn log_ai_section_rendered(digest: &str, sources: AiSources) {
+/// and link trimming. `ai_sources` rides on this event only (in a shadow
+/// process the trace stamp overrides it with `shadow`).
+///
+/// Returns what it counted: `(stories, links_total, links_google)`.
+fn log_ai_section_rendered(digest: &str, sources: AiSources) -> (usize, usize, usize) {
     let ai = delivered_ai_section(digest);
     let (links_total, links_google) = ai_section_link_counts(&ai);
+    let stories = count_ai_stories(&ai);
     log_trace(
         "ai_section_rendered",
-        json!({"stories": count_ai_stories(&ai), "links_total": links_total,
+        json!({"stories": stories, "links_total": links_total,
                "links_google": links_google, "ai_sources": sources.as_str()}),
     );
+    (stories, links_total, links_google)
+}
+
+/// The AI section on its own, as [`summarize_ai_section`] renders it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AiSection {
+    /// The section header, its lines, and the paywall footer when there is
+    /// one — what a reader of the digest would see for this section.
+    pub text: String,
+    pub stories: usize,
+    pub links_total: usize,
+    pub links_google: usize,
+}
+
+/// Only the AI section, from `ai_items` — what `news shadow-ai` builds.
+///
+/// The same path the AI section takes inside [`summarize_llm_sourced`]:
+/// substage (with its precheck, paywall handling and cross-dedup), theming,
+/// the theming length revert and link trimming, then one
+/// `ai_section_rendered`. The revert and trim see an AI-only digest, so they
+/// can only fire when they would also have fired on the full one.
+pub fn summarize_ai_section(
+    ai_items: &[Item],
+    ctx: &AlertContext,
+    date_str: &str,
+    cache_handle: &SharedCache,
+    sources: AiSources,
+) -> Result<AiSection, AiSubstageExhausted> {
+    const KEYS: [&str; 1] = ["ai"];
+    let started = Instant::now();
+    let result = summarize_default_ai_substaged_for(sources, ai_items, date_str, ctx, cache_handle);
+    log_trace(
+        "section_timing",
+        json!({"section": "ai", "elapsed_ms": started.elapsed().as_millis() as u64}),
+    );
+    let flat = result?;
+
+    let counts = vec![("ai".to_string(), ai_items.len())];
+    let (themed, themed_applied) = theme_ai_section(&flat, date_str, &counts);
+    let (mut digest, paywall_count) =
+        assemble_digest(date_str, &KEYS, &[("ai".to_string(), themed)]);
+    if paywall_count > 0 {
+        log_trace("paywall_notice", json!({"count": paywall_count}));
+    }
+    if themed_applied {
+        let visible = markdown_visible_text(&digest).chars().count();
+        if visible > THEME_TRIM_THRESHOLD {
+            digest = assemble_digest(date_str, &KEYS, &[("ai".to_string(), flat)]).0;
+            log_trace(
+                "ai_theme",
+                json!({"mode": "render", "length_revert": true, "visible_len": visible}),
+            );
+        }
+    }
+
+    let digest = trim_digest_links(&digest);
+    let all_items = vec![("ai".to_string(), ai_items.to_vec())];
+    log_protected_name_losses(&all_items, &digest, cache_handle, date_str);
+    let (stories, links_total, links_google) = log_ai_section_rendered(&digest, sources);
+
+    // Everything from the section header on: the digest title is not part
+    // of the section.
+    let header = section("ai").expect("ai section").header;
+    let text = digest
+        .lines()
+        .skip_while(|l| *l != header)
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(AiSection {
+        text: format!("{}\n", text.trim_end()),
+        stories,
+        links_total,
+        links_google,
+    })
 }
 
 /// [`summarize_llm`] with the AI section built from `sources`. The caller

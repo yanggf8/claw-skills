@@ -117,7 +117,7 @@ fn feed_outcome_line(f: &FeedReport) -> String {
 /// section empty, so it renders `今日無相關新聞` while tech and 重大新聞 ship.
 /// Never a fallback to Google: that would hide a dead feed list behind a
 /// working digest.
-fn direct_ai_items(ctx: &AlertContext, feeds: &dyn FeedSource) -> Vec<Item> {
+pub fn direct_ai_items(ctx: &AlertContext, feeds: &dyn FeedSource) -> Vec<Item> {
     match feeds.direct_ai() {
         Err(e) => {
             alert_failure(

@@ -9,9 +9,25 @@ use crate::config::trace_file;
 use serde_json::{json, Map, Value};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 static TRACE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Set once by `news shadow-ai` in `main`, before any thread exists [R9].
+static SHADOW_PROCESS: AtomicBool = AtomicBool::new(false);
+
+/// Mark this whole process as the shadow: from now on every event
+/// [`log_trace`] writes carries `"ai_sources": "shadow"`, whatever thread
+/// writes it and however late — worker threads abandoned past a deadline
+/// included, which is why this is a process-wide flag and not a scope.
+///
+/// There is no way to unset it. It belongs to the process entry point: the
+/// library never sets it, so a delivering run is never stamped, and a test
+/// binary that calls this is a shadow process for all of its tests.
+pub fn stamp_process_as_shadow() {
+    SHADOW_PROCESS.store(true, Ordering::SeqCst);
+}
 
 pub fn job_id() -> String {
     std::env::var("NULLCLAW_JOB_ID").unwrap_or_else(|_| "interactive".to_string())
@@ -32,6 +48,11 @@ pub fn log_trace(event: &str, fields: Value) {
         for (k, v) in extra {
             entry.insert(k, v);
         }
+    }
+    // After the event's own fields, so it wins: `ai_section_rendered` carries
+    // its own `ai_sources`, and under the stamp the one key reads "shadow".
+    if SHADOW_PROCESS.load(Ordering::SeqCst) {
+        entry.insert("ai_sources".into(), json!("shadow"));
     }
 
     let line = match serde_json::to_string(&Value::Object(entry)) {

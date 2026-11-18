@@ -11,6 +11,9 @@ pub enum Command {
     ManageList { account: String, deliver_to: Option<String> },
     ManageAdd { account: String, topic: String, deliver_to: Option<String> },
     ManageRemove { account: String, topic: String, deliver_to: Option<String> },
+    /// Build the AI section from the direct feeds and write it to a file;
+    /// never delivers (spec 2026-11-17 §6). Takes no arguments at all.
+    ShadowAi,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -27,7 +30,8 @@ usage: news [deliver] [--lang zh] [--deliver-to CHAT_ID] [--account NAME]
             [--topics a,b,c] [--account-topics]
        news manage list   [--account NAME] [--deliver-to CHAT_ID]
        news manage add    --topic NAME [--account NAME] [--deliver-to CHAT_ID]
-       news manage remove --topic NAME [--account NAME] [--deliver-to CHAT_ID]";
+       news manage remove --topic NAME [--account NAME] [--deliver-to CHAT_ID]
+       news shadow-ai";
 
 fn value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
     *i += 1;
@@ -39,6 +43,12 @@ fn value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
 pub fn parse_args(argv: &[String]) -> Result<Command, String> {
     let rest: &[String] = match argv.first().map(String::as_str) {
         Some("manage") => return parse_manage(&argv[1..]),
+        Some("shadow-ai") => {
+            return match argv.get(1) {
+                None => Ok(Command::ShadowAi),
+                Some(other) => Err(format!("unknown argument: {other}")),
+            }
+        }
         Some("deliver") => &argv[1..],
         _ => argv,
     };
@@ -156,6 +166,34 @@ mod tests {
         // still reports success.
         assert!(parse_args(&argv(&["--delivery-to", "123"])).is_err());
         assert!(parse_args(&argv(&["manage", "list", "--nope"])).is_err());
+    }
+
+    #[test]
+    fn shadow_ai_is_its_own_command_and_takes_no_arguments() {
+        assert_eq!(parse_args(&argv(&["shadow-ai"])).unwrap(), Command::ShadowAi);
+        // No delivery flags: the shadow has no route to Telegram, so a flag
+        // that names one is a usage error rather than something to ignore.
+        assert_eq!(
+            parse_args(&argv(&["shadow-ai", "--deliver-to", "123"])).unwrap_err(),
+            "unknown argument: --deliver-to"
+        );
+        assert_eq!(
+            parse_args(&argv(&["shadow-ai", "--account", "nunu"])).unwrap_err(),
+            "unknown argument: --account"
+        );
+        assert_eq!(
+            parse_args(&argv(&["shadow-ai", "--nope"])).unwrap_err(),
+            "unknown argument: --nope"
+        );
+        assert_eq!(
+            parse_args(&argv(&["shadow-ai", "extra"])).unwrap_err(),
+            "unknown argument: extra"
+        );
+        // Only as the first word: elsewhere it is still an unknown argument.
+        assert_eq!(
+            parse_args(&argv(&["--account", "main", "shadow-ai"])).unwrap_err(),
+            "unknown argument: shadow-ai"
+        );
     }
 
     #[test]
