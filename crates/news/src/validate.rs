@@ -242,13 +242,50 @@ const FORBIDDEN_ENGLISH: &[&str] = &[
     "potentially",
 ];
 
-/// One bullet "looks Chinese": two or more CJK characters with the first
-/// appearing within the opening 18 — a bullet that starts in English and
-/// turns Chinese halfway does not count, which is the failure this measures.
+/// Most Latin words a bullet may open with before its first CJK character and
+/// still look Chinese when that character lies past the opening 18.
+///
+/// Evidence (30 days of traces to 2026-11-18): the 18-char rule alone rejected
+/// 12 correctly translated headlines that open with an English proper name —
+/// "SK hynix Inc.（000660.KS）股價…", "CrowdStrike Holdings Inc（CRWD）股票…" —
+/// and the longest such name ran to 4 words. Every genuinely untranslated
+/// bullet in the same period had zero CJK, which `count_cjk >= 2` already
+/// rejects. An English sentence that turns Chinese halfway must still fail:
+/// "The company said on Thursday that 台積電 will expand" opens with 6 words.
+const MAX_LATIN_WORDS_BEFORE_CJK: usize = 4;
+
+/// Latin words in `text`: a word starts at an ASCII letter and runs over
+/// ASCII letters, digits and `. ' ’ & -`, so "Inc.", "Xi’s" and "AT&T" are one
+/// word each. A pure number ("2027", "90") is not a word, and "000660.KS"
+/// yields one word, "KS".
+fn latin_word_count(text: &str) -> usize {
+    let mut words = 0;
+    let mut in_word = false;
+    for c in text.chars() {
+        if in_word {
+            in_word = c.is_ascii_alphanumeric() || matches!(c, '.' | '\'' | '’' | '&' | '-');
+        } else if c.is_ascii_alphabetic() {
+            in_word = true;
+            words += 1;
+        }
+    }
+    words
+}
+
+/// One bullet "looks Chinese": two or more CJK characters, and either the
+/// first appears within the opening 18 or at most
+/// [`MAX_LATIN_WORDS_BEFORE_CJK`] Latin words precede it. A bullet that opens
+/// with an English sentence and turns Chinese halfway does not count, which is
+/// the failure this measures; one that opens with a short English proper name
+/// ("CrowdStrike Holdings Inc（CRWD）股票…") does.
 pub fn has_cjk_2_in_head(line: &str) -> bool {
     let body = strip_marker_prefix(line);
-    let first = body.chars().position(is_cjk_common);
-    count_cjk(&body) >= 2 && matches!(first, Some(i) if i <= 18)
+    let Some(first) = body.chars().position(is_cjk_common) else {
+        return false;
+    };
+    let head: String = body.chars().take(first).collect();
+    count_cjk(&body) >= 2
+        && (first <= 18 || latin_word_count(&head) <= MAX_LATIN_WORDS_BEFORE_CJK)
 }
 
 /// (bullets that look Chinese, total news bullets).

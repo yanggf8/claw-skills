@@ -134,8 +134,9 @@ fn an_english_digest_fails() {
 
 #[test]
 fn a_bullet_turning_chinese_only_after_a_long_english_run_does_not_count_as_chinese() {
-    // The first CJK character must appear within the opening 18. A line that
-    // opens in English and switches halfway is the failure this measures.
+    // The first CJK character lies past the opening 18 and six Latin words
+    // precede it — more than a proper name. A line that opens in English and
+    // switches halfway is the failure this measures.
     let (chinese, total) = language_stats("- #1 The company said on Thursday that 台積電 will expand");
     assert_eq!(total, 1);
     assert_eq!(chinese, 0);
@@ -397,5 +398,88 @@ fn cjk_head_check_mirrors_the_language_gate() {
     // so must this, or a rewrite could sneak past with a different shape.
     assert!(!has_cjk_2_in_head(
         "- #3 The Verge reported this story with plenty of details 報導"
+    ));
+}
+
+// ── English proper name opening a translated headline ───────────────────────
+
+#[test]
+fn a_translated_headline_opening_with_a_short_english_name_counts_as_chinese() {
+    // Real false positives from 30 days of traces: correctly translated
+    // headlines whose first CJK character sits past the opening 18 only
+    // because a company or product name comes first.
+    for line in [
+        "- #1 RBC Wealth Management 於「國際私人銀行家全球財富大獎」榮獲三個類別的「傑出私人銀行」獎項",
+        "- #1 SK hynix Inc.（000660.KS）股價、新聞、報價與記錄",
+        "- #1 CrowdStrike Holdings Inc（CRWD）股票11月17日盤中下跌3.21%：真相來了",
+        "- #1 MariaDB Enterprise Platform 2027 正式推出！效能提升 56%",
+        "- #1 【Expand Energy 2026 財年第三季法說會】新任執行長上任",
+        "- #1 HUAWEI Pura 90 Plus 傳本月發表！搭 Kirin 9020",
+    ] {
+        assert!(has_cjk_2_in_head(line), "{line}");
+    }
+}
+
+#[test]
+fn an_english_sentence_ending_in_chinese_still_does_not_count() {
+    assert!(!has_cjk_2_in_head(
+        "- #1 Nvidia executives urged the board to bring back Jensen Huang 輝達高層呼籲"
+    ));
+}
+
+#[test]
+fn the_latin_word_allowance_before_the_first_cjk_is_exactly_four() {
+    // Both prefixes put the first CJK character past the opening 18, so only
+    // the word count decides.
+    assert!(has_cjk_2_in_head("- #1 Advanced Micro Devices Chief 宣布新晶片"));
+    assert!(!has_cjk_2_in_head("- #1 Advanced Micro Devices Chief Executive 宣布新晶片"));
+}
+
+#[test]
+fn an_untranslated_headline_with_no_cjk_does_not_count() {
+    assert!(!has_cjk_2_in_head(
+        "- #1 Rubio Warned Officials About Nvidia Chief’s Entanglement With Chinese Spy - The New York Times"
+    ));
+}
+
+#[test]
+fn a_pure_number_is_not_a_latin_word() {
+    // Samsung Galaxy Z Fold = 4 words; the trailing 7 must not make it 5.
+    assert!(has_cjk_2_in_head("- #1 Samsung Galaxy Z Fold 7 正式開賣"));
+}
+
+#[test]
+fn punctuation_and_digits_inside_a_name_do_not_split_it() {
+    // Each of these is one word; splitting any of them pushes the prefix
+    // past four.
+    assert!(has_cjk_2_in_head("- #1 O'Neill Belt-and-Road U.S. AT&T 會談登場"));
+    assert!(has_cjk_2_in_head("- #1 Xi’s Belt-and-Road U.S. AT&T 會談登場"));
+    assert!(has_cjk_2_in_head("- #1 OpenAI GPT4o Mini Turbo 正式上線"));
+}
+
+#[test]
+fn the_2026_11_18_executive_topic_fallback_now_passes_the_language_gate() {
+    // ping's 高階經理人 topic fell back on 2026-11-18: #8 was rejected for its
+    // English company name, leaving 2/3 Chinese — under the 4/5 bar.
+    let summary = "- #4 輝達主管籲黃仁勳回任，警告恐流失無可取代人才\n\
+                   - #7 王鴻嬪是誰？王鴻薇堂妹來頭不小，「基金女王」拒投蔣萬安震撼金融圈\n\
+                   - #8 CrowdStrike Holdings Inc（CRWD）股票11月17日盤中下跌3.21%：真相來了";
+    assert_eq!(language_stats(summary), (3, 3));
+    assert!(language_ok(summary));
+}
+
+#[test]
+fn a_cjk_character_within_the_opening_18_still_passes_on_its_own() {
+    // Five Latin words, but the first CJK character is at index 17: the
+    // word allowance is an alternative to the 18-char rule, not a replacement.
+    assert!(has_cjk_2_in_head("- #1 AI is a big deal 台積電說"));
+}
+
+#[test]
+fn only_latin_words_before_the_first_cjk_count_toward_the_allowance() {
+    // Four words precede the first CJK character; the English names in the
+    // Chinese part after it are not part of the opening and must not count.
+    assert!(has_cjk_2_in_head(
+        "- #1 CrowdStrike Holdings Inc（CRWD）宣布與 Google Cloud 及 AWS 擴大合作"
     ));
 }
