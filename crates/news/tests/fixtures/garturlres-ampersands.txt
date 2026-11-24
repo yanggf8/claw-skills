@@ -1,0 +1,3 @@
+)]}'
+
+[["wrb.fr","Fbv4je","[\"garturlres\",\"https://www.digitimes.com.tw/tech/dt/n/shwnws.asp?cnlid\\u003d13\\u0026id\\u003d0000775464_3D13JVQ87E22T53LCHY1S\\u0026cat\\u003d30\",1]",null,null,null,"generic"],["di",13],["af.httprm",13,"-5679107302031581001",5]]

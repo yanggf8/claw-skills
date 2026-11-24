@@ -299,6 +299,281 @@ fn the_decoded_article_url_is_read_from_the_response() {
     assert_eq!(parse_garturlres("nothing here"), None);
 }
 
+// Captured 2026-11-24. Google escapes `=` and `&` inside the inner JSON string,
+// so on the wire they are `\\u003d` and `\\u0026`.
+const GARTURL_BRACES: &str = include_str!("fixtures/garturlres-braces.txt");
+const GARTURL_AMPERSANDS: &str = include_str!("fixtures/garturlres-ampersands.txt");
+const GARTURL_SINGLE_PARAM: &str = include_str!("fixtures/garturlres-single-param.txt");
+
+/// A response carrying `url` exactly as the inner JSON would write it, so a
+/// `\u003d` given here reaches the wire as `\\u003d`.
+fn garturl_response(url: &str) -> String {
+    let inner = format!(r#"["garturlres","{url}",1]"#);
+    let inner = serde_json::to_string(&inner).unwrap();
+    format!(
+        ")]}}'\n\n[[\"wrb.fr\",\"Fbv4je\",{inner},null,null,null,\"generic\"],[\"di\",14],[\"af.httprm\",13,\"-1\",8]]"
+    )
+}
+
+fn parsed(response: &str) -> Option<String> {
+    parse_garturlres(response)
+}
+
+fn url(s: &str) -> Option<String> {
+    Some(s.to_string())
+}
+
+#[test]
+fn a_captured_response_keeps_its_query_string() {
+    assert_eq!(
+        parsed(GARTURL_BRACES),
+        url("https://www.moneydj.com/funddj/ya/yp050000.djhtm?a={9FEE3D36-4B6F-42A0-BEA3-276241743873}")
+    );
+    assert_eq!(
+        parsed(GARTURL_AMPERSANDS),
+        url("https://www.digitimes.com.tw/tech/dt/n/shwnws.asp?cnlid=13&id=0000775464_3D13JVQ87E22T53LCHY1S&cat=30")
+    );
+    assert_eq!(
+        parsed(GARTURL_SINGLE_PARAM),
+        url("https://www.tristarnews.com.tw/news_ii.html?ID=39275")
+    );
+}
+
+#[test]
+fn the_captured_wire_shape_is_what_the_helper_builds() {
+    // Every test below leans on the helper, so it has to write the bytes
+    // Google does, not merely something the parser accepts.
+    let built = garturl_response(r"https://www.tristarnews.com.tw/news_ii.html?ID\u003d39275");
+    assert_eq!(
+        built.lines().nth(2).unwrap().split(",null").next(),
+        GARTURL_SINGLE_PARAM.lines().nth(2).unwrap().split(",null").next()
+    );
+}
+
+#[test]
+fn every_json_escape_in_the_article_url_is_decoded() {
+    for (inner, want) in [
+        (r"https://a.example/x?p\u003d1\u0026q\u003d2", "https://a.example/x?p=1&q=2"),
+        (r"https:\/\/a.example\/x\/y", "https://a.example/x/y"),
+        (r"https://a.example/\u65b0\u805e/1", "https://a.example/新聞/1"),
+        (r"https://a.example/\ud83d\ude80?k\u003dv", "https://a.example/🚀?k=v"),
+        ("https://a.example/新聞?k=v", "https://a.example/新聞?k=v"),
+        ("HTTPS://A.example/x", "HTTPS://A.example/x"),
+        ("http://a.example", "http://a.example"),
+    ] {
+        assert_eq!(parsed(&garturl_response(inner)), url(want), "{inner}");
+    }
+}
+
+/// Rows that only look like the answer to a text search: the name inside
+/// another cell's string, and in rows that answer some other call.
+const DECOYS: &str = r#"["x","garturlres\",\"https://wrong.example/1\""],["wrb.fr","Other","[\"garturlres\",\"https://wrong.example/2\"]"],["er","Fbv4je","[\"garturlres\",\"https://wrong.example/3\"]"]"#;
+
+#[test]
+fn an_article_url_is_found_wherever_the_envelope_puts_it() {
+    for (what, row) in [
+        ("stringified", r#"["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x?p\\u003d1\",1]",null]"#),
+        ("more inside the string", r#"["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x?p\\u003d1\"] tail"]"#),
+        ("an array", r#"["wrb.fr","Fbv4je",["garturlres","https://a.example/x?p\u003d1",1]]"#),
+        ("the row itself", r#"["garturlres","https://a.example/x?p\u003d1"]"#),
+    ] {
+        for response in [
+            format!("[{row}]"),
+            format!("[{DECOYS},{row}]"),
+            format!(")]}}'\n\n[{DECOYS},{row}]"),
+            // Length-prefixed chunks, which is how the endpoint streams.
+            format!(")]}}'\n\n104\n[{DECOYS}]\n25\n[{row}]\n9\n"),
+            format!("[{DECOYS},{row},[\"garturlres\",\"https://wrong.example/4\"]]"),
+        ] {
+            assert_eq!(parsed(&response), url("https://a.example/x?p=1"), "{what}: {response}");
+        }
+    }
+}
+
+#[test]
+fn data_after_the_envelope_does_not_lose_the_article_url() {
+    for tail in ["\n25\n[[\"e\",4]]", "garbage", "]]]", "\n\"garturlres\",\"https://wrong.example/\""] {
+        let response = format!("{GARTURL_SINGLE_PARAM}{tail}");
+        assert_eq!(
+            parsed(&response),
+            url("https://www.tristarnews.com.tw/news_ii.html?ID=39275"),
+            "{tail}"
+        );
+    }
+}
+
+#[test]
+fn a_truncated_response_never_yields_a_shortened_url() {
+    // Every prefix of a real capture is either undecodable or the whole URL.
+    let full = "https://www.digitimes.com.tw/tech/dt/n/shwnws.asp?cnlid=13&id=0000775464_3D13JVQ87E22T53LCHY1S&cat=30";
+    let complete = GARTURL_AMPERSANDS.find(r#"30\""#).unwrap() + r#"30\""#.len();
+    for end in 0..=GARTURL_AMPERSANDS.len() {
+        let want = (end >= complete).then(|| full.to_string());
+        assert_eq!(parsed(&GARTURL_AMPERSANDS[..end]), want, "cut at {end}");
+    }
+}
+
+#[test]
+fn a_url_that_cannot_be_decoded_whole_is_refused() {
+    for inner in [
+        // Half of a surrogate pair, and escapes JSON does not have.
+        r"https://a.example/x?p\ud83d",
+        r"https://a.example/x?p\ud83dx",
+        r"https://a.example/x?p\u00zz",
+        r"https://a.example/x?p\q",
+        // Escaped once more than the shape says: still escaped when read.
+        r"https://a.example/x?p\\u003d1",
+        // Nothing a URL contains, and both are only reachable by an escape.
+        r"https://a.example/x?p\n1",
+        r"https://a.example/x?p\u00001",
+    ] {
+        assert_eq!(parsed(&garturl_response(inner)), None, "{inner}");
+    }
+}
+
+#[test]
+fn a_decoded_value_that_is_not_an_http_url_is_refused() {
+    for inner in [
+        "ftp://a.example/x",
+        "javascript:alert(1)",
+        r"javascript:alert(\u0027https://a.example/x\u0027)",
+        "httpsx://a.example/x",
+        "/relative/path",
+        "https://",
+        "https:///path",
+        "",
+    ] {
+        assert_eq!(parsed(&garturl_response(inner)), None, "{inner}");
+    }
+    // A payload that was read and holds no usable URL is the answer. Nothing
+    // else in the response may stand in for it.
+    for row in [
+        r#"["garturlres","ftp://a.example/x","https://wrong.example/"]"#,
+        r#"["garturlres",null,"https://wrong.example/"]"#,
+        r#"["garturlres",1,"https://wrong.example/"]"#,
+        r#"["garturlres"],["x","https://wrong.example/"]"#,
+        r#"["garturlres",null],["x","garturlres\",\"https://wrong.example/\""]"#,
+    ] {
+        assert_eq!(parsed(&format!("[{row}]")), None, "{row}");
+    }
+}
+
+#[test]
+fn an_unreadable_envelope_still_yields_a_whole_url() {
+    let want = url("https://a.example/x?p=1&q=新");
+    for (what, response) in [
+        ("cut after the payload", r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x?p\\u003d1\\u0026q\\u003d\\u65b0\""#),
+        ("inner quotes not escaped", r#"[["wrb.fr","Fbv4je","["garturlres","https://a.example/x?p\u003d1\u0026q\u003d\u65b0"]"]]"#),
+        ("only some quotes escaped", r#"[["wrb.fr","Fbv4je","[\"garturlres",\"https://a.example/x?p\\u003d1\\u0026q\\u003d\\u65b0\",1]"]]"#),
+        ("text ahead of the envelope", r#"oops [["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x?p\\u003d1\\u0026q\\u003d\\u65b0\",1]"]]"#),
+        ("an inner payload left open", r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x?p\\u003d1\\u0026q\\u003d\\u65b0\","]]"#),
+        ("one more level of escaping", r#"[["wrb.fr","Fbv4je","\"[\\\"garturlres\\\",\\\"https://a.example/x?p\\\\u003d1\\\\u0026q\\\\u003d\\\\u65b0\\\",1]\""]"#),
+        ("spaced", r#"[["garturlres" , "https://a.example/x?p\u003d1\u0026q\u003d\u65b0" "#),
+    ] {
+        assert_eq!(parsed(response), want, "{what}");
+    }
+}
+
+#[test]
+fn an_unreadable_envelope_never_yields_part_of_a_url() {
+    for (what, response) in [
+        ("cut in an escape", r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x?p\\u00"#),
+        ("cut after a backslash", r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x?p\"#),
+        ("cut before the closing quote", r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x"#),
+        ("the outer string ends first", r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x"],["y\""#),
+        ("the outer string ends behind a backslash", r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x\\"],["y\""#),
+        ("half a surrogate pair", r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x\\ud83d\""#),
+        ("escaped deeper than its quotes", r#"["garturlres","https://a.example/x?p\\u003d1""#),
+        ("quotes no JSON depth produces", r#"[\\"garturlres\\",\\"https://a.example/x\\""#),
+        ("not http", r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"ftp://a.example/x\""#),
+        ("the URL is not next", r#"[["wrb.fr","Fbv4je","[\"garturlres\",null,\"https://wrong.example/\""#),
+        ("the first answer is the only one", r#"["garturlres","https://a.example/x?p\q"],["garturlres","https://wrong.example/""#),
+    ] {
+        assert_eq!(parsed(response), None, "{what}");
+    }
+    // An escaped quote is part of the URL, not the end of it.
+    assert_eq!(
+        parsed(r#"["garturlres","https://a.example/x?p\""#),
+        None
+    );
+    assert_eq!(
+        parsed(r#"["garturlres","https://a.example/x?p\"""#),
+        url(r#"https://a.example/x?p""#)
+    );
+    assert_eq!(
+        parsed(r#"["garturlres","https://a.example/x?p\"q""#),
+        url(r#"https://a.example/x?p"q"#)
+    );
+    assert_eq!(
+        parsed(r#"[["wrb.fr","Fbv4je","[\"garturlres\",\"https://a.example/x?p\\\"q\""#),
+        url(r#"https://a.example/x?p"q"#)
+    );
+}
+
+#[test]
+fn a_response_with_no_article_url_is_none_and_never_a_panic() {
+    let deep = "[".repeat(100_000);
+    let slashes = format!("garturlres\",{}\"https://a.example/x", "\\".repeat(70_000));
+    for response in [
+        "", " ", ")]}'", ")]}'\n\n", "null", "0", "[]", "[[]]", "{}", "[[null]]", "[[\"wrb.fr\"]]",
+        "[[\"wrb.fr\",\"Fbv4je\"]]",
+        "[[\"wrb.fr\",\"Fbv4je\",null,null,null,[3],\"generic\"]]",
+        "[[\"wrb.fr\",\"Fbv4je\",\"\"]]",
+        "[[\"wrb.fr\",\"Fbv4je\",\"not json\"]]",
+        "garturlres", "garturlres\"", "garturlres\",\"", "garturlres\\\",\\\"", "garturlres\",\"\"",
+        "\u{feff})]}'", "新聞garturlres\",\"新聞", "<html>Sorry...</html>",
+        deep.as_str(), slashes.as_str(),
+    ] {
+        let shown: String = response.chars().take(60).collect();
+        assert_eq!(parsed(response), None, "{shown}");
+    }
+}
+
+#[test]
+fn an_article_url_with_braces_or_non_ascii_is_fetched_as_written() {
+    // The precheck fetches the decoded URL. Braces stay raw in a query, as a
+    // browser sends them; non-ASCII goes out percent-encoded.
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let targets = [
+        ("/yp050000.djhtm?a={9FEE3D36-4B6F}", "/yp050000.djhtm?a={9FEE3D36-4B6F}"),
+        ("/shwnws.asp?cnlid=13&id=7_3D&cat=30", "/shwnws.asp?cnlid=13&id=7_3D&cat=30"),
+        ("/新聞?q=電", "/%E6%96%B0%E8%81%9E?q=%E9%9B%BB"),
+    ];
+    let server = std::thread::spawn(move || {
+        (0..targets.len())
+            .map(|_| {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() > 2 {
+                    line.clear();
+                }
+                let body = "<p>one two three</p>";
+                write!(
+                    &stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+                request
+            })
+            .collect::<Vec<_>>()
+    });
+    for (target, _) in targets {
+        let article = fetch_article_text(&format!("{base}{target}"), std::time::Duration::from_secs(5));
+        assert_eq!(article.error, None, "{target}");
+        assert_eq!(article.text, "one two three", "{target}");
+    }
+    let got = server.join().unwrap();
+    let want: Vec<String> =
+        targets.iter().map(|(_, wire)| format!("GET {wire} HTTP/1.1\r\n")).collect();
+    assert_eq!(got, want);
+}
+
 #[test]
 fn a_paywall_marker_in_the_body_is_recognised_in_both_scripts() {
     assert!(text_has_paywall_marker("請登入後繼續閱讀"));

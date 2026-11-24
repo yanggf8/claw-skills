@@ -17,17 +17,21 @@ use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, MutexGuard};
 use std::time::Duration;
 
 const ORIG: &str = "Nvidia Reports Record Quarterly Revenue - Reuters";
 const CAND_A: &str = "Nvidia posts record revenue on AI demand - CNBC";
 const CAND_B: &str = "Nvidia posts record quarterly revenue on AI chip demand - CNBC";
 
-struct Home(PathBuf);
+/// The environment is process-wide, so one test at a time owns it.
+static LOCK: Mutex<()> = Mutex::new(());
+
+struct Home(PathBuf, #[allow(dead_code)] MutexGuard<'static, ()>);
 
 impl Home {
     fn new() -> Home {
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = std::env::temp_dir().join(format!("news-replacement-memo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join(".nullclaw")).unwrap();
@@ -39,7 +43,7 @@ impl Home {
         std::env::set_var("NEWS_PAYWALL_REPLACE_MAX", "4");
         std::env::set_var("NEWS_PRECHECK_FETCH_TIMEOUT", "2");
         std::env::remove_var("NEWS_PAYWALL_REPLACE_BING_MKT");
-        Home(home)
+        Home(home, guard)
     }
 }
 
@@ -167,4 +171,67 @@ fn two_candidates_sharing_a_publisher_url_are_each_prechecked() {
     assert_eq!(rep.title_zh, "輝達季營收創新高");
     assert_eq!(rep.link, story);
     assert_eq!(rep.summary, "");
+}
+
+/// The link chosen when the English Bing feed offers `candidates`, as
+/// `(link, decoded_url)` pairs, and how many headlines were translated for it.
+fn chosen_link(candidates: &[(String, Option<String>)]) -> (Option<String>, usize) {
+    let mut paywall: PaywallMap = PaywallMap::new();
+    paywall.insert(
+        1,
+        PaywallEntry {
+            decoded_url: Some("https://www.reuters.com/x".into()),
+            reason: Some("paywalled".into()),
+            title: ORIG.into(),
+            source_name: "Reuters".into(),
+            replacement: None,
+            summary: None,
+        },
+    );
+    let fetch = |url: &str, _max: usize, _t: Duration| -> Vec<Item> {
+        if !url.contains("mkt=en-US") {
+            return Vec::new();
+        }
+        candidates
+            .iter()
+            .zip([CAND_A, CAND_B])
+            .map(|((link, decoded), title)| Item {
+                title: title.to_string(),
+                source: "CNBC".into(),
+                link: link.clone(),
+                decoded_url: decoded.clone(),
+                ..Default::default()
+            })
+            .collect()
+    };
+    let translated = RefCell::new(0);
+    let translate = |_: &str, _: &str| -> Option<String> {
+        *translated.borrow_mut() += 1;
+        Some("輝達季營收創新高".to_string())
+    };
+    let judge = |_: &str, _: &str, _: &str| -> Option<String> { None };
+    resolve_paywall_replacements_with(&mut paywall, "2026/11/24 (Tue)", &translate, &judge, &fetch);
+    let link = paywall[&1].replacement.as_ref().map(|r| r.link.clone());
+    (link, translated.into_inner())
+}
+
+#[test]
+fn a_replacement_link_that_would_break_the_markdown_is_never_chosen() {
+    let _home = Home::new();
+    let (base, _seen) = article_stub();
+    let good = format!("{base}/story?id=1&cat={{2}}");
+    let google = "https://news.google.com/rss/articles/CBMi1?oc=5".to_string();
+    for bad in ["story_(1)", "story?q=a b", "story?q=(1"] {
+        let bad = format!("{base}/{bad}");
+        // The search result's own link still opens the same article.
+        let (link, _) = chosen_link(&[(google.clone(), Some(bad.clone()))]);
+        assert_eq!(link, Some(google.clone()), "{bad}");
+        // With no link to fall back on, the next candidate — and no model call
+        // spent on the one that cannot be shown.
+        let next = (good.clone(), Some(good.clone()));
+        assert_eq!(chosen_link(&[(bad.clone(), Some(bad.clone())), next]), (Some(good.clone()), 1), "{bad}");
+        assert_eq!(chosen_link(&[(bad.clone(), Some(bad.clone()))]), (None, 0), "{bad}");
+    }
+    // A safe publisher URL is preferred to the search result's link.
+    assert_eq!(chosen_link(&[(google, Some(good.clone()))]), (Some(good), 1));
 }

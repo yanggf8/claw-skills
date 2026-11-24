@@ -13,7 +13,7 @@
 use news::alert::AlertContext;
 use news::digest::{summarize_llm, summarize_llm_custom};
 use news::precheck::{new_cache, publisher_link, SharedCache};
-use news::quality::{Action, Verdict};
+use news::quality::{parse_garturlres, Action, Verdict};
 use news::render::{LinkMap, PAYWALL_NOTE};
 use news::summarize::{run_ai_substage, run_custom_topic, summarize_default_section};
 use news::text::Item;
@@ -206,6 +206,47 @@ fn a_decoded_url_that_would_break_the_markdown_link_keeps_the_google_link() {
     );
     let lines = run_ai_substage(&items(), 0, 4, DATE, &cache).expect("ai substage");
     assert_eq!(lines[0], format!("- 台積電法說會釋出樂觀展望 [🔗]({G1})"));
+}
+
+#[test]
+fn a_decoded_query_string_reaches_the_rendered_link_and_the_day_cache() {
+    // From Google's captured answer to the line a reader taps: two stories of
+    // one publisher differ only in the query, so losing it links both to the
+    // same page.
+    let env = Env::new(true);
+    let moneydj = "https://www.moneydj.com/funddj/ya/yp050000.djhtm?a={9FEE3D36-4B6F-42A0-BEA3-276241743873}";
+    let digitimes = "https://www.digitimes.com.tw/tech/dt/n/shwnws.asp?cnlid=13&id=0000775464_3D13JVQ87E22T53LCHY1S&cat=30";
+    let cache = seeded_cache();
+    for (google, response) in [
+        (G1, include_str!("fixtures/garturlres-braces.txt")),
+        (G2, include_str!("fixtures/garturlres-ampersands.txt")),
+    ] {
+        let decoded = parse_garturlres(response);
+        cache
+            .lock()
+            .unwrap()
+            .insert(google.into(), verdict(Action::Keep, None, decoded.as_deref()));
+    }
+    let want = vec![
+        format!("- 台積電法說會釋出樂觀展望 [🔗]({moneydj})"),
+        format!("- 輝達財報優於市場預期 [🔗]({digitimes})"),
+        format!("- 華爾街分析聯準會利率路徑 [🔗]({P4})  {PAYWALL_NOTE}"),
+    ];
+    assert_eq!(run_ai_substage(&items(), 0, 4, DATE, &cache).expect("ai substage"), want);
+
+    // The whole-text passes between the section and Telegram leave it alone.
+    let text = want.join("\n");
+    assert_eq!(news::hant::to_traditional_markdown(&text), text);
+    assert_eq!(news::render::markdown_chunk_is_safe(&text), Ok(()));
+    assert_eq!(news::render::ai_section_link_counts(&text), (3, 0));
+
+    // The sidecar that joins a replayed line to its headline, and the replay.
+    let (_, sidecars) = day_files(&env);
+    assert_eq!(sidecars.len(), 1, "{sidecars:?}");
+    let map: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sidecars[0]).unwrap()).unwrap();
+    assert_eq!(map, serde_json::json!({G1: moneydj, G2: digitimes, G4: P4}));
+    assert_eq!(run_ai_substage(&items(), 0, 4, DATE, &new_cache()).expect("replay"), want);
 }
 
 #[test]

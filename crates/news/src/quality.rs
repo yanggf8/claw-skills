@@ -359,25 +359,125 @@ fn quote_plus(s: &str) -> String {
     out
 }
 
-fn garturl_patterns() -> &'static [Regex] {
-    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
-    PATTERNS.get_or_init(|| {
-        vec![
-            Regex::new(r#"garturlres\\?",\\"(https?://[^\\"]+)"#).expect("literal"),
-            Regex::new(r#"garturlres","(https?://[^"]+)""#).expect("literal"),
-            Regex::new(r#"garturlres[^h]*(https?://[^\s"\\]+)"#).expect("literal"),
-        ]
-    })
+/// The JSON values `text` opens with, stopping at the first thing that is not
+/// JSON — so nothing after a value can lose it.
+fn json_values(text: &str) -> impl Iterator<Item = serde_json::Value> + '_ {
+    serde_json::Deserializer::from_str(text)
+        .into_iter()
+        .map_while(Result::ok)
 }
 
-/// Three patterns in order, because the response shape varies with how deeply
-/// the payload is escaped. The first that matches wins.
+/// The `["garturlres", url, …]` array of a `batchexecute` response.
+///
+/// It is a row of the envelope, or the third cell of the `wrb.fr`/`Fbv4je`
+/// row: as a string holding JSON of its own (every capture so far), or an array.
+fn garturl_payload(body: &str) -> Option<Vec<serde_json::Value>> {
+    use serde_json::Value;
+    let is = |row: &[Value], at: usize, name: &str| row.get(at).is_some_and(|v| v == name);
+    json_values(body)
+        .filter_map(|envelope| match envelope {
+            Value::Array(rows) => Some(rows),
+            _ => None,
+        })
+        .flatten()
+        .find_map(|row| {
+            let payload = match row {
+                Value::Array(row) if is(&row, 0, "wrb.fr") && is(&row, 1, "Fbv4je") => {
+                    match row.into_iter().nth(2)? {
+                        Value::String(inner) => json_values(&inner).next()?,
+                        decoded => decoded,
+                    }
+                }
+                other => other,
+            };
+            match payload {
+                Value::Array(p) if is(&p, 0, "garturlres") => Some(p),
+                _ => None,
+            }
+        })
+}
+
+fn garturl_start() -> &'static Regex {
+    static START: OnceLock<Regex> = OnceLock::new();
+    START.get_or_init(|| Regex::new(r#"garturlres\\*"\s*,\s*(\\*)""#).expect("literal"))
+}
+
+/// Read the URL out of a response that is not the JSON it should be.
+///
+/// The backslashes before the URL's opening quote say how many JSON strings
+/// the URL is nested in (0, 1, 3, 7, …). Its closing quote has to sit at the
+/// same depth, and everything between has to decode at every depth, so a
+/// response cut short or escaped in some other way yields nothing.
+fn garturl_unparsed(body: &str) -> Option<String> {
+    let start = garturl_start().captures(body)?;
+    let opening = start[1].len();
+    let mut depth = 0;
+    let mut slashes = opening;
+    while slashes % 2 == 1 {
+        slashes /= 2;
+        depth += 1;
+    }
+    if slashes != 0 {
+        return None;
+    }
+
+    let rest = &body[start.get(0)?.end()..];
+    let mut run = 0;
+    let mut closing = None;
+    for (at, byte) in rest.bytes().enumerate() {
+        match byte {
+            b'\\' => run += 1,
+            b'"' => {
+                let mut slashes = run;
+                for _ in 0..depth {
+                    if slashes % 2 == 0 {
+                        // A string around the URL ends before the URL does.
+                        return None;
+                    }
+                    slashes /= 2;
+                }
+                if slashes % 2 == 0 {
+                    closing = Some(at);
+                    break;
+                }
+                run = 0;
+            }
+            _ => run = 0,
+        }
+    }
+    let mut url = rest[..closing? - opening].to_string();
+    for _ in 0..=depth {
+        url = serde_json::from_str(&format!("\"{url}\"")).ok()?;
+    }
+    Some(url)
+}
+
+/// A backslash means the value is still escaped, and neither it nor a control
+/// character occurs in a URL, so such a value is not worth fetching either.
+/// Whether a URL can be *rendered* is [`crate::precheck::publisher_link`]'s
+/// call.
+fn is_http_url(url: &str) -> bool {
+    let http = url
+        .split_once("://")
+        .is_some_and(|(s, _)| s.eq_ignore_ascii_case("http") || s.eq_ignore_ascii_case("https"));
+    http && crate::feed::split_url(url).is_some_and(|(host, _, _)| !host.is_empty())
+        && !url.chars().any(|c| c == '\\' || c.is_control())
+}
+
+/// The publisher URL in a `batchexecute` response, whole or not at all.
+///
+/// Google escapes `=` and `&` in the payload, so the URL is decoded as the
+/// JSON string it is: matching it as text stopped at the first escape and cut
+/// every query string off (2026-11-24: 48 of 486 decoded links). Text matching
+/// is left only for a response that will not parse. A payload that was read
+/// but holds no usable URL is an answer, not a reason to look elsewhere.
 pub fn parse_garturlres(response_text: &str) -> Option<String> {
     let body = response_text.strip_prefix(")]}'").unwrap_or(response_text);
-    garturl_patterns()
-        .iter()
-        .find_map(|p| p.captures(body))
-        .map(|c| c[1].to_string())
+    let url = match garturl_payload(body) {
+        Some(payload) => payload.get(1)?.as_str()?.to_string(),
+        None => garturl_unparsed(body)?,
+    };
+    is_http_url(&url).then_some(url)
 }
 
 fn http_get(url: &str, timeout: Duration) -> Result<(String, String), String> {

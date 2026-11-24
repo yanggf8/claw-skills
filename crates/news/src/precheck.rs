@@ -687,6 +687,13 @@ pub fn resolve_paywall_replacements_with(
             if !orig_host.is_empty() && same_registered_domain(&cand_host, &orig_host) {
                 continue;
             }
+            // The replacement leads its line, so its link has to be as safe to
+            // render as any other.
+            let Some(link) = publisher_link(verdict.decoded_url.as_deref())
+                .or_else(|| publisher_link(Some(&cand.link)))
+            else {
+                continue;
+            };
             if expired() {
                 log_trace("paywall_replace_deadline", json!({"resolved": processed}));
                 break;
@@ -699,7 +706,7 @@ pub fn resolve_paywall_replacements_with(
             if let Some(entry) = paywall.get_mut(&num) {
                 entry.replacement = Some(Replacement {
                     title_zh,
-                    link: verdict.decoded_url.clone().unwrap_or(cand.link.clone()),
+                    link: link.to_string(),
                     summary: String::new(),
                 });
             }
