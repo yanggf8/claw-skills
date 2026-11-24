@@ -316,8 +316,29 @@ fn level3_exhaustion_writes_a_failure_section_and_is_degraded_and_silent() {
     assert_eq!(telegram.seen(), Vec::<String>::new());
     assert!(!env.failure_log().exists());
     assert_eq!(silenced_reasons(&env), vec!["ai_substage_level3_failed"]);
-    // No section was rendered, so there is nothing to count.
-    assert_eq!(env.traces("ai_section_rendered").len(), 0);
+    // Nothing was rendered, and the day is recorded as exhausted, not a gap.
+    assert_eq!(
+        env.traces("ai_section_rendered")
+            .into_iter()
+            .map(payload)
+            .collect::<Vec<_>>(),
+        vec![serde_json::json!({"stories": 0, "links_total": 0, "links_google": 0,
+                                "ai_sources": "direct", "exhausted": true})]
+    );
+    let direct = news::sources::AiSources::Direct.cache_variant();
+    assert_eq!(
+        env.traces("llm_validation_failed")
+            .iter()
+            .map(|e| serde_json::json!([e["variant"], e["reason"], e["section"], e["range"],
+                                        e["stdout_sample"]]))
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::json!([format!("{direct}_0_1"), "marker_validation", "ai", [0, 1],
+                               "沒有編號的回覆"]),
+            serde_json::json!([format!("{direct}_1_2"), "marker_validation", "ai", [1, 2],
+                               "沒有編號的回覆"]),
+        ]
+    );
     assert_eq!(
         shadow_summary(&env),
         serde_json::json!({
@@ -393,6 +414,51 @@ fn an_in_process_shadow_then_a_delivering_run_carry_no_stamp() {
         }
     }
     assert_eq!(env.traces("ai_section_rendered").len(), 2);
+}
+
+/// The model calls' variants, in order.
+fn asked(env: &Env) -> Vec<String> {
+    env.traces("llm_agent_start")
+        .iter()
+        .map(|e| e["variant"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_wrong_shaped_direct_half_is_rescued_by_one_retry_under_its_own_variant() {
+    let env = Env::new();
+    let cot = format!("- #1 {D1}\n讓我再想想。");
+    env.reply(1, &cot);
+    env.reply(2, &format!("- #1 {D1}"));
+    env.reply(3, &format!("- #1 {D2}"));
+    let p = publisher();
+    env.write_feed_config(&[("iThome", p.url("/ai.xml"))]);
+    let (code, out) = shadow_run(&DirectOnly::default());
+
+    assert_eq!(code, 0);
+    assert_eq!(out, markers("ok"));
+    assert_eq!(
+        std::fs::read_to_string(env.shadow_file()).unwrap(),
+        two_story_section(&p)
+    );
+    let direct = news::sources::AiSources::Direct.cache_variant();
+    assert_eq!(
+        asked(&env),
+        vec![
+            format!("{direct}_0_1"),
+            format!("{direct}_0_1_reformat"),
+            format!("{direct}_1_2"),
+        ]
+    );
+    assert_eq!(
+        env.traces("section_reformat_retry_ok")
+            .into_iter()
+            .map(payload)
+            .collect::<Vec<_>>(),
+        vec![serde_json::json!({"section": "ai", "range": [0, 1], "attempt": 2,
+                                "first_sample": cot})]
+    );
+    assert_eq!(env.traces("llm_validation_failed").len(), 0);
 }
 
 // ── the built executable ─────────────────────────────────────────────────────

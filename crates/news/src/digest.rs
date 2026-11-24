@@ -150,6 +150,17 @@ fn log_ai_section_rendered(digest: &str, sources: AiSources) -> (usize, usize, u
     (stories, links_total, links_google)
 }
 
+/// The same event for an AI section that could not be produced at all, so the
+/// day reads as a zero marked `exhausted` rather than as a gap. The caller
+/// aborts on this, so a run writes one form or the other, never both.
+fn log_ai_section_exhausted(sources: AiSources) {
+    log_trace(
+        "ai_section_rendered",
+        json!({"stories": 0, "links_total": 0, "links_google": 0,
+               "ai_sources": sources.as_str(), "exhausted": true}),
+    );
+}
+
 /// The AI section on its own, as [`summarize_ai_section`] renders it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiSection {
@@ -182,7 +193,7 @@ pub fn summarize_ai_section(
         "section_timing",
         json!({"section": "ai", "elapsed_ms": started.elapsed().as_millis() as u64}),
     );
-    let flat = result?;
+    let flat = result.inspect_err(|_| log_ai_section_exhausted(sources))?;
 
     let counts = vec![("ai".to_string(), ai_items.len())];
     let (themed, themed_applied) = theme_ai_section(&flat, date_str, &counts);
@@ -267,7 +278,9 @@ pub fn summarize_llm_sourced(
             "section_timing",
             json!({"section": key, "elapsed_ms": started.elapsed().as_millis() as u64}),
         );
-        section_results.push((key.to_string(), result?));
+        // Only the AI section can fail; the others fall back to a listing.
+        let lines = result.inspect_err(|_| log_ai_section_exhausted(sources))?;
+        section_results.push((key.to_string(), lines));
     }
 
     if !degraded.is_empty() {

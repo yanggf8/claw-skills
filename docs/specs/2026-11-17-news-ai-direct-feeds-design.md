@@ -247,7 +247,19 @@ total_kept: 0}`, so the §8 feed check sees that day instead of a gap.
 direct delivery and shadow — so the gate compares like with like:
 `{stories, links_total, links_google}`, computed on the final rendered AI section
 (after cross-dedup and theming), not on `#N` markers, which
-`attach_numbered_links` consumes.
+`attach_numbered_links` consumes. When the section is exhausted (Level 3 failed)
+nothing is rendered, and the event is still written, once, as `{stories: 0,
+links_total: 0, links_google: 0, exhausted: true}` — by the shadow and by a
+delivering run alike, which otherwise delivers nothing that day. The §8 gate then
+sees a zero instead of a gap; the normal event never has an `exhausted` key.
+
+Each AI batch reply that is rejected (`empty_stdout`, `marker_validation`,
+`shape_validation`, `language_validation`, `no_links_attached`) is traced as
+`llm_validation_failed` with `section: "ai"`, `range: [start, end]`, the batch's
+variant and a sample of the reply; a timeout or non-zero exit returned no reply
+and is not. A `shape_validation` first gets one rewritten-prompt retry, traced as
+`section_reformat_retry_ok` / `section_reformat_retry_failed` with the same
+`section` and `range`.
 
 `stories` is the number of lines that begin with `- ` or are exactly `-` (the
 renderer's bodyless bullet, `render.rs::linked`) — one per story, by

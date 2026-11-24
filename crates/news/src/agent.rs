@@ -324,11 +324,38 @@ fn run_agent_once(
                "stderr_len": stderr.chars().count(),
                "stderr_tail": clip_subprocess_text(&stderr, 4000)}),
     );
+    let (kept, stripped) = strip_leading_tool_call_close(&stdout);
+    let stdout = kept.to_string();
+    if stripped > 0 {
+        log_trace(
+            "llm_agent_artifact_stripped",
+            json!({"variant": variant, "artifact": TOOL_CALL_CLOSE, "count": stripped}),
+        );
+    }
     AgentResult {
         returncode: code,
         stdout,
         stderr,
     }
+}
+
+const TOOL_CALL_CLOSE: &str = "</tool_call>";
+
+/// The reply past any orphan `</tool_call>` at its very start, and how many
+/// there were.
+///
+/// 2026-11-24 the model opened a correct reply with one, which hid its first
+/// bullet from every gate. A leading tag is the only form the trace history
+/// holds, so nothing else is touched: with no leading tag the reply comes back
+/// byte-identical, whitespace included.
+fn strip_leading_tool_call_close(stdout: &str) -> (&str, usize) {
+    let mut rest = stdout;
+    let mut count = 0;
+    while let Some(after) = rest.trim_start().strip_prefix(TOOL_CALL_CLOSE) {
+        rest = after;
+        count += 1;
+    }
+    (rest, count)
 }
 
 /// Read to EOF, appending as it goes so a caller that gives up still sees
@@ -347,6 +374,61 @@ fn read_into(pipe: &mut Option<impl Read>, out: &Arc<Mutex<String>>) {
                     g.push_str(&text);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tool_call_tests {
+    use super::strip_leading_tool_call_close as strip;
+
+    #[test]
+    fn a_leading_tag_is_removed_and_counted() {
+        assert_eq!(strip("</tool_call>- #6 甲\n- #1 乙"), ("- #6 甲\n- #1 乙", 1));
+        assert_eq!(strip(" \n</tool_call>- #6 甲"), ("- #6 甲", 1));
+    }
+
+    #[test]
+    fn repeated_leading_tags_are_all_removed() {
+        assert_eq!(strip("</tool_call></tool_call>- #6 甲"), ("- #6 甲", 2));
+        assert_eq!(strip("</tool_call>\n </tool_call>\n</tool_call>- #6 甲"), ("- #6 甲", 3));
+    }
+
+    #[test]
+    fn what_follows_the_last_tag_is_left_alone() {
+        assert_eq!(strip("</tool_call>\n\n - #6 甲 \n"), ("\n\n - #6 甲 \n", 1));
+        assert_eq!(strip("</tool_call>"), ("", 1));
+    }
+
+    #[test]
+    fn a_tag_that_is_not_leading_is_untouched() {
+        for s in ["- #6 甲 </tool_call>", "- #6 甲\n</tool_call>\n- #1 乙", "甲</tool_call>"] {
+            assert_eq!(strip(s), (s, 0));
+        }
+        assert_eq!(
+            strip("</tool_call>- #6 甲</tool_call>\n"),
+            ("- #6 甲</tool_call>\n", 1)
+        );
+    }
+
+    #[test]
+    fn only_the_exact_closing_tag_is_an_artifact() {
+        for s in [
+            "<tool_call>- #6 甲",
+            "<tool_call></tool_call>- #6 甲",
+            "</tool_call >- #6 甲",
+            "</TOOL_CALL>- #6 甲",
+            "</tool_calls>- #6 甲",
+            "</think>- #6 甲",
+        ] {
+            assert_eq!(strip(s), (s, 0));
+        }
+    }
+
+    #[test]
+    fn without_the_tag_the_reply_is_byte_identical() {
+        for s in ["", " \n", "\n  - #6 甲\n\n", "- #6 甲"] {
+            assert_eq!(strip(s), (s, 0));
         }
     }
 }

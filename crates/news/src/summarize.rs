@@ -146,6 +146,82 @@ fn log_validation_failed(r: Rejected) {
     log_trace("llm_validation_failed", fields);
 }
 
+// ── the reformat retry ───────────────────────────────────────────────────────
+
+/// Ask once more, with a rewritten prompt, after a reply whose every bullet
+/// was marked but whose shape was wrong (see [`try_reformat_retry`]).
+///
+/// `Some((result, reply, marked, total))` only when the second reply passes
+/// both gates by itself; the caller must then use it, and only it, downstream.
+/// `None` — a bad second reply, or no budget for one — leaves the caller with
+/// its original reply. Logged as `<event>_ok` / `<event>_failed`, carrying
+/// `who` (which section or topic).
+fn reformat_retry(
+    event: &str,
+    who: serde_json::Value,
+    first_reply: &str,
+    prompt: &str,
+    variant: &str,
+    counts: &[(String, usize)],
+    numbered: &NumberedMap,
+) -> Option<(AgentResult, String, usize, usize)> {
+    let result = try_reformat_retry(
+        prompt,
+        AI_SUBSTAGE_TIMEOUT_SECS,
+        &format!("{variant}_reformat"),
+        counts,
+        numbered,
+    )?;
+    let known = known_ids(numbered);
+    let reply = result.stdout.trim().to_string();
+    let (marked, total) = marker_stats(&reply, &known);
+    let accepted =
+        result.returncode == 0 && total != 0 && marked == total && shape_ok(&reply, &known);
+
+    let mut fields = who;
+    fields["attempt"] = json!(2);
+    if accepted {
+        fields["first_sample"] = json!(clip_subprocess_text(first_reply, 1200));
+        log_trace(&format!("{event}_ok"), fields);
+        return Some((result, reply, marked, total));
+    }
+    fields["error"] = json!(if result.timed_out() { "timeout" } else { "second validation failed" });
+    fields["retry_sample"] = json!(clip_subprocess_text(&reply, 1200));
+    log_trace(&format!("{event}_failed"), fields);
+    None
+}
+
+/// The rewritten prompt for a default section or an AI batch. Unlike the
+/// custom topic's it never asks for verbatim titles: candidates here may be
+/// English and must be translated. `extra_rule` is a whole `- …\n` line or
+/// empty.
+fn section_reformat_prompt(
+    spec: &config::SectionSpec,
+    raw: &str,
+    pick: &str,
+    extra_rule: &str,
+) -> String {
+    format!(
+        "你是新聞編輯。你上一次針對「{header}」的輸出不合格：你交回的是分析與評論，而不是選取結果。\n\
+請從下面的候選新聞重新挑出 {pick} 則{focus}，用繁體中文輸出，格式嚴格如下，逐行：\n\
+- #N 新聞標題\n\
+- #N ...\n\n\
+規則：\n\
+- 只輸出上述格式的行；不要輸出任何分析、評論、開場白、標題、結語或說明\n\
+- #N 必須是下面候選新聞的原始編號\n\
+- {translation_rules}\n\
+{extra_rule}\
+- 排除瑣碎的、純行銷推廣的、政治宣傳性質的、投資建議類新聞\n\
+- 同一事件若有多則候選，優先挑選標題明確點出關鍵實體（公司、產品或型號名稱）的候選；若所有候選同樣籠統，仍照常挑選，不要因此跳過\n\
+{DEDUP_RULES}\n\n\
+候選新聞（編號不變）：\n\
+{raw}",
+        header = spec.header,
+        focus = spec.focus,
+        translation_rules = &*TRANSLATION_RULES_STRICT,
+    )
+}
+
 // ── translation ──────────────────────────────────────────────────────────────
 
 /// Re-ask the model for Chinese headlines for an already-chosen set.
@@ -548,6 +624,30 @@ pub fn summarize_default_section(
     }
 
     let (marked, total) = marker_stats(&summary, &known);
+    // Unlike the AI batch, this path has not yet turned away a failed call.
+    let wrong_shape = result.returncode == 0
+        && total != 0
+        && marked == total
+        && !shape_ok(&summary, &known);
+    let retried = if wrong_shape {
+        reformat_retry(
+            "section_reformat_retry",
+            json!({"section": key}),
+            &summary,
+            &section_reformat_prompt(
+                spec,
+                &raw,
+                spec.pick,
+                "- 每行必須以繁體中文新聞句子開始，不要輸出英文原標題或「英文（中文）」格式\n",
+            ),
+            &format!("default_{key}"),
+            &counts,
+            &numbered,
+        )
+    } else {
+        None
+    };
+    let (result, summary, marked, total) = retried.unwrap_or((result, summary, marked, total));
     if total == 0 || marked != total || !shape_ok(&summary, &known) {
         let reason = if total == 0 || marked != total {
             "marker_validation"
@@ -737,10 +837,11 @@ pub fn run_ai_substage_for(
     );
 
     let counts = counts_of(&section_items);
+    let call_variant = format!("{variant}_{start}_{end}");
     let result = run_agent(
         &prompt,
         AI_SUBSTAGE_TIMEOUT_SECS,
-        &format!("{variant}_{start}_{end}"),
+        &call_variant,
         &counts,
         &numbered,
     );
@@ -752,16 +853,47 @@ pub fn run_ai_substage_for(
     if result.returncode != 0 {
         return Err(format!("exit_code={}", result.returncode));
     }
+    // The driver keeps only the error string, so a rejected reply is recorded
+    // here or nowhere.
+    let reject = |result: &AgentResult, summary: &str, marked: usize, total: usize, reason: &str| {
+        log_validation_failed(Rejected {
+            variant: &call_variant,
+            result,
+            summary,
+            marked,
+            total,
+            numbered: &numbered,
+            reason,
+            extra: Some(json!({"section": "ai", "range": [start, end]})),
+        });
+    };
     if summary.is_empty() {
+        reject(&result, &summary, 0, 0, "empty_stdout");
         return Err("empty_stdout".to_string());
     }
 
     let known = known_ids(&numbered);
     let (marked, total) = marker_stats(&summary, &known);
     if total == 0 || marked != total {
+        reject(&result, &summary, marked, total, "marker_validation");
         return Err(format!("marker_validation marked={marked}/{total}"));
     }
+    let retried = if shape_ok(&summary, &known) {
+        None
+    } else {
+        reformat_retry(
+            "section_reformat_retry",
+            json!({"section": "ai", "range": [start, end]}),
+            &summary,
+            &section_reformat_prompt(spec, &raw, &pick_count.to_string(), ""),
+            &call_variant,
+            &counts,
+            &numbered,
+        )
+    };
+    let (result, summary, marked, total) = retried.unwrap_or((result, summary, marked, total));
     if !shape_ok(&summary, &known) {
+        reject(&result, &summary, marked, total, "shape_validation");
         return Err("shape_validation".to_string());
     }
 
@@ -812,6 +944,7 @@ pub fn run_ai_substage_for(
         let Some(translated) =
             translate_selected_section("ai", &selected, &numbered, date_str, &paywall)
         else {
+            reject(&result, &summary, marked, total, "language_validation");
             return Err("language_validation".to_string());
         };
         cache::put(date_str, variant, start, end, &translated.join("\n"), &swapped_links);
@@ -828,6 +961,7 @@ pub fn run_ai_substage_for(
         &render_replacements(&paywall),
     );
     if attached == 0 {
+        reject(&result, &summary, marked, total, "no_links_attached");
         return Err("no_links_attached".to_string());
     }
     cache::put(date_str, variant, start, end, &with_links, &swapped_links);
@@ -1159,33 +1293,16 @@ pub fn run_custom_topic(
 {raw}",
             translation_rules = &*TRANSLATION_RULES_STRICT,
         );
-        if let Some(r2) = try_reformat_retry(
+        if let Some((_, reply, _, _)) = reformat_retry(
+            "custom_topic_reformat_retry",
+            json!({"topic": topic}),
+            &summary,
             &retry_prompt,
-            AI_SUBSTAGE_TIMEOUT_SECS,
-            &format!("{variant}_{safe_topic}_reformat"),
+            &format!("{variant}_{safe_topic}"),
             &counts,
             &numbered,
         ) {
-            let s2 = r2.stdout.trim().to_string();
-            let (m2, t2) = marker_stats(&s2, &known);
-            if !r2.timed_out()
-                && r2.returncode == 0
-                && t2 != 0
-                && m2 == t2
-                && shape_ok(&s2, &known)
-            {
-                log_trace(
-                    "custom_topic_reformat_retry_ok",
-                    json!({"topic": topic, "attempt": 2}),
-                );
-                chosen = s2;
-            } else {
-                log_trace(
-                    "custom_topic_reformat_retry_failed",
-                    json!({"topic": topic, "attempt": 2,
-                           "error": if r2.timed_out() { "timeout" } else { "second validation failed" }}),
-                );
-            }
+            chosen = reply;
         }
     }
 

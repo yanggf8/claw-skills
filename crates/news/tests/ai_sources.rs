@@ -1016,6 +1016,94 @@ fn a_direct_outage_traces_an_empty_section() {
     assert_eq!(events[0]["ai_sources"], "direct");
 }
 
+/// `ai_section_rendered` payloads, envelope fields removed.
+fn rendered_payloads(env: &Env) -> Vec<serde_json::Value> {
+    env.traces("ai_section_rendered")
+        .into_iter()
+        .map(|mut v| {
+            let o = v.as_object_mut().unwrap();
+            for k in ["ts", "job_id", "skill", "event"] {
+                assert!(o.remove(k).is_some(), "{k} missing");
+            }
+            v
+        })
+        .collect()
+}
+
+#[test]
+fn a_rendered_section_carries_no_exhausted_key() {
+    let env = Env::new();
+    google_replies(&env);
+    let _ = deliver_run(&TestFeeds::default());
+    assert_eq!(
+        rendered_payloads(&env),
+        vec![serde_json::json!({"stories": 4, "links_total": 4, "links_google": 0,
+                                "ai_sources": "google"})]
+    );
+}
+
+#[test]
+fn an_exhausted_delivery_traces_the_section_once_and_every_rejected_reply() {
+    // Every reply is marked but wrong-shaped, so each range spends its one
+    // reformat retry: half [0,3), half [3,6), then quarter [0,1) is terminal.
+    const COT: &str = "- #1 台積電法說會釋出樂觀展望\n讓我再想想。";
+    for (mode, sources) in [(None, AiSources::Google), (Some("direct"), AiSources::Direct)] {
+        let env = Env::new();
+        std::fs::write(env.home.join("stub/resp.default"), COT).unwrap();
+        let p = Publisher::start(|base| {
+            let feed = fresh_rss(&[
+                ("台積電法說會釋出樂觀展望", &format!("{base}/art/1"), 10),
+                ("輝達財報優於市場預期", &format!("{base}/art/2"), 20),
+                ("歐盟通過人工智慧法案修正", &format!("{base}/art/3"), 30),
+                ("日本擴大算力補助計畫", &format!("{base}/art/4"), 40),
+                ("百度發布新一代文心大模型", &format!("{base}/art/5"), 50),
+                ("華爾街分析聯準會利率路徑", &format!("{base}/art/6"), 60),
+            ]);
+            vec![("/ai.xml", ok(&feed))]
+        });
+        if let Some(m) = mode {
+            write_feed_config(&env, &[("iThome", p.url("/ai.xml"))]);
+            std::env::set_var("NEWS_AI_SOURCES", m);
+        }
+        let (code, out) = deliver_run(&TestFeeds::default());
+        std::env::remove_var("NEWS_AI_SOURCES");
+
+        assert_eq!(code, 1);
+        assert_eq!(out, "", "an exhausted run delivers nothing");
+        assert_eq!(alert_reasons(&env), vec!["ai_substage_level3_failed"]);
+        let detail = &alert_details(&env)[0];
+        assert!(
+            detail.starts_with("default_ai Level 3 quarter items[0..1] failed: shape_validation"),
+            "{detail}"
+        );
+        assert_eq!(
+            rendered_payloads(&env),
+            vec![serde_json::json!({"stories": 0, "links_total": 0, "links_google": 0,
+                                    "ai_sources": sources.as_str(), "exhausted": true})]
+        );
+        assert_eq!(agent_calls(&env), 6);
+        let rejected: Vec<serde_json::Value> = env
+            .traces("llm_validation_failed")
+            .iter()
+            .map(|e| {
+                serde_json::json!([e["variant"], e["reason"], e["section"], e["range"],
+                                   e["stdout_sample"]])
+            })
+            .collect();
+        let v = sources.cache_variant();
+        assert_eq!(
+            rejected,
+            vec![
+                serde_json::json!([format!("{v}_0_3"), "shape_validation", "ai", [0, 3], COT]),
+                serde_json::json!([format!("{v}_3_6"), "shape_validation", "ai", [3, 6], COT]),
+                serde_json::json!([format!("{v}_0_1"), "shape_validation", "ai", [0, 1], COT]),
+            ]
+        );
+        assert_eq!(env.traces("section_reformat_retry_failed").len(), 3);
+        assert_eq!(env.traces("news_run_timing")[0]["outcome"], "ai_exhausted");
+    }
+}
+
 // ── §7 ai_direct_feeds when the config itself fails ─────────────────────────
 
 /// The event with the four envelope fields every trace line carries removed.
