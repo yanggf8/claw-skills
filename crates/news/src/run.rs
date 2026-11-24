@@ -27,6 +27,7 @@ use crate::deliver::deliver_news;
 use crate::digest::{summarize_llm_custom, summarize_llm_sourced};
 use crate::direct::{direct_ai_from_config, ConfigError, DirectReport, FeedReport};
 use crate::feed::{fetch_feed, topic_feed_url};
+use crate::hant::to_traditional_markdown;
 use crate::precheck::{tier1_filter_items, SharedCache};
 use crate::sources::{resolve_ai_sources, AiSources};
 use crate::text::{dedup, Item};
@@ -252,6 +253,7 @@ pub fn run_deliver(
                     finish(Finish::Unmarked { exit: 1 }, out)
                 }
                 Some(summary) => {
+                    let summary = to_traditional_markdown(&summary);
                     let job = job_id();
                     let summary = if job == "interactive" {
                         summary

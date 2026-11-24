@@ -155,6 +155,7 @@ Env（去重相關）：
 - 選題紀錄：tech / general 段在 dedup 前記下模型對每個 `#N` 寫了什麼、原始 feed 標題是什麼，事後不必重抓 Google 就能對照。trace：`section_picks`（`section`、`picks[{n, source, written}]`）。
 - Markdown 字元中和：標題中的 `*` 與 `_` 在送至 Telegram 前會換成全形 `＊` / `＿`，避免 Markdown 解析失敗（例如「長科*成關鍵受惠股」這類台股除權息標示）。僅針對新聞條目本文，不影響區段標題與連結語法。
 - 版塊雜訊行剝除：LLM 版塊輸出偶爾夾帶純 `[括號:標記]` 雜訊行（如 `[hint_picked:none]`、`[cat_dedup:0]`——非本 repo 產生，模型自發吐出）。其底線會使該分塊未配對而 Markdown 安全預檢失敗、整份降級純文字（`[🔗]` 連結攤成長 URL）。`_attach_numbered_links` 在附連結前丟棄「整行僅為 `[...]`」的行（保留 `**區段標題**`、`#N` bullet、`[🔗]` 連結語法、`　↳` paywall 續行），trace：`section_noise_dropped`（含丟棄數與樣本）。僅擋整行標記；行內或無括號雜訊仍由上述 Markdown 預檢降級兜底。
+- 簡體字轉正體：模型漏出的簡體字在最終文字送出前（預設摘要、自訂主題、shadow 檔）轉成台灣正體，不多叫模型，連結網址與反引號內容不動，沒有簡體字的文字逐 byte 不變，模型回覆與快取保留原文；trace：`simplified_converted`（`lines`、`chars`、`samples`）。
 - Markdown 預檢 + 純文字降級：送出前會檢查每個分塊是否能通過 Telegram Markdown 解析（檢查未配對的 `*` / `_` / `` ` ``、跨塊未閉合的連結括號等）。若任一分塊不安全，整份摘要會降級為純文字送出（`parse_mode=None`），確保整體交付的原子性：要嘛全部以 Markdown 送出，要嘛全部純文字，避免「分塊 1 送出成功，分塊 2 失敗導致 cron 重試又重送分塊 1」。`digest_markdown_unsafe_fallback` trace 會記錄發生降級時的不安全分塊編號。
 
 ## AI 直連來源（`NEWS_AI_SOURCES`，預設仍是 Google）

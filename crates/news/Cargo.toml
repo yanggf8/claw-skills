@@ -20,6 +20,7 @@ quick-xml = "0.36"
 serde = { version = "1.0.229", features = ["derive"] }
 regex = "1.13.1"
 sha1 = "0.11.0"
+ferrous-opencc = { version = "0.4", default-features = false, features = ["s2t-conversion"] }
 
 [dev-dependencies]
 flate2 = "1"

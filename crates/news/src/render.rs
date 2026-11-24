@@ -192,7 +192,7 @@ const SIMPLIFIED_ONLY: &str = "们这个为国发时对说经会实现关进开�
 /// U+30FB (`・`) is excluded: Taiwanese and Hong Kong outlets use it to
 /// separate transliterated names (唐納・川普), so it says nothing about the
 /// language.
-fn is_kana(c: char) -> bool {
+pub(crate) fn is_kana(c: char) -> bool {
     (('\u{3040}'..='\u{30FF}').contains(&c) && c != '\u{30FB}')
         || ('\u{31F0}'..='\u{31FF}').contains(&c)
         || ('\u{FF66}'..='\u{FF9F}').contains(&c)
@@ -428,7 +428,7 @@ fn bullet_dash_re() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"(?m)^-\s*").expect("literal"))
 }
 
-fn md_link_re() -> &'static Regex {
+pub(crate) fn md_link_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"\[([^\]]+)\]\([^)]+\)").expect("literal"))
 }

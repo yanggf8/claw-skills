@@ -29,6 +29,7 @@ use crate::alert::AlertContext;
 use crate::cache::safe_date;
 use crate::config::{section, shadow_dir};
 use crate::digest::summarize_ai_section;
+use crate::hant::to_traditional_markdown;
 use crate::precheck::{tier1_filter_items, SharedCache};
 use crate::run::{direct_ai_items, FeedSource};
 use crate::sources::AiSources;
@@ -106,7 +107,7 @@ pub fn run_shadow_ai_with(
         }
     };
 
-    let written = write_atomically(&path, &text);
+    let written = write_atomically(&path, &to_traditional_markdown(&text));
     let mut summary = json!({
         "path": path.display().to_string(),
         "outcome": outcome,

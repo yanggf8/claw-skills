@@ -10,6 +10,7 @@ pub mod deliver;
 pub mod digest;
 pub mod direct;
 pub mod feed;
+pub mod hant;
 pub mod precheck;
 pub mod quality;
 pub mod render;
