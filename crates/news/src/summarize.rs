@@ -24,7 +24,7 @@ use crate::render::{
 };
 use crate::select::{
     default_pair_hints, dedup_pair_hints, format_dedup_hint_block, number_items_for_prompt,
-    parse_pick_min, post_dedup_selected_summary, NumberedMap,
+    drop_repeated_markers, parse_pick_min, post_dedup_selected_summary, NumberedMap,
 };
 use crate::sources::AiSources;
 use crate::text::{title_without_source, Item};
@@ -268,8 +268,10 @@ pub fn translate_selected_section(
         &counts,
         &selected,
     );
-    let summary = result.stdout.trim().to_string();
     let known = known_ids(&selected);
+    // Before the gates: repeats in Chinese must not outvote a bullet that
+    // stayed English.
+    let summary = drop_repeated_markers(result.stdout.trim(), &known, key);
     let (marked, total) = marker_stats(&summary, &known);
     let (chinese, lang_total) = language_stats(&summary);
 

@@ -164,6 +164,45 @@ fn a_single_selection_is_left_alone() {
 }
 
 #[test]
+fn a_repeated_marker_keeps_only_its_first_bullet() {
+    // 2026-11-20 節稅 was delivered as the same three stories twice over.
+    assert_eq!(collapse("- #1 甲\n- #3 丙\n- #1 甲\n- #3 丙", None), "- #1 甲\n- #3 丙");
+    // The wording of the first wins, wherever the repeat stands.
+    assert_eq!(collapse("- #1 甲\n- #1 甲二\n- #3 丙", None), "- #1 甲\n- #3 丙");
+    // Also when only one story was picked, which skips the collapse itself.
+    assert_eq!(collapse("- #1 甲\n- #1 甲", None), "- #1 甲");
+    // A repeat is found with or without the dash.
+    assert_eq!(collapse("- #1 甲\n#1 甲二\n- #3 丙", None), "- #1 甲\n- #3 丙");
+}
+
+#[test]
+fn a_repeated_marker_is_not_a_second_pick() {
+    // Two stories under a floor of three: the model's own shortfall, so the
+    // repeat neither counts towards the floor nor triggers a refill.
+    assert_eq!(collapse("- #1 甲\n- #3 丙\n- #1 甲", Some(3)), "- #1 甲\n- #3 丙");
+    // A repeat of a bullet the collapse drops goes with it.
+    assert_eq!(collapse("- #1 甲\n- #2 乙\n- #2 乙\n- #3 丙", None), "- #1 甲\n- #3 丙");
+}
+
+#[test]
+fn a_dropped_repeat_takes_its_continuation_lines_with_it() {
+    scratch_home();
+    let known = [1, 2].into_iter().collect();
+    let text = "- #1 甲\n　↳ 原文一\n- #2 乙\n- #1 甲二\n　↳ 原文二\n　↳ 原文三\n---\n　↳ 留";
+    assert_eq!(
+        drop_repeated_markers(text, &known, "t"),
+        "- #1 甲\n　↳ 原文一\n- #2 乙\n---\n　↳ 留"
+    );
+}
+
+#[test]
+fn only_a_repeated_known_marker_is_dropped() {
+    // Not scaffolding, not unmarked lines, not ids that were never offered.
+    let text = "**區段**\n- #1 甲\n---\n沒有編號\n沒有編號\n- #99 x\n- #99 x\n---\n";
+    assert_eq!(collapse(text, None), text);
+}
+
+#[test]
 fn scaffolding_around_the_bullets_survives_the_collapse() {
     let out = collapse("**區段**\n- #1 甲\n- #2 乙\n- #3 丙\n---", None);
     assert_eq!(out, "**區段**\n- #1 甲\n- #3 丙\n---");

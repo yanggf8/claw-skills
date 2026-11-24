@@ -100,7 +100,7 @@ LLM 事件去重（完整三層）：
 
 1. **P0 共用 `DEDUP_RULES`**：default section（tech/general）、AI substage、custom-topic 的 LLM prompt 共用「同事件合併 / 同主題不同事件保留」規則；免費源優先僅為 prompt 文字指引（`pick_representatives` / post-dedup keep 皆採 LLM 順序第一則 — Codex S4 永久 skip 程式端免費源 ranking）。
 2. **P1 soft pair hints**（pre-LLM）：對 numbered 候選用 `_topic_words` 算**獨立 pair**，**`overlap >= 4`** 才注入 `可能同事件候選：#A+#B`。hint 列表不做傳遞合群。LLM 仍最終選擇。`NEWS_LLM_DEDUP_HINTS=0` 關閉。trace：`llm_dedup_hints`。套用：default tech/general、**AI substage**、custom-topic。
-3. **P2 post-select hard dedup**（post-LLM 安全網）：marker 驗證通過後、precheck 前，**只對 LLM 已選的 `#N`** 做 hard 合併。門檻 **`overlap >= 4`**。演算法是 **greedy 保序**（依 LLM 輸出順序；與已保留則 overlap≥4 則丟），**不做** union-find / 連通分量。`NEWS_LLM_POST_DEDUP=0` 關閉。trace：`llm_post_dedup`。若砍完後則數低於 `pick` 下限且仍非空：記 `post_dedup_underfill`，再做一次 **deterministic refill**（從未被 LLM 選過的 numbered 候選補滿；與每個已保留項 overlap 皆 `<4` 才可補；**不**復活 P2 砍掉的 id、**不**二次 LLM）。trace：`post_dedup_refill`。套用：default tech/general、AI substage、custom-topic。
+3. **P2 post-select hard dedup**（post-LLM 安全網）：marker 驗證通過後、precheck 前，**只對 LLM 已選的 `#N`** 做 hard 合併。門檻 **`overlap >= 4`**。演算法是 **greedy 保序**（依 LLM 輸出順序；與已保留則 overlap≥4 則丟），**不做** union-find / 連通分量。`NEWS_LLM_POST_DEDUP=0` 關閉。trace：`llm_post_dedup`。在這之前，同一 `#N` 重複出現的 bullet 只留第一則（不受該開關影響，翻譯重寫的回覆也套用；trace：`llm_repeated_marker_dropped`）。若砍完後則數低於 `pick` 下限且仍非空：記 `post_dedup_underfill`，再做一次 **deterministic refill**（從未被 LLM 選過的 numbered 候選補滿；與每個已保留項 overlap 皆 `<4` 才可補；**不**復活 P2 砍掉的 id、**不**二次 LLM）。trace：`post_dedup_refill`。套用：default tech/general、AI substage、custom-topic。
 4. **P3 cross-half LLM same-event vote ensemble**（AI 區、翻譯後、跨半安全網）：兩半選稿+翻譯
    合流後、送出前，把合流清單解析成原子 story block，對**同一 prompt 併發取樣 N 次**
    （`CROSS_DEDUP_SAMPLES=7`，受 `CROSS_DEDUP_MAX_INFLIGHT=3` 節流 + 錯開啟動以去相關），

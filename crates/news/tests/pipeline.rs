@@ -504,6 +504,83 @@ fn a_substage_collapses_duplicates_before_the_precheck_too() {
 }
 
 #[test]
+fn a_reply_that_repeats_its_picks_ships_each_story_once() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    const REPEATED: &str = "- #2 行政院通過明年度總預算案\n- #6 法國總統抵北京談氣候\n\
+- #2 行政院通過明年度總預算案\n- #6 法國總統抵北京談氣候";
+
+    let env = Env::new();
+    env.reply_default(REPEATED);
+    assert_eq!(general(), (good_general_lines(), false));
+    assert_eq!(
+        env.all("llm_repeated_marker_dropped"),
+        vec![json!({"section": "general", "repeated": [2, 6]})]
+    );
+    drop(env);
+
+    let env = Env::new();
+    env.reply_default(REPEATED);
+    let topic = run_custom_topic("節稅", &items(&GENERAL_FIXTURE), DATE, &new_cache());
+    assert_eq!(topic.unwrap(), good_general_lines());
+    drop(env);
+
+    let env = Env::new();
+    env.reply_default("- #1 日本加碼算力補助\n- #2 工研院開源醫療影像系統\n- #1 日本加碼算力補助");
+    let lines = run_ai_substage(&items(&AI_FIXTURE), 2, 4, DATE, &new_cache()).unwrap();
+    assert_eq!(lines, vec![line("日本加碼算力補助", 3), line("工研院開源醫療影像系統", 4)]);
+    drop(env);
+
+    // The kill switch is for the similarity collapse, not for this.
+    let env = Env::new();
+    std::env::set_var("NEWS_LLM_POST_DEDUP", "0");
+    env.reply_default(REPEATED);
+    let got = general();
+    std::env::remove_var("NEWS_LLM_POST_DEDUP");
+    assert_eq!(env.all("llm_post_dedup")[0]["enabled"], false);
+    assert_eq!(got, (good_general_lines(), false));
+}
+
+#[test]
+fn a_translation_that_repeats_its_headlines_ships_each_story_once() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::new();
+    env.reply(1, "- #2 Cabinet approves the budget\n- #6 French president visits Beijing").reply(
+        2,
+        "- #2 行政院通過明年度總預算案\n- #6 法國總統抵北京談氣候\n- #2 行政院通過預算",
+    );
+    assert_eq!(general(), (good_general_lines(), false));
+    assert_eq!(
+        env.all("llm_repeated_marker_dropped"),
+        vec![json!({"section": "general", "repeated": [2]})]
+    );
+}
+
+#[test]
+fn a_translation_is_language_checked_on_what_it_would_ship() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::new();
+    // Five bullets, four of them Chinese; the two that remain are half English.
+    env.reply(1, "- #2 Cabinet approves the budget\n- #6 French president visits Beijing").reply(
+        2,
+        "- #2 Cabinet approves the budget\n- #6 法國總統抵北京談氣候\n\
+- #2 行政院通過預算\n- #2 行政院通過總預算\n- #6 法國總統訪北京",
+    );
+    let (lines, used_fallback) = general();
+    assert!(used_fallback, "{lines:?}");
+    let rejected = env.all("llm_validation_failed");
+    assert_eq!(rejected.last().unwrap()["reason"], "translation_retry_validation");
+}
+
+#[test]
+fn a_reply_without_repeats_traces_none() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::new();
+    env.reply_default(GOOD_GENERAL);
+    assert_eq!(general(), (good_general_lines(), false));
+    assert_eq!(env.all("llm_repeated_marker_dropped"), Vec::<Value>::new());
+}
+
+#[test]
 fn a_substage_result_is_cached_and_the_next_call_asks_nothing() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let env = Env::new();

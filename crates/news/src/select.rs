@@ -9,7 +9,7 @@
 use crate::config::{
     llm_post_dedup_enabled, LLM_DEDUP_HINT_OVERLAP, LLM_POST_DEDUP_OVERLAP,
 };
-use crate::render::Numbered;
+use crate::render::{Numbered, PAYWALL_CONT_PREFIX};
 use crate::text::{topic_words, Item};
 use crate::trace::log_trace;
 use crate::validate::{leading_marker, leading_marker_ids, news_bullet_lines, neutralize_markdown};
@@ -110,6 +110,40 @@ pub fn parse_pick_min(pick_spec: Option<&str>) -> Option<u32> {
     digits.parse().ok()
 }
 
+/// `summary` without any later bullet for a `#N` it already has one for.
+///
+/// Every gate accepts a reply that lists its picks twice — each bullet is
+/// marked and well shaped — and the same links then go out twice (2026-11-20
+/// 節稅: three stories, six bullets). The first bullet is kept, and a dropped
+/// one takes the `PAYWALL_CONT_PREFIX` lines under it along, which would
+/// otherwise read as the previous story's. Other lines that are not bullets
+/// for a `known` id are left alone, and a summary without repeats comes back
+/// byte-identical.
+pub fn drop_repeated_markers(summary: &str, known: &HashSet<u32>, section: &str) -> String {
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut repeated: Vec<u32> = Vec::new();
+    let mut under_dropped = false;
+    let kept: Vec<&str> = summary
+        .split('\n')
+        .filter(|line| {
+            if under_dropped && line.starts_with(PAYWALL_CONT_PREFIX) {
+                return false;
+            }
+            let repeat = leading_marker(line).filter(|n| known.contains(n) && !seen.insert(*n));
+            repeated.extend(repeat);
+            under_dropped = repeat.is_some();
+            !under_dropped
+        })
+        .collect();
+    if !repeated.is_empty() {
+        log_trace(
+            "llm_repeated_marker_dropped",
+            json!({"section": section, "repeated": repeated}),
+        );
+    }
+    kept.join("\n")
+}
+
 /// Hard-collapse same-event rewrites among the selected bullets.
 ///
 /// Call after marker validation and before precheck, while `#N` identity still
@@ -130,6 +164,7 @@ pub fn post_dedup_selected_summary(
     pick_min: Option<u32>,
 ) -> String {
     let known: HashSet<u32> = numbered.keys().copied().collect();
+    let summary = &drop_repeated_markers(summary, &known, section);
     let selected = leading_marker_ids(summary, &known);
 
     if !llm_post_dedup_enabled() {
