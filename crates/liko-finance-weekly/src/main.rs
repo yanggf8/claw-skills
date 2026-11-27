@@ -23,7 +23,7 @@ use std::time::Duration;
 use claw_core::marker::SkillStatus;
 use claw_core::outcome::{finish, Finish};
 use liko_finance_weekly::issues::{already_done, status_of};
-use liko_finance_weekly::proc::{agent, body_between, log, run, run_ok};
+use liko_finance_weekly::proc::{agent, body_between, log, paragraphs, run, run_ok};
 use liko_finance_weekly::prompts;
 use liko_finance_weekly::schedule::next_sunday_taipei;
 
@@ -153,7 +153,7 @@ fn run_skill(args: &Args) -> Result<(), String> {
     log("stage: draft start (agent call)");
     let timeout = Duration::from_secs(args.agent_timeout);
     let reply = agent(&prompts::DRAFT.replace("{context}", &context), timeout)?;
-    let mut body = body_between(&reply, "BEGIN_ISSUE_BODY", "END_ISSUE_BODY");
+    let mut body = paragraphs(&body_between(&reply, "BEGIN_ISSUE_BODY", "END_ISSUE_BODY"));
     log(&format!("stage: draft done ({} chars)", body.len()));
 
     let mut path = write_temp(&format!("liko-{target_date}-"), &body)?;
@@ -167,7 +167,7 @@ fn run_skill(args: &Args) -> Result<(), String> {
             .replace("{body}", &body)
             .replace("{validation_report}", &report);
         let reply = agent(&prompt, timeout)?;
-        body = body_between(&reply, "BEGIN_ISSUE_BODY", "END_ISSUE_BODY");
+        body = paragraphs(&body_between(&reply, "BEGIN_ISSUE_BODY", "END_ISSUE_BODY"));
         log(&format!("stage: repair done ({} chars)", body.len()));
         path = write_temp(&format!("liko-{target_date}-repair-"), &body)?;
         log("stage: re-validate start");

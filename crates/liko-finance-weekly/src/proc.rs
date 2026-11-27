@@ -100,3 +100,25 @@ pub fn body_between(reply: &str, begin: &str, end: &str) -> String {
         None => after.trim().to_string(),
     }
 }
+
+/// Put a blank line between the body's lines, so each one is its own paragraph.
+///
+/// The prompts require the body as plain lines — section headings alone on a
+/// line, action lines with no bullet — because the persona-core validator and
+/// its Telegram summary both read it line by line. But Markdown joins
+/// consecutive lines into one paragraph, so on dev.to every issue up to
+/// 2026-11-22 rendered as a single `<p>` held together by `<br>`: headings and
+/// the three action lines ran together in one block.
+///
+/// A blank line is the only separator that leaves both readers intact: the
+/// validator and the summary skip empty lines, whereas `##` would leave a
+/// stray `##` line in the summary's signal list and `**…**` fails R2 on the
+/// action section. Lines are trimmed too, because a line indented four spaces
+/// after a blank line becomes a code block.
+pub fn paragraphs(body: &str) -> String {
+    body.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}

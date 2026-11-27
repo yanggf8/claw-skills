@@ -14,3 +14,8 @@ path = "src/lib.rs"
 [dependencies]
 claw-core = { path = "../../../../b/gwebcdb/crates/claw-core" }
 jiff = { version = "0.1", features = ["tzdb-bundle-always"] }
+
+[dev-dependencies]
+# Tests render the body as CommonMark, because the defect was in how dev.to
+# renders it — a string comparison would only restate the implementation.
+pulldown-cmark = { version = "0.9", default-features = false }
