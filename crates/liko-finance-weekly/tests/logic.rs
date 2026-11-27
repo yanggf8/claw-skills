@@ -2,7 +2,7 @@
 //! orchestration. Everything else shells out to persona-core, and pinning a
 //! subprocess invocation in a unit test pins the call, not the behaviour.
 
-use liko_finance_weekly::issues::{already_done, status_of};
+use liko_finance_weekly::issues::{already_done, issue_url, status_of};
 use liko_finance_weekly::schedule::next_sunday_taipei;
 
 fn at(s: &str) -> jiff::Timestamp {
@@ -145,4 +145,26 @@ fn an_unclosed_marker_keeps_what_followed_it() {
     // body, not narration.
     let reply = "prelude\nBEGIN_ISSUE_BODY\n本週訊號\n第一段";
     assert_eq!(body_between(reply, B, E), "本週訊號\n第一段");
+}
+
+// ── issue_url ────────────────────────────────────────────────────────────────
+
+#[test]
+fn issue_url_is_the_shape_the_site_routes() {
+    assert_eq!(
+        issue_url(
+            "https://wealth.ahexagram.com",
+            "weekly-intl-wealth-signals",
+            "2026-11-29"
+        ),
+        "https://wealth.ahexagram.com/weekly-intl-wealth-signals/2026-11-29/"
+    );
+}
+
+#[test]
+fn issue_url_does_not_double_a_trailing_slash() {
+    assert_eq!(
+        issue_url("https://wealth.ahexagram.com/", "s", "2026-11-29"),
+        "https://wealth.ahexagram.com/s/2026-11-29/"
+    );
 }

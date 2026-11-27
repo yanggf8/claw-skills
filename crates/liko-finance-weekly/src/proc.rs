@@ -122,3 +122,26 @@ pub fn paragraphs(body: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n\n")
 }
+
+/// The AI-assistance disclosure every issue opens with. dev.to's guidelines ask
+/// AI-assisted posts to say so; the account was flagged on 2026-11-27 with no
+/// issue carrying one. The English half is for moderators who don't read
+/// Chinese.
+///
+/// It goes first, never last: the validator treats every line after
+/// 本週檢視動作 as an action line, so a closing line would fail R2. Nothing
+/// above 本週訊號 is validated or quoted in the Telegram summary. It must not
+/// contain a section marker, because the validator locates sections with
+/// `find`.
+pub const AI_DISCLOSURE: &str = "本文由 AI 協助撰寫。(This post was written with AI assistance.)";
+
+/// Put [`AI_DISCLOSURE`] at the top of `body`, once. A copy the model kept
+/// from the repair prompt is dropped first, so repairing twice cannot stack
+/// it. Expects a body already passed through [`paragraphs`].
+pub fn with_disclosure(body: &str) -> String {
+    let rest: Vec<&str> = body
+        .split("\n\n")
+        .filter(|para| para.trim() != AI_DISCLOSURE)
+        .collect();
+    format!("{AI_DISCLOSURE}\n\n{}", rest.join("\n\n"))
+}

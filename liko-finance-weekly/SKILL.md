@@ -26,10 +26,11 @@ Dry run:
 ~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly --dry-run
 ```
 
-Live weekly run:
+Live weekly run (`--site-url` is required; the issue is read at
+`<site-url>/weekly-intl-wealth-signals/<target_date>/`):
 
 ```bash
-~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly
+~/.nullclaw/skills/liko-finance-weekly/bin/liko-finance-weekly --site-url https://wealth.ahexagram.com
 ```
 
 ## Workflow
@@ -46,14 +47,18 @@ Live weekly run:
 7. The drafting context already includes the default style prompt block
    (`persona-core style show default --as-prompt-block`).
 8. If valid, write back with `streams issues update-body`.
-9. Publish with `streams issues publish <id> --target both`.
+9. Publish with `streams issues publish <id> --target telegram --public-url <issue url>`.
+   The issue is read on the owner's site (persona-core `workers/wealth-site-rs`,
+   which reads published issues straight from the DB), not on dev.to: the
+   dev.to account was flagged read-only on 2026-11-27. Every body opens with
+   the AI-assistance disclosure line (`proc::AI_DISCLOSURE`).
 
 ## Safety
 
 - `--dry-run` drafts and validates only; it does not write the issue body
   and does not publish.
 - The publish step is entirely handled by `persona-core`, which loads the
-  dev.to API key and Telegram bot token internally.
+  Telegram bot token internally.
 - Failed-run body snapshots under `liko-finance-weekly/failed/` are local
   diagnostics and are ignored by git.
 - The skill emits `[skill-status:ok|failed]` and `[trace:<job_id>]` for

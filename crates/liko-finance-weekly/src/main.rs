@@ -22,8 +22,10 @@ use std::time::Duration;
 
 use claw_core::marker::SkillStatus;
 use claw_core::outcome::{finish, Finish};
-use liko_finance_weekly::issues::{already_done, status_of};
-use liko_finance_weekly::proc::{agent, body_between, log, paragraphs, run, run_ok};
+use liko_finance_weekly::issues::{already_done, issue_url, status_of};
+use liko_finance_weekly::proc::{
+    agent, body_between, log, paragraphs, run, run_ok, with_disclosure,
+};
 use liko_finance_weekly::prompts;
 use liko_finance_weekly::schedule::next_sunday_taipei;
 
@@ -36,6 +38,9 @@ struct Args {
     dry_run: bool,
     check: bool,
     agent_timeout: u64,
+    /// Base of the public site the issue is read on, e.g.
+    /// `https://wealth.ahexagram.com`. Required for a live run.
+    site_url: Option<String>,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -43,6 +48,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         dry_run: false,
         check: false,
         agent_timeout: 900,
+        site_url: None,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -61,6 +67,14 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     .ok_or("--agent-timeout requires a value")?
                     .parse()
                     .map_err(|_| "--agent-timeout must be a number".to_string())?;
+                i += 2;
+            }
+            "--site-url" => {
+                let v = argv.get(i + 1).ok_or("--site-url requires a value")?;
+                if !v.starts_with("https://") {
+                    return Err("--site-url must be an https:// URL".into());
+                }
+                a.site_url = Some(v.clone());
                 i += 2;
             }
             other => return Err(format!("unknown argument {other}")),
@@ -122,6 +136,11 @@ fn validate(path: &str) -> (bool, String) {
 }
 
 fn run_skill(args: &Args) -> Result<(), String> {
+    // Before any write: a live run that could not link its issue would
+    // publish a Telegram summary pointing nowhere.
+    if !args.dry_run && !args.check && args.site_url.is_none() {
+        return Err("--site-url is required for a live run".into());
+    }
     run_ok(&["persona-core", "doctor"])?;
     run_ok(&["persona-core", "streams", "issues", "--help"])?;
     if args.check {
@@ -153,7 +172,7 @@ fn run_skill(args: &Args) -> Result<(), String> {
     log("stage: draft start (agent call)");
     let timeout = Duration::from_secs(args.agent_timeout);
     let reply = agent(&prompts::DRAFT.replace("{context}", &context), timeout)?;
-    let mut body = paragraphs(&body_between(&reply, "BEGIN_ISSUE_BODY", "END_ISSUE_BODY"));
+    let mut body = with_disclosure(&paragraphs(&body_between(&reply, "BEGIN_ISSUE_BODY", "END_ISSUE_BODY")));
     log(&format!("stage: draft done ({} chars)", body.len()));
 
     let mut path = write_temp(&format!("liko-{target_date}-"), &body)?;
@@ -167,7 +186,7 @@ fn run_skill(args: &Args) -> Result<(), String> {
             .replace("{body}", &body)
             .replace("{validation_report}", &report);
         let reply = agent(&prompt, timeout)?;
-        body = paragraphs(&body_between(&reply, "BEGIN_ISSUE_BODY", "END_ISSUE_BODY"));
+        body = with_disclosure(&paragraphs(&body_between(&reply, "BEGIN_ISSUE_BODY", "END_ISSUE_BODY")));
         log(&format!("stage: repair done ({} chars)", body.len()));
         path = write_temp(&format!("liko-{target_date}-repair-"), &body)?;
         log("stage: re-validate start");
@@ -200,6 +219,9 @@ fn run_skill(args: &Args) -> Result<(), String> {
         println!("validation: passed");
         println!("would_update_body: yes");
         println!("would_publish: yes");
+        if let Some(base) = &args.site_url {
+            println!("public_url: {}", issue_url(base, STREAM, &target_date));
+        }
         return Ok(());
     }
 
@@ -213,10 +235,15 @@ fn run_skill(args: &Args) -> Result<(), String> {
         "--status", "validated",
     ])?;
 
-    log("stage: publish start");
+    let public_url = issue_url(
+        args.site_url.as_deref().ok_or("--site-url is required for a live run")?,
+        STREAM,
+        &target_date,
+    );
+    log(&format!("stage: publish start ({public_url})"));
     let out = run_ok(&[
         "persona-core", "streams", "issues", "publish", &issue_id,
-        "--kind", "issue", "--target", "both",
+        "--kind", "issue", "--target", "telegram", "--public-url", &public_url,
     ])?;
     log("stage: publish done");
     println!("{out}");

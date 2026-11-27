@@ -18,3 +18,12 @@ pub fn status_of(listing: &str, issue_id: &str) -> Option<String> {
 pub fn already_done(status: Option<&str>) -> bool {
     matches!(status, Some("published") | Some("delivered"))
 }
+
+/// Where an issue is read on the public site: `<base>/<stream>/<target_date>/`.
+///
+/// The site Worker (persona-core `workers/wealth-site-rs`) routes exactly this
+/// shape, so the two must change together. A trailing slash on `base` is
+/// tolerated so `--site-url https://host/` does not produce `//`.
+pub fn issue_url(base: &str, stream: &str, target_date: &str) -> String {
+    format!("{}/{stream}/{target_date}/", base.trim_end_matches('/'))
+}
