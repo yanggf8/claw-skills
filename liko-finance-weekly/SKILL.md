@@ -42,11 +42,16 @@ Live weekly run (`--site-url` is required; the issue is read at
    step 3 already printed — level_1 / level_2 / level_3 with what each may be
    used for. There is no separate file; an earlier version of this line pointed
    at one that never existed.
-5. Ask the nullclaw agent to draft exactly one issue body in liko's voice.
+5. Ask the nullclaw agent to draft exactly one issue body in liko's voice,
+   plus a one-line headline for the issue (between `BEGIN_ISSUE_TITLE` /
+   `END_ISSUE_TITLE`).
 6. `persona-core streams issues validate-body @<draft>`
 7. The drafting context already includes the default style prompt block
    (`persona-core style show default --as-prompt-block`).
-8. If valid, write back with `streams issues update-body`.
+8. If valid, write back with `streams issues update-body`, then store the
+   headline with `streams issues update <id> --title-hint`. A missing or
+   malformed headline is logged and skipped; persona-core then titles the issue
+   `<stream title> <date>`.
 9. Publish with `streams issues publish <id> --target telegram --public-url <issue url>`.
    The issue is read on the owner's site (persona-core `workers/wealth-site-rs`,
    which reads published issues straight from the DB), not on dev.to: the

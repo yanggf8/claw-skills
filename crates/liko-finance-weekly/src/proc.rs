@@ -145,3 +145,67 @@ pub fn with_disclosure(body: &str) -> String {
         .collect();
     format!("{AI_DISCLOSURE}\n\n{}", rest.join("\n\n"))
 }
+
+/// Shortest and longest headline accepted, in characters (not bytes: CJK).
+pub const TITLE_MIN_CHARS: usize = 6;
+pub const TITLE_MAX_CHARS: usize = 40;
+
+/// Trading verbs a headline must not carry — the same list the action section
+/// bans, as whole words. Single-character 買 / 賣 are left out on purpose:
+/// they appear inside ordinary nouns (賣壓, 買氣) that describe a market
+/// rather than tell a reader to trade.
+const TITLE_BANNED: [&str; 9] = [
+    "買進", "賣出", "申購", "贖回", "轉倉", "加碼", "減碼", "進場", "出場",
+];
+
+/// The issue's own headline, from between `BEGIN_ISSUE_TITLE` /
+/// `END_ISSUE_TITLE` in the draft reply.
+///
+/// Unlike [`body_between`], a missing or malformed title is an `Err`, not a
+/// best-effort guess: the title is optional to the publish (persona-core falls
+/// back to "<stream title> <target date>"), so the caller logs the reason and
+/// ships without one rather than publishing narration as a headline. The
+/// returned value is one trimmed line with surrounding quotes and Markdown
+/// heading or emphasis marks removed.
+pub fn issue_title(reply: &str) -> Result<String, String> {
+    const BEGIN: &str = "BEGIN_ISSUE_TITLE";
+    const END: &str = "END_ISSUE_TITLE";
+    let start = reply.find(BEGIN).ok_or("no BEGIN_ISSUE_TITLE marker")? + BEGIN.len();
+    let len = reply[start..].find(END).ok_or("no END_ISSUE_TITLE marker")?;
+    let lines: Vec<&str> = reply[start..start + len]
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let [line] = lines.as_slice() else {
+        return Err(format!("title must be one line, got {}", lines.len()));
+    };
+    let title = unwrap_title(line.trim_start_matches('#').trim()).to_string();
+    let n = title.chars().count();
+    if !(TITLE_MIN_CHARS..=TITLE_MAX_CHARS).contains(&n) {
+        return Err(format!(
+            "title is {n} chars, want {TITLE_MIN_CHARS}-{TITLE_MAX_CHARS}"
+        ));
+    }
+    if title.chars().any(char::is_control) {
+        return Err("title contains a control character".into());
+    }
+    if let Some(w) = TITLE_BANNED.iter().find(|w| title.contains(*w)) {
+        return Err(format!("title uses trading verb {w}"));
+    }
+    Ok(title)
+}
+
+/// Drop one wrapper the model put around the whole headline — `**…**`,
+/// `"…"`, `「…」` — but only when it wraps all of it: 「信託」成形 keeps its
+/// brackets, because stripping each end on its own would leave them unpaired.
+fn unwrap_title(s: &str) -> &str {
+    for (open, close) in [("**", "**"), ("\"", "\""), ("「", "」"), ("『", "』")] {
+        if let Some(inner) = s.strip_prefix(open).and_then(|r| r.strip_suffix(close)) {
+            if !inner.contains(open) && !inner.contains(close) {
+                return inner.trim();
+            }
+        }
+    }
+    s
+}

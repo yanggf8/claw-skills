@@ -11,8 +11,12 @@
 //!        → load context → draft → validate
 //!        → failed? one repair pass → validate again
 //!        → still failed? mark skipped, report failed
-//!        → passed? update-body → publish
+//!        → passed? update-body → set title_hint → publish
 //! ```
+//!
+//! The headline comes from the first draft only; the repair pass rewrites the
+//! body, not the title. A missing or malformed headline is logged and the issue
+//! ships without one (persona-core then titles it "<stream title> <date>").
 //!
 //! One repair pass, not a loop: a validator that rejects the same body twice is
 //! reporting something the model cannot fix by trying harder.
@@ -24,7 +28,7 @@ use claw_core::marker::SkillStatus;
 use claw_core::outcome::{finish, Finish};
 use liko_finance_weekly::issues::{already_done, issue_url, status_of};
 use liko_finance_weekly::proc::{
-    agent, body_between, log, paragraphs, run, run_ok, with_disclosure,
+    agent, body_between, issue_title, log, paragraphs, run, run_ok, with_disclosure,
 };
 use liko_finance_weekly::prompts;
 use liko_finance_weekly::schedule::next_sunday_taipei;
@@ -174,6 +178,16 @@ fn run_skill(args: &Args) -> Result<(), String> {
     let reply = agent(&prompts::DRAFT.replace("{context}", &context), timeout)?;
     let mut body = with_disclosure(&paragraphs(&body_between(&reply, "BEGIN_ISSUE_BODY", "END_ISSUE_BODY")));
     log(&format!("stage: draft done ({} chars)", body.len()));
+    let title = match issue_title(&reply) {
+        Ok(t) => {
+            log(&format!("title: {t}"));
+            Some(t)
+        }
+        Err(e) => {
+            log(&format!("title: none ({e}); publishing with the default title"));
+            None
+        }
+    };
 
     let mut path = write_temp(&format!("liko-{target_date}-"), &body)?;
     log("stage: validate start");
@@ -217,6 +231,7 @@ fn run_skill(args: &Args) -> Result<(), String> {
         println!("target_date: {target_date}");
         println!("body_path: {path}");
         println!("validation: passed");
+        println!("title: {}", title.as_deref().unwrap_or("-"));
         println!("would_update_body: yes");
         println!("would_publish: yes");
         if let Some(base) = &args.site_url {
@@ -234,6 +249,13 @@ fn run_skill(args: &Args) -> Result<(), String> {
         "--validation-summary", "R1/R2/R3 validation passed",
         "--status", "validated",
     ])?;
+
+    if let Some(t) = &title {
+        log("stage: title start");
+        run_ok(&[
+            "persona-core", "streams", "issues", "update", &issue_id, "--title-hint", t,
+        ])?;
+    }
 
     let public_url = issue_url(
         args.site_url.as_deref().ok_or("--site-url is required for a live run")?,

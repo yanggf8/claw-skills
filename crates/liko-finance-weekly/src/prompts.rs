@@ -1,6 +1,9 @@
-//! The two agent prompts, carried over byte for byte.
+//! The two agent prompts, carried over byte for byte from the Python except
+//! for the issue headline block added to DRAFT on 2026-11-27 (the site and the
+//! Telegram summary read it from `title_hint`; before that every issue was
+//! titled "<stream title> <date>").
 //!
-//! Reproduced exactly rather than reworded: these encode an editorial contract
+//! Otherwise reproduced exactly rather than reworded: these encode an editorial contract
 //! — the three mandatory section headings in a fixed order, the verb whitelist
 //! for the action list, the ban on trading language. Rewriting any of it would
 //! change what gets published, and persona-core's R1/R2/R3 validator enforces
@@ -28,7 +31,17 @@ pub const DRAFT: &str = r####"你是 nullclaw 的 liko-finance weekly skill runn
 - 如果來源不足，明說本週無顯著訊號，並仍給出保守的檢視動作。
 - 不要輸出 dev.to frontmatter，不要輸出 Markdown code fence。
 
-輸出格式必須精確包在以下 marker 中：
+另寫一個本期標題：
+- 一行繁體中文，6 到 40 個字。
+- 點出本期最主要的訊號或檢視主題，讓讀者只看標題就知道這期在談什麼。
+- 不要寫日期，不要寫「本週跨境財富管理訊號」，不要加 **、##、引號或 emoji。
+- 不得使用交易建議語氣，不要用 買進 / 賣出 / 申購 / 贖回 / 轉倉 / 加碼 / 減碼 / 進場 / 出場。
+- 如果本週無顯著訊號，標題就寫出本期保守檢視的主題。
+
+輸出格式必須精確包在以下 marker 中，標題在前、內文在後：
+BEGIN_ISSUE_TITLE
+<本期標題>
+END_ISSUE_TITLE
 BEGIN_ISSUE_BODY
 <issue body>
 END_ISSUE_BODY
